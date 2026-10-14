@@ -51,29 +51,69 @@ def _convert(text: str, mapping: dict[str, str]) -> str:
     return "".join(mapping.get(char, char) for char in text)
 
 
+def _like_pattern(text: str) -> str:
+    """Turn a user query into a SQL LIKE pattern.
+
+    '*' is the wildcard and becomes '%', which matches zero or more characters,
+    so "*a*" also matches just "a". Literal '%', '_' and '\\' are escaped so they
+    match themselves rather than acting as wildcards.
+    """
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped.replace("*", "%")
+
+
 def search(query: str, limit: int = 50) -> list[dict]:
-    """Return entries matching `query`, tolerating mixed simplified/traditional."""
+    """Search the dictionary.
+
+    Ranking: exact matches first, then the rest (shortest word first, then id).
+    Wildcards: '*' matches zero or more characters.
+      - no '*'   -> prefix search: "国" finds 国, then 国家, 国民, ...
+      - '*X'     -> suffix search: "*国" finds 国, then 中国, 美国, ...
+      - '*X*'    -> contains
+    Simplified and traditional may be mixed in the query.
+    """
     query = query.strip()
     if not query:
         return []  # nothing to search for
 
-    # Rewrite the query into a pure simplified form and a pure traditional form,
-    # then match each against the matching column. This way a mixed query like
-    # "汉語" (simp + trad) still finds the entry, and pure queries keep working.
     trad_to_simp, simp_to_trad = _script_maps()
-    as_simplified = _convert(query, trad_to_simp)
-    as_traditional = _convert(query, simp_to_trad)
+
+    # A query with no "*" is a prefix search: add our own trailing wildcard.
+    # (Script conversion below leaves "*" untouched.)
+    if "*" not in query:
+        query += "*"
+
+    # LIKE patterns in pure simplified and pure traditional form.
+    pattern_simplified = _like_pattern(_convert(query, trad_to_simp))
+    pattern_traditional = _like_pattern(_convert(query, simp_to_trad))
+
+    # The "exact" word is the query with its wildcards removed; those rows sort
+    # first. e.g. "*国" still puts 国 itself at the top.
+    literal = query.replace("*", "")
+    exact_simplified = _convert(literal, trad_to_simp)
+    exact_traditional = _convert(literal, simp_to_trad)
 
     sql = (
         "SELECT simplified, traditional, pinyin, english, english_normalized "
-        "FROM entries WHERE simplified = ? OR traditional = ? "
-        "ORDER BY id LIMIT ?"
+        "FROM entries "
+        "WHERE simplified LIKE ? ESCAPE '\\' "
+        "   OR traditional LIKE ? ESCAPE '\\' "
+        "ORDER BY (simplified = ? OR traditional = ?) DESC, "
+        "         length(simplified), id "
+        "LIMIT ?"
     )
 
     connection = connect()
     try:
         rows = connection.execute(
-            sql, (as_simplified, as_traditional, limit)
+            sql,
+            (
+                pattern_simplified,
+                pattern_traditional,
+                exact_simplified,
+                exact_traditional,
+                limit,
+            ),
         ).fetchall()
     finally:
         connection.close()  # always close, even if the query raised
