@@ -1,19 +1,23 @@
+# Project metadata (PEP 621). This file declares the app and its dependencies;
+# `uv` reads it to build uv.lock and create the virtual environment.
+
 [project]
-name = "yabai-dict"
+name = "yabai-cidian"
 version = "0.1.0"
 description = "A CC-CEDICT Chinese-English dictionary web app"
-requires-python = ">=3.12"
-dependencies = [
-    "fastapi>=0.115",
-    "uvicorn>=0.34",
-    "jinja2>=3.1",
+requires-python = ">=3.12"       # minimum interpreter version
+dependencies = [                  # runtime dependencies
+    "fastapi>=0.115",             # web framework
+    "uvicorn>=0.34",              # ASGI server that serves the app
+    "jinja2>=3.1",                # HTML templating
 ]
 
+# Dev-only dependencies (installed in dev checkouts, left out of production).
 [dependency-groups]
 dev = [
-    "pytest>=8",
-    "httpx>=0.28",
+    "pytest>=8",                  # test runner
+    "httpx>=0.28",                # HTTP client used by FastAPI's test tools
 ]
 
 [tool.uv]
-package = false
+package = false                   # this is an app, not an installable library

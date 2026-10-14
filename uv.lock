@@ -481,7 +481,7 @@ wheels = [
 ]
 
 [[package]]
-name = "yabai-dict"
+name = "yabai-cidian"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

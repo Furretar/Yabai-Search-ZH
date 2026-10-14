@@ -1,7 +1,9 @@
+/* Base color scheme: tells the browser we support light and dark. */
 :root {
   color-scheme: light dark;
 }
 
+/* Page body: centered column, readable line length and spacing. */
 body {
   font-family: system-ui, sans-serif;
   max-width: 48rem;
@@ -10,41 +12,49 @@ body {
   line-height: 1.5;
 }
 
+/* The search form: input and button side by side. */
 form {
   display: flex;
   gap: .5rem;
   margin-bottom: 1.5rem;
 }
 
+/* Search text box grows to fill available space. */
 input {
   flex: 1;
   padding: .5rem;
   font-size: 1rem;
 }
 
+/* Search button. */
 button {
   padding: .5rem 1rem;
   font-size: 1rem;
 }
 
+/* One dictionary result row. */
 .entry {
   border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
   padding: .75rem 0;
 }
 
+/* The Chinese characters in a result. */
 .hanzi {
   font-size: 1.5rem;
 }
 
+/* The pinyin reading in a result. */
 .pinyin {
   color: #c0392b;
   margin-left: .5rem;
 }
 
+/* The English definitions in a result. */
 .defs {
   margin-top: .25rem;
 }
 
+/* De-emphasized text (e.g. "No results."). */
 .muted {
   color: color-mix(in srgb, currentColor 60%, transparent);
 }
