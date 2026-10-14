@@ -71,9 +71,11 @@ function markSyllable(syllable) {
   return body.slice(0, idx) + marks[Number(tone) - 1] + body.slice(idx + 1);
 }
 
-// Convert a whole numeric reading, e.g. "guo2 ji4 qi3" -> "guó jì qǐ".
+// Convert a numeric reading to tone-marked pinyin, e.g. "guo2 ji4" -> "guó jì".
+// Also splits syllables that are run together ("xia4hai2" -> "xià hái").
 function numericToMarked(pinyin) {
-  return pinyin.split(/\s+/).map(markSyllable).join(" ");
+  const syllables = pinyin.match(/[A-Za-zü:]+[0-9]?/g) || [];
+  return syllables.map(markSyllable).join(" ");
 }
 
 // --- Zhuyin (Bopomofo) -----------------------------------------------------
@@ -173,6 +175,23 @@ function gridCell(kind, content, column, tone) {
 // above its character and the word is as wide as its reading. Readings come
 // first in the DOM (then all characters) so a range over a single kind is
 // contiguous — used by the double-click handler below.
+// Build the reading text for a group of syllables: one tone-colored span per
+// syllable when coloring is on, otherwise a single plain text node.
+function readingContent(readings, syllables) {
+  if (!state.toneColoring) {
+    return document.createTextNode(readings.join("\u00a0"));
+  }
+  const fragment = document.createDocumentFragment();
+  readings.forEach((reading, i) => {
+    if (i > 0) fragment.append("\u00a0");
+    const span = document.createElement("span");
+    span.className = `tone${toneOf(syllables[i])}`;
+    span.textContent = reading;
+    fragment.append(span);
+  });
+  return fragment;
+}
+
 function furigana(text, pinyin) {
   const chars = [...text];
   const syllables = pinyin.split(/\s+/).filter(Boolean);
@@ -190,9 +209,20 @@ function furigana(text, pinyin) {
       node.append(gridCell("char", char, String(i + 1), colored ? toneOf(syllables[i]) : 0));
     });
   } else {
-    // Counts differ: put the whole reading above the whole word.
-    node.append(gridCell("reading", readings.join(" "), "1 / -1", 0));
-    node.append(gridCell("char", text, "1 / -1", 0));
+    // Counts differ: put the whole reading above the whole word (still colored).
+    const reading = document.createElement("span");
+    reading.className = "reading";
+    reading.style.gridRow = "1";
+    reading.style.gridColumn = "1 / -1";
+    reading.append(readingContent(readings, syllables));
+
+    const char = document.createElement("span");
+    char.className = "char";
+    char.style.gridRow = "2";
+    char.style.gridColumn = "1 / -1";
+    char.textContent = text;
+
+    node.append(reading, char);
   }
   return node;
 }
@@ -216,6 +246,51 @@ function renderDefinition(text) {
   }
   if (last < text.length) fragment.append(text.slice(last));
   return fragment;
+}
+
+// Pull pronunciation notes out of a definition: "Taiwan pr. [...]" and
+// "also/old pr. [...]". Returns the cleaned definition text plus the raw
+// numeric readings found in each category.
+function extractPronunciations(text) {
+  const taiwan = new Set();
+  const others = new Set();
+  const classifiers = new Set();
+  const cleaned = text
+    .replace(/[;\s]*Taiwan pr\.\s*\[([^\]]+)\]/g, (_, p) => (taiwan.add(p), ""))
+    .replace(/[;\s]*(?:also|old)?\s*pr\.\s*\[([^\]]+)\]/g, (_, p) => (others.add(p), ""))
+    .replace(/[;\s]*pronounced\s+\[([^\]]+)\]/g, (_, p) => (others.add(p), ""))
+    .replace(/[;\s]*CL:\s*([^\s;,/]+)/g, (_, p) => (classifiers.add(p), ""))
+    // Remaining bare numeric-pinyin brackets, e.g. "... sb; Taiwan pr. [pang2],
+    // [bang1], [bang4]". Only when preceded by a separator, so cross-references
+    // like 字[pin] are left untouched.
+    .replace(/(?:^|[\s,;]+)\[([A-Za-zü:]+[0-9](?:\s+[A-Za-zü:]+[0-9])*)\]/g, (_, p) => (others.add(p), ""));
+  return {
+    text: cleaned
+      .replace(/\s*;\s*;/g, ";")
+      .replace(/\(\s*\)/g, "") // drop parentheses the removal left empty
+      .replace(/\s+;/g, ";") // tidy a space left before a separator
+      .replace(/[;\s]+$/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim(),
+    taiwan: [...taiwan],
+    others: [...others],
+    classifiers: [...classifiers],
+  };
+}
+
+// A muted detail row under a result (other forms / alternate pronunciations).
+function detailRow(label, node) {
+  const row = document.createElement("div");
+  row.className = "other-forms";
+  row.append(label, node);
+  return row;
+}
+
+// Render a classifier token (e.g. "把[ba3]" or "個|个[ge4]") as furigana.
+function classifierNode(token) {
+  const m = token.match(/^([^\s|\[\]]+)(?:\|([^\s|\[\]]+))?\[([^\]]+)\]$/);
+  if (!m) return document.createTextNode(token);
+  return furigana(m[2] || m[1], numericToMarked(m[3]));
 }
 
 // Clear the results area (used by the home view; shows no "No results." message).
@@ -244,27 +319,36 @@ function render(entries) {
     const primary = useTraditional ? entry.traditional : entry.simplified;
     const other = useTraditional ? entry.simplified : entry.traditional;
 
-    const row = document.createElement("div");
-    row.className = "entry";
-
     // Use the Taiwan reading when the toggle is on and the entry lists one.
     const reading = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
+
+    const row = document.createElement("div");
+    row.className = "entry";
 
     const hanzi = document.createElement("span");
     hanzi.className = "hanzi";
     hanzi.append(furigana(primary, reading));
+    row.append(hanzi);
 
+    // Pull "Taiwan pr." / "also pr." notes out of the definition so they get
+    // their own rows instead of sitting in the main listing.
+    const prons = extractPronunciations(entry.english_normalized);
     const defs = document.createElement("div");
     defs.className = "defs";
-    defs.append(renderDefinition(entry.english_normalized));
-
-    row.append(hanzi, defs);
+    defs.append(renderDefinition(prons.text));
+    row.append(defs);
 
     if (other !== primary) {
-      const otherForms = document.createElement("div");
-      otherForms.className = "other-forms";
-      otherForms.append("Other forms: ", furigana(other, reading));
-      row.append(otherForms);
+      row.append(detailRow("Other forms: ", document.createTextNode(other)));
+    }
+    for (const note of prons.taiwan) {
+      row.append(detailRow("Taiwan pronunciation: ", furigana(primary, numericToMarked(note))));
+    }
+    for (const note of prons.others) {
+      row.append(detailRow("Also pronounced: ", furigana(primary, numericToMarked(note))));
+    }
+    for (const token of prons.classifiers) {
+      row.append(detailRow("Classifier: ", classifierNode(token)));
     }
 
     results.append(row);

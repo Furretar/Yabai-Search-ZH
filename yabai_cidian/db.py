@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
-from yabai_cidian.pinyin import to_toneless
+from yabai_cidian.pinyin import numeric_to_marked, to_toneless
 
 # Path to the generated CEDICT database: <project root>/data/cedict.sqlite.
 DB_PATH = Path(__file__).resolve().parents[1] / "data" / "cedict.sqlite"
@@ -23,10 +24,16 @@ _moe_char_cache: dict[str, list[str]] | None = None
 
 
 def connect() -> sqlite3.Connection:
-    """Open a fresh SQLite connection whose rows behave like dicts."""
+    """Open a fresh SQLite connection whose rows behave like dicts.
+
+    The MOE database is attached as "moe" (when present) so a query can also
+    match Taiwan readings.
+    """
     connection = sqlite3.connect(DB_PATH)
     # Row factory lets us read columns by name, e.g. row["pinyin"].
     connection.row_factory = sqlite3.Row
+    if MOE_DB_PATH.exists():
+        connection.execute("ATTACH DATABASE ? AS moe", (str(MOE_DB_PATH),))
     return connection
 
 
@@ -88,13 +95,38 @@ def _moe_readings(words: list[str]) -> dict[str, list[str]]:
     return by_word
 
 
-def _pick_taiwan(pinyin: str, options: list[str]) -> str | None:
-    """Choose the MOE reading that matches `pinyin` (same toneless syllables).
+def _word_taiwan(pinyin: str, options: list[str]) -> str | None:
+    """Return the Taiwan reading for a whole word from its MOE readings.
 
-    Returns None unless exactly one candidate matches — polyphonic characters
-    are dropped rather than guessed (err toward missing a reading).
+    An exact MOE word match always wins. A single reading is used as-is (even if
+    it differs from CEDICT). With several (polyphonic), prefer the one matching
+    the entry's reading exactly, then by toneless form, then MOE's first.
     """
+    if not options:
+        return None
+    if len(options) == 1:
+        return options[0]
+    lowered = pinyin.lower()
+    for option in options:
+        if option.lower() == lowered:
+            return option
     target = to_toneless(pinyin)
+    for option in options:
+        if to_toneless(option) == target:
+            return option
+    return options[0]
+
+
+def _char_taiwan(syllable: str, options: list[str]) -> str | None:
+    """Return a character's Taiwan reading for the per-character fallback.
+
+    If MOE lists a single reading for the character, use it as-is (even when it
+    differs from the CEDICT syllable). With several readings, use one only if
+    exactly one matches the syllable's toneless form.
+    """
+    if len(options) == 1:
+        return options[0]
+    target = to_toneless(syllable)
     matches = {option for option in options if to_toneless(option) == target}
     return matches.pop() if len(matches) == 1 else None
 
@@ -133,7 +165,7 @@ def _derive_taiwan(traditional: str, pinyin: str, char_map: dict[str, list[str]]
     changed = False
     result = []
     for char, syllable in zip(chars, syllables):
-        replacement = _pick_taiwan(syllable, char_map.get(char, []))
+        replacement = _char_taiwan(syllable, char_map.get(char, []))
         if replacement:
             result.append(replacement)
             changed = True
@@ -142,18 +174,95 @@ def _derive_taiwan(traditional: str, pinyin: str, char_map: dict[str, list[str]]
     return " ".join(result) if changed else None
 
 
+def _attach_taiwan(entries: list[dict]) -> list[dict]:
+    """Fill in each entry's Taiwan reading from the MOE dictionary.
+
+    An exact whole-word MOE match always wins; only words MOE doesn't list fall
+    back to per-character readings.
+    """
+    by_word = _moe_readings([entry["traditional"] for entry in entries])
+    char_map = _moe_char_map()
+    for entry in entries:
+        options = by_word.get(entry["traditional"], [])
+        taiwan = _word_taiwan(entry["pinyin"], options)
+        if taiwan is None:
+            taiwan = _derive_taiwan(entry["traditional"], entry["pinyin"], char_map)
+        entry["pinyin_taiwan"] = taiwan
+    return entries
+
+
 def search(query: str, limit: int = 50) -> list[dict]:
     """Search the dictionary.
 
-    Matches the Chinese word (simplified column; the query is converted to
-    simplified first), the English definitions, and the toneless pinyin reading
-    (e.g. "dangan" finds 单干 and 档案). '*' matches zero or more characters.
-    Ranking: exact Chinese word, word-column match, exact pinyin, definitions,
-    then shortest word and id.
+    A "quoted" query is an English phrase search (whole words, via the FTS
+    index). Otherwise the query matches the Chinese word (simplified column; the
+    query is converted to simplified first), the English definitions, and the
+    toneless pinyin reading (e.g. "dangan" finds 单干 and 档案). '*' matches zero
+    or more characters.
     """
     query = query.strip()
     if not query:
         return []  # nothing to search for
+
+    # "Quoted" -> English phrase search only.
+    if len(query) >= 2 and query.startswith('"') and query.endswith('"'):
+        phrase = query[1:-1].strip()
+        if not phrase:
+            return []
+        sql = (
+            "SELECT simplified, traditional, pinyin, english, english_normalized "
+            "FROM entries WHERE id IN ("
+            "    SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?"
+            ") ORDER BY length(simplified), id LIMIT ?"
+        )
+        params = ['"' + phrase.replace('"', '""') + '"', limit]
+        connection = connect()
+        try:
+            rows = connection.execute(sql, params).fetchall()
+        finally:
+            connection.close()
+        return _attach_taiwan([dict(row) for row in rows])
+
+    # Pinyin with tone numbers (e.g. "bang1"): match the reading. Mainland first,
+    # then Taiwan, then alternate pronunciations embedded in the definition.
+    if re.fullmatch(r"[A-Za-zü:]+[1-5](?:\s+[A-Za-zü:]+[1-5])*", query):
+        numeric = " ".join(syllable.lower() for syllable in query.split())
+        marked = numeric_to_marked(numeric)
+        mainland = f"% {numeric} %"  # pinyin_numeric wrapped in spaces
+        taiwan = f"% {marked} %"  # MOE pinyin is tone-marked
+        alt = f"%[{numeric}]%"  # CEDICT alternate reading, e.g. "[bang1]"
+        if MOE_DB_PATH.exists():
+            sql = (
+                "SELECT simplified, traditional, pinyin, english, english_normalized "
+                "FROM entries WHERE (' ' || pinyin_numeric || ' ') LIKE ? ESCAPE '\\' "
+                " OR traditional IN (SELECT word FROM moe.moe "
+                "    WHERE (' ' || pinyin || ' ') LIKE ? ESCAPE '\\') "
+                " OR english_normalized LIKE ? ESCAPE '\\' "
+                "ORDER BY "
+                " ((' ' || pinyin_numeric || ' ') LIKE ? ESCAPE '\\') DESC, "
+                " (traditional IN (SELECT word FROM moe.moe "
+                "    WHERE (' ' || pinyin || ' ') LIKE ? ESCAPE '\\')) DESC, "
+                " (english_normalized LIKE ? ESCAPE '\\') DESC, "
+                " length(simplified), id LIMIT ?"
+            )
+            params = [mainland, taiwan, alt, mainland, taiwan, alt, limit]
+        else:
+            sql = (
+                "SELECT simplified, traditional, pinyin, english, english_normalized "
+                "FROM entries WHERE (' ' || pinyin_numeric || ' ') LIKE ? ESCAPE '\\' "
+                " OR english_normalized LIKE ? ESCAPE '\\' "
+                "ORDER BY "
+                " ((' ' || pinyin_numeric || ' ') LIKE ? ESCAPE '\\') DESC, "
+                " (english_normalized LIKE ? ESCAPE '\\') DESC, "
+                " length(simplified), id LIMIT ?"
+            )
+            params = [mainland, alt, mainland, alt, limit]
+        connection = connect()
+        try:
+            rows = connection.execute(sql, params).fetchall()
+        finally:
+            connection.close()
+        return _attach_taiwan([dict(row) for row in rows])
 
     # Chinese: convert to simplified, and treat a plain query as a prefix search.
     chinese = _convert(query, _simplify_map())
@@ -213,16 +322,4 @@ def search(query: str, limit: int = 50) -> list[dict]:
     finally:
         connection.close()  # always close, even if the query raised
 
-    entries = [dict(row) for row in rows]
-
-    # Taiwan readings come from the MOE dictionary: prefer a whole-word match,
-    # then fall back to per-character readings for words MOE doesn't list.
-    by_word = _moe_readings([entry["traditional"] for entry in entries])
-    char_map = _moe_char_map()
-    for entry in entries:
-        options = by_word.get(entry["traditional"], [])
-        taiwan = _pick_taiwan(entry["pinyin"], options)
-        if taiwan is None:
-            taiwan = _derive_taiwan(entry["traditional"], entry["pinyin"], char_map)
-        entry["pinyin_taiwan"] = taiwan
-    return entries
+    return _attach_taiwan([dict(row) for row in rows])

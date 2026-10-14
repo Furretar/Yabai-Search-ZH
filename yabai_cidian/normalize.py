@@ -20,6 +20,8 @@ RULES: list[tuple[str, str]] = [
     (r"\bsb\b", "somebody"),
     # references
     (r"\babbr\.", "abbreviation"),
+    # grammar / register
+    (r"\bonom\.", "onomatopoeia"),
 ]
 
 # Compile the rules once, at import time (regex compilation is not free).
