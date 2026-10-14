@@ -174,7 +174,7 @@ function render(entries) {
     if (other !== primary) {
       const otherForms = document.createElement("div");
       otherForms.className = "other-forms";
-      otherForms.textContent = `Other forms: ${other} 【${entry.pinyin}】`;
+      otherForms.append("Other forms: ", furigana(other, entry.pinyin));
       row.append(otherForms);
     }
 
