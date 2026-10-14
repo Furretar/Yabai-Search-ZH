@@ -43,6 +43,13 @@ button {
   font-size: 1.5rem;
 }
 
+/* Pinyin shown above the characters (furigana-style ruby text). */
+.hanzi rt {
+  color: #fff;
+  font-size: 0.55em;
+  font-weight: normal;
+}
+
 /* The pinyin reading in a result. */
 .pinyin {
   color: #c0392b;

@@ -6,7 +6,32 @@ const form = document.getElementById("search-form");
 const input = document.getElementById("q");
 const results = document.getElementById("results");
 
-// Build the result list from the array of entries returned by the API.
+// Build a ruby annotation: the characters with their pinyin shown above them,
+// like furigana. `pinyin` is space-separated by syllable (e.g. "nǐ hǎo").
+function ruby(text, pinyin) {
+  const chars = [...text]; // [...] splits into characters (code points)
+  const syllables = pinyin.split(/\s+/).filter(Boolean);
+  const node = document.createElement("ruby");
+
+  if (chars.length === syllables.length) {
+    // One syllable per character (the usual case): annotate each character.
+    chars.forEach((char, i) => {
+      const rt = document.createElement("rt");
+      rt.textContent = syllables[i];
+      node.append(char, rt);
+    });
+  } else {
+    // Syllable count doesn't line up with the characters: show the whole
+    // reading above the whole word instead.
+    node.append(text);
+    const rt = document.createElement("rt");
+    rt.textContent = pinyin;
+    node.append(rt);
+  }
+  return node;
+}
+
+// Build the results list from the array of entries returned by the API.
 function render(entries) {
   results.replaceChildren(); // clear previous results
 
@@ -22,25 +47,21 @@ function render(entries) {
     const row = document.createElement("div");
     row.className = "entry";
 
-    // Show both scripts when they differ, e.g. "汉语 / 漢語".
+    // The word, with pinyin above each character. Show both scripts if they differ.
     const hanzi = document.createElement("span");
     hanzi.className = "hanzi";
-    hanzi.textContent =
-      entry.simplified === entry.traditional
-        ? entry.simplified
-        : `${entry.simplified} / ${entry.traditional}`;
-
-    // The pinyin reading, in brackets.
-    const pinyin = document.createElement("span");
-    pinyin.className = "pinyin";
-    pinyin.textContent = `[${entry.pinyin}]`;
+    hanzi.append(ruby(entry.simplified, entry.pinyin));
+    if (entry.traditional !== entry.simplified) {
+      hanzi.append(" / ");
+      hanzi.append(ruby(entry.traditional, entry.pinyin));
+    }
 
     // The definition (normalized form is friendlier to read).
     const defs = document.createElement("div");
     defs.className = "defs";
     defs.textContent = entry.english_normalized;
 
-    row.append(hanzi, pinyin, defs);
+    row.append(hanzi, defs);
     results.append(row);
   }
 }
