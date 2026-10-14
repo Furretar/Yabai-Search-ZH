@@ -1,0 +1,7 @@
+.venv/
+.direnv/
+__pycache__/
+*.pyc
+data/*.sqlite
+data/*.txt
+data/*.gz
