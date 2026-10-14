@@ -18,6 +18,8 @@ import re
 RULES: list[tuple[str, str]] = [
     # people / things (CEDICT writes "sb" with no trailing period)
     (r"\bsb\b", "somebody"),
+    # references
+    (r"\babbr\.", "abbreviation"),
 ]
 
 # Compile the rules once, at import time (regex compilation is not free).

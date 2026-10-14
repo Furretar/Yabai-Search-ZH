@@ -32,22 +32,41 @@ button {
   font-size: 1rem;
 }
 
-/* One dictionary result row. */
+/* One dictionary result row. Slightly indented on the left to leave a little
+   room for furigana wider than the word to spill. */
 .entry {
   border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-  padding: .75rem 0;
+  padding: .75rem 0 .75rem 0.5rem;
 }
 
 /* The Chinese characters in a result. */
 .hanzi {
-  font-size: 1.5rem;
+  font-size: 1.8rem;
 }
 
-/* Pinyin shown above the characters (furigana-style ruby text). */
-.hanzi rt {
-  color: #fff;
+/* Furigana: the reading centered above the word. The word sets the width (so
+   every result's word lines up on the left); the reading is centered over it
+   and may extend past either side. */
+.furigana {
+  position: relative;
+  display: inline-block;
+  padding-top: 0.6em;
+  vertical-align: bottom;
+}
+
+.furigana .reading {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
   font-size: 0.55em;
-  font-weight: normal;
+  line-height: 1;
+}
+
+/* The main word's pinyin is white; furigana inside definitions inherits color. */
+.hanzi .reading {
+  color: #fff;
 }
 
 /* The pinyin reading in a result. */
@@ -59,6 +78,7 @@ button {
 /* The English definitions in a result. */
 .defs {
   margin-top: .25rem;
+  font-size: 1.2rem;
 }
 
 /* The other script form shown under a result (e.g. traditional when showing simplified). */
