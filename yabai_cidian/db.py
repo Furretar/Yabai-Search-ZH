@@ -145,10 +145,11 @@ def _derive_taiwan(traditional: str, pinyin: str, char_map: dict[str, list[str]]
 def search(query: str, limit: int = 50) -> list[dict]:
     """Search the dictionary.
 
-    Matches the Chinese word (the simplified column; the query is converted to
-    simplified first) and the English definitions. '*' matches zero or more
-    characters. Ranking: exact Chinese word, then word-column match, then
-    definitions, then shortest word and id.
+    Matches the Chinese word (simplified column; the query is converted to
+    simplified first), the English definitions, and the toneless pinyin reading
+    (e.g. "dangan" finds 单干 and 档案). '*' matches zero or more characters.
+    Ranking: exact Chinese word, word-column match, exact pinyin, definitions,
+    then shortest word and id.
     """
     query = query.strip()
     if not query:
@@ -165,13 +166,30 @@ def search(query: str, limit: int = 50) -> list[dict]:
     english = query if "*" in query else f"*{query}*"
     pattern_english = _like_pattern(english)
 
-    # Build the ORDER BY (it has its own parameters).
+    # Pinyin: match the toneless reading (e.g. "dangan" -> 单干, 档案).
+    pinyin_key = to_toneless(query)
+
+    # WHERE: any of the Chinese word, the definitions, or the pinyin reading.
+    where_parts = [
+        "simplified LIKE ? ESCAPE '\\'",
+        "english_normalized LIKE ? ESCAPE '\\'",
+    ]
+    where_params = [pattern_chinese, pattern_english]
+    if pinyin_key:
+        where_parts.append("pinyin_toneless LIKE ? ESCAPE '\\'")
+        where_params.append(_like_pattern(pinyin_key + "*"))
+
+    # ORDER BY tiers (with their own parameters).
     order_parts = [
         "(simplified = ?) DESC",  # exact Chinese word
         "(simplified LIKE ? ESCAPE '\\') DESC",  # matches the Chinese word column
-        "(english_normalized LIKE ? ESCAPE '\\') DESC",  # definition starts with query
     ]
-    order_params = [literal, pattern_chinese, _like_pattern(f"{query}*")]
+    order_params = [literal, pattern_chinese]
+    if pinyin_key:
+        order_parts.append("(pinyin_toneless = ?) DESC")  # exact pinyin match
+        order_params.append(pinyin_key)
+    order_parts.append("(english_normalized LIKE ? ESCAPE '\\') DESC")
+    order_params.append(_like_pattern(f"{query}*"))
     if "*" not in query:
         # Whole-word boost via the FTS index (it is tokenized, so "country" does
         # not match "countryside"). Only for plain queries, not wildcards.
@@ -184,13 +202,10 @@ def search(query: str, limit: int = 50) -> list[dict]:
 
     sql = (
         "SELECT simplified, traditional, pinyin, english, english_normalized "
-        "FROM entries "
-        "WHERE simplified LIKE ? ESCAPE '\\' "
-        "   OR english_normalized LIKE ? ESCAPE '\\' "
-        "ORDER BY " + ", ".join(order_parts) + " "
-        "LIMIT ?"
+        "FROM entries WHERE " + " OR ".join(where_parts) + " "
+        "ORDER BY " + ", ".join(order_parts) + " LIMIT ?"
     )
-    params = [pattern_chinese, pattern_english, *order_params, limit]
+    params = [*where_params, *order_params, limit]
 
     connection = connect()
     try:
