@@ -61,40 +61,58 @@ def _like_pattern(text: str) -> str:
 
 
 def search(query: str, limit: int = 50) -> list[dict]:
-    """Search the simplified dictionary.
+    """Search the dictionary.
 
-    The query is converted to simplified characters first, then matched against
-    the simplified column. Ranking: exact match first, then shortest, then id.
-    Wildcards: '*' matches zero or more characters.
-      - no '*'   -> prefix search: "国" finds 国, then 国家, 国民, ...
-      - '*国'    -> suffix search: finds 国, then 中国, 美国, ...
-      - '*国*'   -> contains
+    Matches the Chinese word (the simplified column; the query is converted to
+    simplified first) and the English definitions. '*' matches zero or more
+    characters. Ranking: exact Chinese word, then definitions that start with the
+    query, then English whole-word matches (e.g. "country" before "countryside"),
+    then shortest word and id.
     """
     query = query.strip()
     if not query:
         return []  # nothing to search for
 
-    # Convert the whole query to simplified before searching.
-    query = _convert(query, _simplify_map())
+    # Chinese: convert to simplified, and treat a plain query as a prefix search.
+    chinese = _convert(query, _simplify_map())
+    if "*" not in chinese:
+        chinese += "*"
+    pattern_chinese = _like_pattern(chinese)
+    literal = chinese.replace("*", "")  # the "exact" word, ranked first
 
-    # A query with no "*" is a prefix search: add our own trailing wildcard.
+    # English: match anywhere in the definitions unless a "*" is given.
+    english = query if "*" in query else f"*{query}*"
+    pattern_english = _like_pattern(english)
+
+    # Build the ORDER BY (it has its own parameters).
+    order_parts = [
+        "(simplified = ?) DESC",  # exact Chinese word
+        "(english_normalized LIKE ? ESCAPE '\\') DESC",  # definition starts with query
+    ]
+    order_params = [literal, _like_pattern(f"{query}*")]
     if "*" not in query:
-        query += "*"
-
-    pattern = _like_pattern(query)
-    literal = query.replace("*", "")  # the "exact" word, ranked first
+        # Whole-word boost via the FTS index (it is tokenized, so "country" does
+        # not match "countryside"). Only for plain queries, not wildcards.
+        order_parts.append(
+            "(id IN (SELECT rowid FROM entries_fts "
+            "WHERE entries_fts MATCH ?)) DESC"
+        )
+        order_params.append('"' + query.replace('"', '""') + '"')
+    order_parts += ["length(simplified)", "id"]
 
     sql = (
         "SELECT simplified, traditional, pinyin, english, english_normalized "
         "FROM entries "
         "WHERE simplified LIKE ? ESCAPE '\\' "
-        "ORDER BY (simplified = ?) DESC, length(simplified), id "
+        "   OR english_normalized LIKE ? ESCAPE '\\' "
+        "ORDER BY " + ", ".join(order_parts) + " "
         "LIMIT ?"
     )
+    params = [pattern_chinese, pattern_english, *order_params, limit]
 
     connection = connect()
     try:
-        rows = connection.execute(sql, (pattern, literal, limit)).fetchall()
+        rows = connection.execute(sql, params).fetchall()
     finally:
         connection.close()  # always close, even if the query raised
     # Convert sqlite3.Row objects into plain dicts for the JSON response.
