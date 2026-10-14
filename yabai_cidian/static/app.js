@@ -77,20 +77,49 @@ async function search(query) {
   render(data.results);
 }
 
-// Hide the home-page tagline (the "search functions" description) once the user
-// searches, so it only shows on the initial/home view.
-function hideTagline() {
+// Show or hide the home-page tagline ("search functions" description).
+function showTagline(show) {
   document.querySelectorAll(".tagline").forEach((el) => {
-    el.hidden = true;
+    el.hidden = !show;
   });
+}
+
+// The query currently in the URL (?q=...), or "" for the home view.
+function queryFromUrl() {
+  return new URLSearchParams(location.search).get("q") || "";
+}
+
+// Run a search and put the query in the URL, so a reload keeps the results.
+function performSearch(query) {
+  input.value = query;
+  showTagline(false);
+  history.pushState({ q: query }, "", `?q=${encodeURIComponent(query)}`);
+  search(query);
+}
+
+// Restore the view (results or home) from whatever is in the URL now.
+function restoreFromUrl() {
+  const query = queryFromUrl();
+  if (query) {
+    input.value = query;
+    showTagline(false);
+    search(query);
+  } else {
+    input.value = "";
+    results.replaceChildren();
+    showTagline(true);
+  }
 }
 
 // Run a search when the form is submitted (Enter or the button).
 form.addEventListener("submit", (event) => {
   event.preventDefault(); // don't reload the page
   const query = input.value.trim();
-  if (query) {
-    hideTagline();
-    search(query);
-  }
+  if (query) performSearch(query);
 });
+
+// Re-render when the user navigates with the browser's back/forward buttons.
+window.addEventListener("popstate", restoreFromUrl);
+
+// On first load, restore a search from the URL (e.g. after a reload).
+restoreFromUrl();
