@@ -12,6 +12,13 @@ body {
   line-height: 1.5;
 }
 
+/* The site title links back to the home view. */
+#home-link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
 /* The search form: input and button side by side. */
 form {
   display: flex;

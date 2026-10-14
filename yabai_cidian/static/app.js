@@ -132,6 +132,12 @@ function renderDefinition(text) {
   return fragment;
 }
 
+// Clear the results area (used by the home view; shows no "No results." message).
+function clearResults() {
+  currentEntries = [];
+  results.replaceChildren();
+}
+
 // Build the results list from the array of entries returned by the API.
 function render(entries) {
   currentEntries = entries;
@@ -212,9 +218,17 @@ function restoreFromUrl() {
     search(query);
   } else {
     input.value = "";
-    render([]);
+    clearResults();
     showTagline(true);
   }
+}
+
+// Return to the home view: no query, no results, tagline shown, URL reset.
+function goHome() {
+  input.value = "";
+  clearResults();
+  showTagline(true);
+  history.pushState({}, "", location.pathname);
 }
 
 // Load the display preferences from localStorage (if it's available).
@@ -244,12 +258,12 @@ function savePrefs() {
 scriptToggle.addEventListener("change", () => {
   state.script = scriptToggle.checked ? "traditional" : "simplified";
   savePrefs();
-  render(currentEntries);
+  if (currentEntries.length) render(currentEntries);
 });
 toneToggle.addEventListener("change", () => {
   state.toneColoring = toneToggle.checked;
   savePrefs();
-  render(currentEntries);
+  if (currentEntries.length) render(currentEntries);
 });
 
 // Run a search when the form is submitted (Enter or the button).
@@ -257,6 +271,12 @@ form.addEventListener("submit", (event) => {
   event.preventDefault(); // don't reload the page
   const query = input.value.trim();
   if (query) performSearch(query);
+});
+
+// Clicking the title returns to the home view.
+document.getElementById("home-link").addEventListener("click", (event) => {
+  event.preventDefault(); // handle it in JS instead of reloading the page
+  goHome();
 });
 
 // Double-click a character to select the whole word, or a reading to select the
