@@ -8,10 +8,11 @@ const results = document.getElementById("results");
 const scriptToggle = document.getElementById("script-toggle");
 const toneToggle = document.getElementById("tone-toggle");
 const phoneticToggle = document.getElementById("phonetic-toggle");
+const taiwanToggle = document.getElementById("taiwan-toggle");
 
 // Display options. script: "simplified" | "traditional"; toneColoring: on/off;
-// phonetic: "pinyin" | "zhuyin".
-const state = { script: "simplified", toneColoring: false, phonetic: "pinyin" };
+// phonetic: "pinyin" | "zhuyin"; taiwan: use the Taiwan reading when listed.
+const state = { script: "simplified", toneColoring: false, phonetic: "pinyin", taiwan: false };
 
 // The most recent results, kept so the toggles can re-render without re-fetching.
 let currentEntries = [];
@@ -246,9 +247,12 @@ function render(entries) {
     const row = document.createElement("div");
     row.className = "entry";
 
+    // Use the Taiwan reading when the toggle is on and the entry lists one.
+    const reading = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
+
     const hanzi = document.createElement("span");
     hanzi.className = "hanzi";
-    hanzi.append(furigana(primary, entry.pinyin));
+    hanzi.append(furigana(primary, reading));
 
     const defs = document.createElement("div");
     defs.className = "defs";
@@ -259,7 +263,7 @@ function render(entries) {
     if (other !== primary) {
       const otherForms = document.createElement("div");
       otherForms.className = "other-forms";
-      otherForms.append("Other forms: ", furigana(other, entry.pinyin));
+      otherForms.append("Other forms: ", furigana(other, reading));
       row.append(otherForms);
     }
 
@@ -323,12 +327,14 @@ function loadPrefs() {
     if (script === "traditional" || script === "simplified") state.script = script;
     state.toneColoring = localStorage.getItem("yabai-cidian-tone") === "true";
     state.phonetic = localStorage.getItem("yabai-cidian-phonetic") === "zhuyin" ? "zhuyin" : "pinyin";
+    state.taiwan = localStorage.getItem("yabai-cidian-taiwan") === "true";
   } catch (e) {
     // localStorage unavailable — keep the defaults.
   }
   scriptToggle.checked = state.script === "traditional";
   toneToggle.checked = state.toneColoring;
   phoneticToggle.checked = state.phonetic === "zhuyin";
+  taiwanToggle.checked = state.taiwan;
 }
 
 // Persist the display preferences.
@@ -337,6 +343,7 @@ function savePrefs() {
     localStorage.setItem("yabai-cidian-script", state.script);
     localStorage.setItem("yabai-cidian-tone", String(state.toneColoring));
     localStorage.setItem("yabai-cidian-phonetic", state.phonetic);
+    localStorage.setItem("yabai-cidian-taiwan", String(state.taiwan));
   } catch (e) {
     // localStorage unavailable — nothing to save.
   }
@@ -355,6 +362,11 @@ toneToggle.addEventListener("change", () => {
 });
 phoneticToggle.addEventListener("change", () => {
   state.phonetic = phoneticToggle.checked ? "zhuyin" : "pinyin";
+  savePrefs();
+  if (currentEntries.length) render(currentEntries);
+});
+taiwanToggle.addEventListener("change", () => {
+  state.taiwan = taiwanToggle.checked;
   savePrefs();
   if (currentEntries.length) render(currentEntries);
 });

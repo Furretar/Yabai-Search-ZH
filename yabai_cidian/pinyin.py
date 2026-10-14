@@ -87,9 +87,9 @@ def numeric_to_marked(pinyin: str) -> str:
 
 def to_toneless(pinyin: str) -> str:
     """Normalize any pinyin to a search key: 'hàn yǔ' / 'han4 yu3' -> 'hanyu'."""
-    text = pinyin.strip().lower()  # case-insensitive
-    text = text.replace("u:", "ü").replace("v", "ü")  # normalize ü spellings
-    text = re.sub(r"[1-5]", "", text)  # drop tone numbers
-    text = text.translate(_MARK_TO_BASE)  # strip tone marks
-    text = re.sub(r"[^a-zü]", "", text)  # drop spaces and punctuation
+    text = pinyin.strip().lower()
+    text = text.replace("u:", "ü").replace("v", "ü")
+    text = re.sub(r"[1-5]", "", text)
+    text = text.translate(_MARK_TO_BASE)
+    text = re.sub(r"[^a-zü]", "", text)
     return text
