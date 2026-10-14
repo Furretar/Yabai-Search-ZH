@@ -18,6 +18,9 @@ import time
 import urllib.request
 from pathlib import Path
 
+# Expand CEDICT abbreviations for the normalized column.
+from yabai_cidian.normalize import normalize_english
+
 # Reuse the pinyin helpers so the database gets the same marked/toneless forms
 # that the search layer computes at query time.
 from yabai_cidian.pinyin import numeric_to_marked, to_toneless
@@ -44,14 +47,15 @@ DROP TABLE IF EXISTS entries;
 DROP TABLE IF EXISTS entries_fts;
 
 CREATE TABLE entries (
-    id              INTEGER PRIMARY KEY,  -- auto row id, also used as FTS rowid
-    traditional     TEXT NOT NULL,        -- CEDICT field 1
-    simplified      TEXT NOT NULL,        -- CEDICT field 2
-    pinyin          TEXT NOT NULL,        -- field 3, tone marks (e.g. shàng yī)
-    pinyin_numeric  TEXT NOT NULL,        -- field 3, raw (e.g. shang4 yi1)
-    pinyin_toneless TEXT NOT NULL,        -- field 3, search key (e.g. shangyi)
-    english         TEXT NOT NULL,        -- field 4, definitions joined with "; "
-    freq_rank       INTEGER                -- reserved; not filled (CEDICT has none)
+    id                 INTEGER PRIMARY KEY,  -- auto row id, also used as FTS rowid
+    traditional        TEXT NOT NULL,        -- CEDICT field 1
+    simplified         TEXT NOT NULL,        -- CEDICT field 2
+    pinyin             TEXT NOT NULL,        -- field 3, tone marks (e.g. shàng yī)
+    pinyin_numeric     TEXT NOT NULL,        -- field 3, raw (e.g. shang4 yi1)
+    pinyin_toneless    TEXT NOT NULL,        -- field 3, search key (e.g. shangyi)
+    english            TEXT NOT NULL,        -- field 4, raw ("sb." kept verbatim)
+    english_normalized TEXT NOT NULL,        -- field 4, expanded (sb. -> somebody)
+    freq_rank          INTEGER               -- reserved; not filled (CEDICT has none)
 );
 
 -- Indexes make lookups on these columns fast.
@@ -59,10 +63,10 @@ CREATE INDEX idx_entries_simplified      ON entries(simplified);
 CREATE INDEX idx_entries_traditional     ON entries(traditional);
 CREATE INDEX idx_entries_pinyin_toneless ON entries(pinyin_toneless);
 
--- Full-text index over the English definitions. It is "external content": it
--- stores only the index and reads text from `entries`, saving space.
+-- Full-text index over the normalized English definitions. It is "external
+-- content": it stores only the index and reads text from `entries`, saving space.
 CREATE VIRTUAL TABLE entries_fts USING fts5(
-    english,
+    english_normalized,
     content='entries',
     content_rowid='id',
     tokenize='unicode61'
@@ -92,7 +96,7 @@ def open_source(path: Path):
 
 
 def parse_line(line: str):
-    """Parse one CEDICT line into a 6-tuple, or None if it doesn't match."""
+    """Parse one CEDICT line into a 7-tuple, or None if it doesn't match."""
     match = LINE_RE.match(line)
     if not match:
         return None  # not a valid entry line (blank/comment/garbage)
@@ -106,7 +110,8 @@ def parse_line(line: str):
         numeric_to_marked(pinyin_numeric),  # pinyin (tone marks)
         pinyin_numeric,  # pinyin_numeric (raw)
         to_toneless(pinyin_numeric),  # pinyin_toneless (search key)
-        english,
+        english,  # english (raw)
+        normalize_english(english),  # english_normalized (expanded)
     )
 
 
@@ -125,8 +130,9 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
 
     insert = (
         "INSERT INTO entries "
-        "(traditional, simplified, pinyin, pinyin_numeric, pinyin_toneless, english) "
-        "VALUES (?,?,?,?,?,?)"
+        "(traditional, simplified, pinyin, pinyin_numeric, pinyin_toneless, "
+        " english, english_normalized) "
+        "VALUES (?,?,?,?,?,?,?)"
     )
     rows: list[tuple] = []  # buffer of rows waiting to be written
     kept = 0  # entries accepted so far
@@ -154,10 +160,11 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
     if rows:
         connection.executemany(insert, rows)  # flush the last partial batch
 
-    # Populate the full-text index from the English column.
+    # Populate the full-text index from the normalized English column.
     print("building full-text index...")
     connection.execute(
-        "INSERT INTO entries_fts(rowid, english) SELECT id, english FROM entries"
+        "INSERT INTO entries_fts(rowid, english_normalized) "
+        "SELECT id, english_normalized FROM entries"
     )
     connection.commit()
     count = connection.execute("SELECT count(*) FROM entries").fetchone()[0]

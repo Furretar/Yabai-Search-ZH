@@ -29,14 +29,15 @@ def search(query: str, limit: int = 50) -> list[dict]:
 
     # LIKE pattern: "%x%" means "contains x".
     like = f"%{query}%"
-    # Base conditions: exact or partial match on the Chinese columns and English.
+    # Base conditions: exact or partial match on the Chinese columns, plus a
+    # partial match on the NORMALIZED English (so "somebody" matches "sb.").
     conditions = [
         "simplified = ?",
         "traditional = ?",
         "simplified LIKE ?",
         "traditional LIKE ?",
         "pinyin_numeric LIKE ?",
-        "english LIKE ?",
+        "english_normalized LIKE ?",
     ]
     # One parameter per "?" above, in the same order as the conditions.
     params: list = [query, query, like, like, like, like]
@@ -52,8 +53,10 @@ def search(query: str, limit: int = 50) -> list[dict]:
 
     # Build the SQL. Conditions are OR-ed so any match counts. Results are
     # ordered shortest-first as a crude "most likely useful" heuristic.
+    # We return both the raw and normalized English so the caller can choose.
     sql = (
-        "SELECT traditional, simplified, pinyin, pinyin_numeric, english "
+        "SELECT traditional, simplified, pinyin, pinyin_numeric, "
+        "english, english_normalized "
         "FROM entries WHERE " + " OR ".join(conditions) + " "
         "ORDER BY length(simplified) LIMIT ?"
     )
