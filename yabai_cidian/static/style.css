@@ -58,3 +58,10 @@ button {
 .muted {
   color: color-mix(in srgb, currentColor 60%, transparent);
 }
+
+/* Centered description shown under the search bar. */
+.tagline {
+  text-align: center;
+  color: color-mix(in srgb, currentColor 65%, transparent);
+  margin-top: 1rem;
+}

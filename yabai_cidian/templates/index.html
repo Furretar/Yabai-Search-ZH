@@ -1,25 +1,30 @@
 <!doctype html>
 <html lang="en">
+
 <head>
-  <meta charset="utf-8">
-  <!-- Make the page scale correctly on mobile devices. -->
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>yabai-cidian</title>
-  <!-- Stylesheet served from the /static mount (yabai_cidian/static/style.css). -->
-  <link rel="stylesheet" href="/static/style.css">
+    <meta charset="utf-8">
+    <!-- Make the page scale correctly on mobile devices. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>yabai-cidian</title>
+    <!-- Stylesheet served from the /static mount (yabai_cidian/static/style.css). -->
+    <link rel="stylesheet" href="/static/style.css">
 </head>
+
 <body>
-  <!-- Page title / heading. -->
-  <h1>yabai-cidian</h1>
-  <!-- Search bar. Wired up by app.js, which calls /api/search and renders
+    <!-- Page title / heading. -->
+    <h1>yabai-cidian</h1>
+    <!-- Search bar. Wired up by app.js, which calls /api/search and renders
        the results into #results below. -->
-  <form id="search-form" role="search" autocomplete="off">
-    <input type="search" id="q" name="q" placeholder="Enter a Chinese word" autofocus>
-    <button type="submit">Search</button>
+    <form id="search-form" role="search" autocomplete="off">
+        <input type="search" id="q" name="q" placeholder="Seach with English, Chinese, or Pinyin" autofocus>
+        <button type="submit">Search</button>
   </form>
+  <!-- Centered description shown under the search bar. -->
+  <p class="tagline">A Chinese–English dictionary powered by CC-CEDICT — search any simplified or traditional word.</p>
   <!-- Where app.js renders the search results. -->
   <div id="results"></div>
-  <!-- Front-end script served from the /static mount (static/app.js). -->
-  <script src="/static/app.js"></script>
+    <!-- Front-end script served from the /static mount (static/app.js). -->
+    <script src="/static/app.js"></script>
 </body>
+
 </html>
