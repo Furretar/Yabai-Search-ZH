@@ -9,9 +9,9 @@ from pathlib import Path
 # parents[1] walks up from yabai_cidian/db.py to the project root.
 DB_PATH = Path(__file__).resolve().parents[1] / "data" / "cedict.sqlite"
 
-# Cache of character-level script maps, built once from single-character entries.
-# Holds (traditional -> simplified, simplified -> traditional). None until built.
-_script_cache: tuple[dict[str, str], dict[str, str]] | None = None
+# Cache of the traditional -> simplified character map, built once from the
+# dictionary's single-character entries. None until built.
+_simplify_cache: dict[str, str] | None = None
 
 
 def connect() -> sqlite3.Connection:
@@ -22,15 +22,15 @@ def connect() -> sqlite3.Connection:
     return connection
 
 
-def _script_maps() -> tuple[dict[str, str], dict[str, str]]:
-    """Return character maps (trad->simp, simp->trad), derived from the data.
+def _simplify_map() -> dict[str, str]:
+    """Return the traditional -> simplified character map, derived from the data.
 
-    We use CEDICT's own single-character entries, where the traditional and
-    simplified forms are exactly one character each, to learn the mapping. The
+    We use CEDICT's own single-character entries (where the traditional and
+    simplified forms are exactly one character each) to learn the mapping. The
     result is cached after the first call.
     """
-    global _script_cache
-    if _script_cache is None:
+    global _simplify_cache
+    if _simplify_cache is None:
         connection = connect()
         try:
             rows = connection.execute(
@@ -40,10 +40,8 @@ def _script_maps() -> tuple[dict[str, str], dict[str, str]]:
             ).fetchall()
         finally:
             connection.close()
-        trad_to_simp = {row["traditional"]: row["simplified"] for row in rows}
-        simp_to_trad = {row["simplified"]: row["traditional"] for row in rows}
-        _script_cache = (trad_to_simp, simp_to_trad)
-    return _script_cache
+        _simplify_cache = {row["traditional"]: row["simplified"] for row in rows}
+    return _simplify_cache
 
 
 def _convert(text: str, mapping: dict[str, str]) -> str:
@@ -63,58 +61,40 @@ def _like_pattern(text: str) -> str:
 
 
 def search(query: str, limit: int = 50) -> list[dict]:
-    """Search the dictionary.
+    """Search the simplified dictionary.
 
-    Ranking: exact matches first, then the rest (shortest word first, then id).
+    The query is converted to simplified characters first, then matched against
+    the simplified column. Ranking: exact match first, then shortest, then id.
     Wildcards: '*' matches zero or more characters.
       - no '*'   -> prefix search: "国" finds 国, then 国家, 国民, ...
-      - '*X'     -> suffix search: "*国" finds 国, then 中国, 美国, ...
-      - '*X*'    -> contains
-    Simplified and traditional may be mixed in the query.
+      - '*国'    -> suffix search: finds 国, then 中国, 美国, ...
+      - '*国*'   -> contains
     """
     query = query.strip()
     if not query:
         return []  # nothing to search for
 
-    trad_to_simp, simp_to_trad = _script_maps()
+    # Convert the whole query to simplified before searching.
+    query = _convert(query, _simplify_map())
 
     # A query with no "*" is a prefix search: add our own trailing wildcard.
-    # (Script conversion below leaves "*" untouched.)
     if "*" not in query:
         query += "*"
 
-    # LIKE patterns in pure simplified and pure traditional form.
-    pattern_simplified = _like_pattern(_convert(query, trad_to_simp))
-    pattern_traditional = _like_pattern(_convert(query, simp_to_trad))
-
-    # The "exact" word is the query with its wildcards removed; those rows sort
-    # first. e.g. "*国" still puts 国 itself at the top.
-    literal = query.replace("*", "")
-    exact_simplified = _convert(literal, trad_to_simp)
-    exact_traditional = _convert(literal, simp_to_trad)
+    pattern = _like_pattern(query)
+    literal = query.replace("*", "")  # the "exact" word, ranked first
 
     sql = (
         "SELECT simplified, traditional, pinyin, english, english_normalized "
         "FROM entries "
         "WHERE simplified LIKE ? ESCAPE '\\' "
-        "   OR traditional LIKE ? ESCAPE '\\' "
-        "ORDER BY (simplified = ? OR traditional = ?) DESC, "
-        "         length(simplified), id "
+        "ORDER BY (simplified = ?) DESC, length(simplified), id "
         "LIMIT ?"
     )
 
     connection = connect()
     try:
-        rows = connection.execute(
-            sql,
-            (
-                pattern_simplified,
-                pattern_traditional,
-                exact_simplified,
-                exact_traditional,
-                limit,
-            ),
-        ).fetchall()
+        rows = connection.execute(sql, (pattern, literal, limit)).fetchall()
     finally:
         connection.close()  # always close, even if the query raised
     # Convert sqlite3.Row objects into plain dicts for the JSON response.

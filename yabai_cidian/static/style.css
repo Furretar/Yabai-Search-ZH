@@ -61,6 +61,13 @@ button {
   margin-top: .25rem;
 }
 
+/* The other script form shown under a result (e.g. traditional when showing simplified). */
+.other-forms {
+  margin-top: .15rem;
+  font-size: .9rem;
+  color: color-mix(in srgb, currentColor 65%, transparent);
+}
+
 /* De-emphasized text (e.g. "No results."). */
 .muted {
   color: color-mix(in srgb, currentColor 60%, transparent);

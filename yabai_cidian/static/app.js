@@ -21,8 +21,7 @@ function ruby(text, pinyin) {
       node.append(char, rt);
     });
   } else {
-    // Syllable count doesn't line up with the characters: show the whole
-    // reading above the whole word instead.
+    // Counts differ: show the whole reading above the whole word.
     node.append(text);
     const rt = document.createElement("rt");
     rt.textContent = pinyin;
@@ -47,14 +46,10 @@ function render(entries) {
     const row = document.createElement("div");
     row.className = "entry";
 
-    // The word, with pinyin above each character. Show both scripts if they differ.
+    // The word (always simplified) with pinyin above each character.
     const hanzi = document.createElement("span");
     hanzi.className = "hanzi";
     hanzi.append(ruby(entry.simplified, entry.pinyin));
-    if (entry.traditional !== entry.simplified) {
-      hanzi.append(" / ");
-      hanzi.append(ruby(entry.traditional, entry.pinyin));
-    }
 
     // The definition (normalized form is friendlier to read).
     const defs = document.createElement("div");
@@ -62,6 +57,15 @@ function render(entries) {
     defs.textContent = entry.english_normalized;
 
     row.append(hanzi, defs);
+
+    // The traditional form, shown when it differs from the simplified one.
+    if (entry.traditional !== entry.simplified) {
+      const otherForms = document.createElement("div");
+      otherForms.className = "other-forms";
+      otherForms.textContent = `Other forms: ${entry.traditional} 【${entry.pinyin}】`;
+      row.append(otherForms);
+    }
+
     results.append(row);
   }
 }
@@ -73,9 +77,20 @@ async function search(query) {
   render(data.results);
 }
 
+// Hide the home-page tagline (the "search functions" description) once the user
+// searches, so it only shows on the initial/home view.
+function hideTagline() {
+  document.querySelectorAll(".tagline").forEach((el) => {
+    el.hidden = true;
+  });
+}
+
 // Run a search when the form is submitted (Enter or the button).
 form.addEventListener("submit", (event) => {
   event.preventDefault(); // don't reload the page
   const query = input.value.trim();
-  if (query) search(query);
+  if (query) {
+    hideTagline();
+    search(query);
+  }
 });
