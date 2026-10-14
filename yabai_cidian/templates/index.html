@@ -11,13 +11,14 @@
 <body>
   <!-- Page title / heading. -->
   <h1>yabai-cidian</h1>
-  <!-- Search bar. Not wired up yet: no JS or route handles it, so submitting
-       just reloads the page with ?q=... and changes nothing. -->
-  <form role="search" autocomplete="off">
-    <input type="search" id="q" name="q" placeholder="Chinese, pinyin, or English" autofocus>
+  <!-- Search bar. Wired up by app.js, which calls /api/search and renders
+       the results into #results below. -->
+  <form id="search-form" role="search" autocomplete="off">
+    <input type="search" id="q" name="q" placeholder="Enter a Chinese word" autofocus>
     <button type="submit">Search</button>
   </form>
-  <!-- Add your markup and logic here. -->
+  <!-- Where app.js renders the search results. -->
+  <div id="results"></div>
   <!-- Front-end script served from the /static mount (static/app.js). -->
   <script src="/static/app.js"></script>
 </body>
