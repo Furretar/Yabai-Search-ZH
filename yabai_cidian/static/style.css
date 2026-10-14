@@ -1,164 +1,178 @@
 /* Base color scheme: tells the browser we support light and dark. */
 :root {
-  color-scheme: light dark;
+    color-scheme: light dark;
 }
 
 /* Page body: centered column, readable line length and spacing. */
 body {
-  font-family: system-ui, sans-serif;
-  max-width: 48rem;
-  margin: 2rem auto;
-  padding: 0 1rem;
-  line-height: 1.5;
+    font-family: system-ui, sans-serif;
+    max-width: 48rem;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    line-height: 1.5;
 }
 
 /* The site title links back to the home view. */
 #home-link {
-  color: inherit;
-  text-decoration: none;
-  cursor: pointer;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
 }
 
 /* The search form: input and button side by side. */
 form {
-  display: flex;
-  gap: .5rem;
-  margin-bottom: 1.5rem;
+    display: flex;
+    gap: .5rem;
+    margin-bottom: 1.5rem;
 }
 
 /* Search text box grows to fill available space. */
 input {
-  flex: 1;
-  padding: .5rem;
-  font-size: 1rem;
+    flex: 1;
+    padding: .5rem;
+    font-size: 1rem;
 }
 
 /* Search button. */
 button {
-  padding: .5rem 1rem;
-  font-size: 1rem;
+    padding: .5rem 1rem;
+    font-size: 1rem;
 }
 
 /* Display option switches under the search bar. */
 .toggles {
-  display: flex;
-  gap: 1.25rem;
-  margin-bottom: 1rem;
-  font-size: 0.9rem;
-  color: color-mix(in srgb, currentColor 75%, transparent);
+    display: flex;
+    gap: 1.25rem;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+    color: color-mix(in srgb, currentColor 75%, transparent);
 }
 
 .toggles label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
 }
 
 /* Render the checkboxes as slider switches. */
 .toggles input[type="checkbox"] {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 2.4em;
-  height: 1.35em;
-  margin: 0;
-  border-radius: 1em;
-  background: color-mix(in srgb, currentColor 35%, transparent);
-  position: relative;
-  cursor: pointer;
-  transition: background 0.15s ease;
+    appearance: none;
+    -webkit-appearance: none;
+    width: 2.4em;
+    height: 1.35em;
+    margin: 0;
+    border-radius: 1em;
+    background: color-mix(in srgb, currentColor 35%, transparent);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.15s ease;
 }
 
 .toggles input[type="checkbox"]::before {
-  content: "";
-  position: absolute;
-  top: 0.18em;
-  left: 0.18em;
-  width: 1em;
-  height: 1em;
-  border-radius: 50%;
-  background: #fff;
-  transition: transform 0.15s ease;
+    content: "";
+    position: absolute;
+    top: 0.18em;
+    left: 0.18em;
+    width: 1em;
+    height: 1em;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.15s ease;
 }
 
 .toggles input[type="checkbox"]:checked {
-  background: #2ecc71;
+    background: #2ecc71;
 }
 
 .toggles input[type="checkbox"]:checked::before {
-  transform: translateX(1.05em);
+    transform: translateX(1.05em);
 }
 
 /* One dictionary result row. Slightly indented on the left to leave a little
    room for furigana wider than the word to spill. */
 .entry {
-  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-  padding: .75rem 0 .75rem 0.5rem;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+    padding: .75rem 0 .75rem 0.5rem;
 }
 
 /* The Chinese characters in a result. */
 .hanzi {
-  font-size: 1.8rem;
+    font-size: 1.8rem;
 }
 
 /* Furigana: a two-row grid with one column per character, so each reading sits
    above its character and the word is exactly as wide as its reading. */
 .furigana {
-  display: inline-grid;
-  justify-items: center;
-  vertical-align: bottom;
+    display: inline-grid;
+    justify-items: center;
+    vertical-align: bottom;
 }
 
 .furigana .reading {
-  grid-row: 1;
-  font-size: 0.55em;
-  line-height: 1;
-  white-space: nowrap;
+    grid-row: 1;
+    font-size: 0.55em;
+    line-height: 1;
+    white-space: nowrap;
 }
 
 .furigana .char {
-  grid-row: 2;
+    grid-row: 2;
 }
 
 /* The main word's pinyin is white; furigana inside definitions inherits color. */
 .hanzi .reading {
-  color: #fff;
+    color: #fff;
 }
 
 /* Tone coloring (when the "Tone colors" switch is on) — pinyin and characters. */
-.furigana .tone1 { color: #e74c3c; }
-.furigana .tone2 { color: #e67e22; }
-.furigana .tone3 { color: #27ae60; }
-.furigana .tone4 { color: #2980b9; }
-.furigana .tone5 { color: #7f8c8d; }
+.furigana .tone1 {
+    color: #e74c3c;
+}
+
+.furigana .tone2 {
+    color: #e67e22;
+}
+
+.furigana .tone3 {
+    color: #27ae60;
+}
+
+.furigana .tone4 {
+    color: #2980b9;
+}
+
+.furigana .tone5 {
+    color: #7f8c8d;
+}
 
 /* The pinyin reading in a result. */
 .pinyin {
-  color: #c0392b;
-  margin-left: .5rem;
+    color: #c0392b;
+    margin-left: .5rem;
 }
 
 /* The English definitions in a result. */
 .defs {
-  margin-top: .25rem;
-  font-size: 1.2rem;
+    margin-top: .25rem;
+    font-size: 1.2rem;
 }
 
 /* The other script form shown under a result (e.g. traditional when showing simplified). */
 .other-forms {
-  margin-top: .15rem;
-  font-size: .9rem;
-  color: color-mix(in srgb, currentColor 65%, transparent);
+    margin-top: .15rem;
+    font-size: 1.1rem;
+    color: color-mix(in srgb, currentColor 65%, transparent);
 }
 
 /* De-emphasized text (e.g. "No results."). */
 .muted {
-  color: color-mix(in srgb, currentColor 60%, transparent);
+    color: color-mix(in srgb, currentColor 60%, transparent);
 }
 
 /* Description shown under the search bar. */
 .tagline {
-  text-align: left;
-  color: color-mix(in srgb, currentColor 65%, transparent);
-  margin-top: 1rem;
+    text-align: left;
+    color: color-mix(in srgb, currentColor 65%, transparent);
+    margin-top: 1rem;
 }

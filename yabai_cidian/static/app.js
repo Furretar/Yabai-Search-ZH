@@ -7,9 +7,11 @@ const input = document.getElementById("q");
 const results = document.getElementById("results");
 const scriptToggle = document.getElementById("script-toggle");
 const toneToggle = document.getElementById("tone-toggle");
+const phoneticToggle = document.getElementById("phonetic-toggle");
 
-// Display options. script: "simplified" | "traditional"; toneColoring: on/off.
-const state = { script: "simplified", toneColoring: false };
+// Display options. script: "simplified" | "traditional"; toneColoring: on/off;
+// phonetic: "pinyin" | "zhuyin".
+const state = { script: "simplified", toneColoring: false, phonetic: "pinyin" };
 
 // The most recent results, kept so the toggles can re-render without re-fetching.
 let currentEntries = [];
@@ -73,6 +75,87 @@ function numericToMarked(pinyin) {
   return pinyin.split(/\s+/).map(markSyllable).join(" ");
 }
 
+// --- Zhuyin (Bopomofo) -----------------------------------------------------
+// Pinyin syllables are converted to zhuyin compositionally: an initial + a
+// final, after rewriting the y/w spellings and the j/q/x + u (= ü) spelling.
+
+const ZHUYIN_INITIALS = {
+  b: "ㄅ", p: "ㄆ", m: "ㄇ", f: "ㄈ",
+  d: "ㄉ", t: "ㄊ", n: "ㄋ", l: "ㄌ",
+  g: "ㄍ", k: "ㄎ", h: "ㄏ",
+  j: "ㄐ", q: "ㄑ", x: "ㄒ",
+  zh: "ㄓ", ch: "ㄔ", sh: "ㄕ", r: "ㄖ",
+  z: "ㄗ", c: "ㄘ", s: "ㄙ",
+};
+
+const ZHUYIN_FINALS = {
+  a: "ㄚ", o: "ㄛ", e: "ㄜ", "ê": "ㄝ", er: "ㄦ",
+  ai: "ㄞ", ei: "ㄟ", ao: "ㄠ", ou: "ㄡ",
+  an: "ㄢ", en: "ㄣ", ang: "ㄤ", eng: "ㄥ",
+  i: "ㄧ", ia: "ㄧㄚ", ie: "ㄧㄝ", iao: "ㄧㄠ", iu: "ㄧㄡ",
+  ian: "ㄧㄢ", in: "ㄧㄣ", iang: "ㄧㄤ", ing: "ㄧㄥ", iong: "ㄩㄥ",
+  u: "ㄨ", ua: "ㄨㄚ", uo: "ㄨㄛ", uai: "ㄨㄞ", ui: "ㄨㄟ",
+  uan: "ㄨㄢ", un: "ㄨㄣ", uang: "ㄨㄤ", ong: "ㄨㄥ", ueng: "ㄨㄥ",
+  "ü": "ㄩ", "üe": "ㄩㄝ", "üan": "ㄩㄢ", "ün": "ㄩㄣ",
+};
+
+// Leading y/w are written as the underlying finals in zhuyin.
+const PINYIN_Y = {
+  yi: "i", ya: "ia", ye: "ie", yao: "iao", you: "iu", yan: "ian",
+  yin: "in", yang: "iang", ying: "ing", yong: "iong",
+  yu: "ü", yue: "üe", yuan: "üan", yun: "ün",
+};
+const PINYIN_W = {
+  wu: "u", wa: "ua", wo: "uo", wai: "uai", wei: "ui", wan: "uan",
+  wen: "un", wang: "uang", weng: "ueng",
+};
+
+// Zhuyin tone marks by tone number (1 = no mark, 5 = neutral).
+const ZHUYIN_TONES = ["", "ˊ", "ˇ", "ˋ", "˙"];
+
+// Reverse of the tone-mark map: a marked character -> its plain base.
+const MARK_TO_BASE = {};
+for (const [base, marks] of Object.entries(TONE_MARKS)) {
+  [...marks].forEach((mark) => {
+    MARK_TO_BASE[mark] = base;
+  });
+}
+
+// A marked syllable with tones removed and lowercased, e.g. "Zhōng" -> "zhong".
+function plainSyllable(syllable) {
+  return [...syllable].map((c) => MARK_TO_BASE[c] || c).join("").toLowerCase();
+}
+
+// Convert one marked pinyin syllable to zhuyin, e.g. "hǎo" -> "ㄏㄠˇ".
+function toZhuyin(syllable) {
+  let base = plainSyllable(syllable);
+  if (base === "r") base = "er"; // the erhua suffix
+
+  if (PINYIN_Y[base]) base = PINYIN_Y[base];
+  else if (PINYIN_W[base]) base = PINYIN_W[base];
+
+  let initial = "";
+  for (const init of ["zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l",
+                      "g", "k", "h", "j", "q", "x", "r", "z", "c", "s"]) {
+    if (base.startsWith(init)) {
+      initial = init;
+      break;
+    }
+  }
+  let final = base.slice(initial.length);
+
+  if (final === "i" && ["zh", "ch", "sh", "r", "z", "c", "s"].includes(initial)) {
+    // zhi/chi/shi/ri/zi/ci/si: the "i" is not written in zhuyin.
+    return ZHUYIN_INITIALS[initial] + ZHUYIN_TONES[toneOf(syllable) - 1];
+  }
+  // After j/q/x, a written "u" is actually ü.
+  if (["j", "q", "x"].includes(initial) && final.startsWith("u")) {
+    final = "ü" + final.slice(1);
+  }
+  const body = (ZHUYIN_INITIALS[initial] || "") + (ZHUYIN_FINALS[final] || final);
+  return body + ZHUYIN_TONES[toneOf(syllable) - 1];
+}
+
 // One cell of the furigana grid: kind is "reading" (top row) or "char" (bottom
 // row); `column` is the CSS grid-column value. Tone coloring, when on, adds a
 // tone class so the cell can be colored.
@@ -92,20 +175,22 @@ function gridCell(kind, content, column, tone) {
 function furigana(text, pinyin) {
   const chars = [...text];
   const syllables = pinyin.split(/\s+/).filter(Boolean);
+  // The readings in the chosen phonetic system.
+  const readings = syllables.map((s) => (state.phonetic === "zhuyin" ? toZhuyin(s) : s));
   const node = document.createElement("span");
   node.className = "furigana";
 
   if (chars.length === syllables.length) {
     const colored = state.toneColoring;
     chars.forEach((_, i) => {
-      node.append(gridCell("reading", syllables[i], String(i + 1), colored ? toneOf(syllables[i]) : 0));
+      node.append(gridCell("reading", readings[i], String(i + 1), colored ? toneOf(syllables[i]) : 0));
     });
     chars.forEach((char, i) => {
       node.append(gridCell("char", char, String(i + 1), colored ? toneOf(syllables[i]) : 0));
     });
   } else {
     // Counts differ: put the whole reading above the whole word.
-    node.append(gridCell("reading", pinyin, "1 / -1", 0));
+    node.append(gridCell("reading", readings.join(" "), "1 / -1", 0));
     node.append(gridCell("char", text, "1 / -1", 0));
   }
   return node;
@@ -237,11 +322,13 @@ function loadPrefs() {
     const script = localStorage.getItem("yabai-cidian-script");
     if (script === "traditional" || script === "simplified") state.script = script;
     state.toneColoring = localStorage.getItem("yabai-cidian-tone") === "true";
+    state.phonetic = localStorage.getItem("yabai-cidian-phonetic") === "zhuyin" ? "zhuyin" : "pinyin";
   } catch (e) {
     // localStorage unavailable — keep the defaults.
   }
   scriptToggle.checked = state.script === "traditional";
   toneToggle.checked = state.toneColoring;
+  phoneticToggle.checked = state.phonetic === "zhuyin";
 }
 
 // Persist the display preferences.
@@ -249,6 +336,7 @@ function savePrefs() {
   try {
     localStorage.setItem("yabai-cidian-script", state.script);
     localStorage.setItem("yabai-cidian-tone", String(state.toneColoring));
+    localStorage.setItem("yabai-cidian-phonetic", state.phonetic);
   } catch (e) {
     // localStorage unavailable — nothing to save.
   }
@@ -262,6 +350,11 @@ scriptToggle.addEventListener("change", () => {
 });
 toneToggle.addEventListener("change", () => {
   state.toneColoring = toneToggle.checked;
+  savePrefs();
+  if (currentEntries.length) render(currentEntries);
+});
+phoneticToggle.addEventListener("change", () => {
+  state.phonetic = phoneticToggle.checked ? "zhuyin" : "pinyin";
   savePrefs();
   if (currentEntries.length) render(currentEntries);
 });
