@@ -5,6 +5,14 @@
 const form = document.getElementById("search-form");
 const input = document.getElementById("q");
 const results = document.getElementById("results");
+const scriptToggle = document.getElementById("script-toggle");
+const toneToggle = document.getElementById("tone-toggle");
+
+// Display options. script: "simplified" | "traditional"; toneColoring: on/off.
+const state = { script: "simplified", toneColoring: false };
+
+// The most recent results, kept so the toggles can re-render without re-fetching.
+let currentEntries = [];
 
 // Tone-marked forms for each base vowel (index 0 = tone 1 ... 3 = tone 4).
 const TONE_MARKS = {
@@ -21,6 +29,22 @@ const TONE_MARKS = {
   U: "ŪÚǓÙ",
   Ü: "ǕǗǙǛ",
 };
+
+// Reverse map: a tone-marked character -> its tone number (1-4).
+const TONE_BY_MARK = {};
+for (const marks of Object.values(TONE_MARKS)) {
+  [...marks].forEach((char, i) => {
+    TONE_BY_MARK[char] = i + 1;
+  });
+}
+
+// Tone of a marked syllable (5 = neutral / no mark).
+function toneOf(syllable) {
+  for (const char of syllable) {
+    if (TONE_BY_MARK[char]) return TONE_BY_MARK[char];
+  }
+  return 5;
+}
 
 // Add the tone mark to one numeric syllable, e.g. "guo2" -> "guó".
 function markSyllable(syllable) {
@@ -49,26 +73,41 @@ function numericToMarked(pinyin) {
   return pinyin.split(/\s+/).map(markSyllable).join(" ");
 }
 
-// Build furigana: the pinyin as a line above the characters, each a single
-// line of text (not native <ruby>, not per-character cells). That way the
-// browser treats each line as one selectable unit and a double-click grabs the
-// whole line immediately.
+// One cell of the furigana grid: kind is "reading" (top row) or "char" (bottom
+// row); `column` is the CSS grid-column value. Tone coloring, when on, adds a
+// tone class so the cell can be colored.
+function gridCell(kind, content, column, tone) {
+  const cell = document.createElement("span");
+  cell.className = tone ? `${kind} tone${tone}` : kind;
+  cell.textContent = content;
+  cell.style.gridRow = kind === "reading" ? "1" : "2";
+  cell.style.gridColumn = column;
+  return cell;
+}
+
+// Build furigana: a two-row grid, one column per character, so each reading sits
+// above its character and the word is as wide as its reading. Readings come
+// first in the DOM (then all characters) so a range over a single kind is
+// contiguous — used by the double-click handler below.
 function furigana(text, pinyin) {
+  const chars = [...text];
+  const syllables = pinyin.split(/\s+/).filter(Boolean);
   const node = document.createElement("span");
   node.className = "furigana";
 
-  // The reading is one line. Non-breaking spaces keep it a single selectable
-  // unit (a normal space would let a double-click grab just one syllable).
-  const reading = document.createElement("span");
-  reading.className = "reading";
-  reading.textContent = pinyin.split(/\s+/).filter(Boolean).join("\u00a0");
-
-  // The characters are a separate line, so selecting the word skips the reading.
-  const chars = document.createElement("span");
-  chars.className = "char";
-  chars.textContent = text;
-
-  node.append(reading, chars);
+  if (chars.length === syllables.length) {
+    const colored = state.toneColoring;
+    chars.forEach((_, i) => {
+      node.append(gridCell("reading", syllables[i], String(i + 1), colored ? toneOf(syllables[i]) : 0));
+    });
+    chars.forEach((char, i) => {
+      node.append(gridCell("char", char, String(i + 1), colored ? toneOf(syllables[i]) : 0));
+    });
+  } else {
+    // Counts differ: put the whole reading above the whole word.
+    node.append(gridCell("reading", pinyin, "1 / -1", 0));
+    node.append(gridCell("char", text, "1 / -1", 0));
+  }
   return node;
 }
 
@@ -95,6 +134,7 @@ function renderDefinition(text) {
 
 // Build the results list from the array of entries returned by the API.
 function render(entries) {
+  currentEntries = entries;
   results.replaceChildren(); // clear previous results
 
   if (!entries.length) {
@@ -105,27 +145,30 @@ function render(entries) {
     return;
   }
 
+  const useTraditional = state.script === "traditional";
+
   for (const entry of entries) {
+    // Show the chosen script as the main word; keep the other for "other forms".
+    const primary = useTraditional ? entry.traditional : entry.simplified;
+    const other = useTraditional ? entry.simplified : entry.traditional;
+
     const row = document.createElement("div");
     row.className = "entry";
 
-    // The word (always simplified) with pinyin above each character.
     const hanzi = document.createElement("span");
     hanzi.className = "hanzi";
-    hanzi.append(furigana(entry.simplified, entry.pinyin));
+    hanzi.append(furigana(primary, entry.pinyin));
 
-    // The definition, with cross-referenced words shown as furigana.
     const defs = document.createElement("div");
     defs.className = "defs";
     defs.append(renderDefinition(entry.english_normalized));
 
     row.append(hanzi, defs);
 
-    // The traditional form, shown when it differs from the simplified one.
-    if (entry.traditional !== entry.simplified) {
+    if (other !== primary) {
       const otherForms = document.createElement("div");
       otherForms.className = "other-forms";
-      otherForms.textContent = `Other forms: ${entry.traditional} 【${entry.pinyin}】`;
+      otherForms.textContent = `Other forms: ${other} 【${entry.pinyin}】`;
       row.append(otherForms);
     }
 
@@ -169,10 +212,45 @@ function restoreFromUrl() {
     search(query);
   } else {
     input.value = "";
-    results.replaceChildren();
+    render([]);
     showTagline(true);
   }
 }
+
+// Load the display preferences from localStorage (if it's available).
+function loadPrefs() {
+  try {
+    const script = localStorage.getItem("yabai-cidian-script");
+    if (script === "traditional" || script === "simplified") state.script = script;
+    state.toneColoring = localStorage.getItem("yabai-cidian-tone") === "true";
+  } catch (e) {
+    // localStorage unavailable — keep the defaults.
+  }
+  scriptToggle.checked = state.script === "traditional";
+  toneToggle.checked = state.toneColoring;
+}
+
+// Persist the display preferences.
+function savePrefs() {
+  try {
+    localStorage.setItem("yabai-cidian-script", state.script);
+    localStorage.setItem("yabai-cidian-tone", String(state.toneColoring));
+  } catch (e) {
+    // localStorage unavailable — nothing to save.
+  }
+}
+
+// Re-render the current results when a display toggle changes.
+scriptToggle.addEventListener("change", () => {
+  state.script = scriptToggle.checked ? "traditional" : "simplified";
+  savePrefs();
+  render(currentEntries);
+});
+toneToggle.addEventListener("change", () => {
+  state.toneColoring = toneToggle.checked;
+  savePrefs();
+  render(currentEntries);
+});
 
 // Run a search when the form is submitted (Enter or the button).
 form.addEventListener("submit", (event) => {
@@ -181,9 +259,8 @@ form.addEventListener("submit", (event) => {
   if (query) performSearch(query);
 });
 
-// Double-clicking a character selects the whole word (all the characters),
-// and double-clicking a reading selects the whole reading line — instead of the
-// single piece the browser would normally pick.
+// Double-click a character to select the whole word, or a reading to select the
+// whole reading line.
 results.addEventListener("dblclick", (event) => {
   const kind = event.target.classList.contains("char")
     ? "char"
@@ -208,5 +285,6 @@ results.addEventListener("dblclick", (event) => {
 // Re-render when the user navigates with the browser's back/forward buttons.
 window.addEventListener("popstate", restoreFromUrl);
 
-// On first load, restore a search from the URL (e.g. after a reload).
+// On first load: apply saved preferences, then restore a search from the URL.
+loadPrefs();
 restoreFromUrl();

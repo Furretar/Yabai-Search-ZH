@@ -32,6 +32,56 @@ button {
   font-size: 1rem;
 }
 
+/* Display option switches under the search bar. */
+.toggles {
+  display: flex;
+  gap: 1.25rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  color: color-mix(in srgb, currentColor 75%, transparent);
+}
+
+.toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+/* Render the checkboxes as slider switches. */
+.toggles input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 2.4em;
+  height: 1.35em;
+  margin: 0;
+  border-radius: 1em;
+  background: color-mix(in srgb, currentColor 35%, transparent);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.toggles input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 0.18em;
+  left: 0.18em;
+  width: 1em;
+  height: 1em;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.toggles input[type="checkbox"]:checked {
+  background: #2ecc71;
+}
+
+.toggles input[type="checkbox"]:checked::before {
+  transform: translateX(1.05em);
+}
+
 /* One dictionary result row. Slightly indented on the left to leave a little
    room for furigana wider than the word to spill. */
 .entry {
@@ -44,30 +94,36 @@ button {
   font-size: 1.8rem;
 }
 
-/* Furigana: the reading centered above the word. The word sets the width (so
-   every result's word lines up on the left); the reading is centered over it
-   and may extend past either side. */
+/* Furigana: a two-row grid with one column per character, so each reading sits
+   above its character and the word is exactly as wide as its reading. */
 .furigana {
-  position: relative;
-  display: inline-block;
-  padding-top: 0.6em;
+  display: inline-grid;
+  justify-items: center;
   vertical-align: bottom;
 }
 
 .furigana .reading {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  white-space: nowrap;
+  grid-row: 1;
   font-size: 0.55em;
   line-height: 1;
+  white-space: nowrap;
+}
+
+.furigana .char {
+  grid-row: 2;
 }
 
 /* The main word's pinyin is white; furigana inside definitions inherits color. */
 .hanzi .reading {
   color: #fff;
 }
+
+/* Tone coloring (when the "Tone colors" switch is on) — pinyin and characters. */
+.furigana .tone1 { color: #e74c3c; }
+.furigana .tone2 { color: #e67e22; }
+.furigana .tone3 { color: #27ae60; }
+.furigana .tone4 { color: #2980b9; }
+.furigana .tone5 { color: #7f8c8d; }
 
 /* The pinyin reading in a result. */
 .pinyin {
