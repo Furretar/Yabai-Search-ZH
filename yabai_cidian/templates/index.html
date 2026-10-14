@@ -12,17 +12,23 @@
 
 <body>
     <!-- Page title / heading. -->
-    <h1>yabai-cidian</h1>
+    <h1>Yabai-Cidian</h1>
     <!-- Search bar. Wired up by app.js, which calls /api/search and renders
        the results into #results below. -->
     <form id="search-form" role="search" autocomplete="off">
         <input type="search" id="q" name="q" placeholder="Seach with English, Chinese, or Pinyin" autofocus>
         <button type="submit">Search</button>
-  </form>
-  <!-- Centered description shown under the search bar. -->
-  <p class="tagline">A Chinese–English dictionary powered by CC-CEDICT — search any simplified or traditional word.</p>
-  <!-- Where app.js renders the search results. -->
-  <div id="results"></div>
+    </form>
+    <!-- Centered description shown under the search bar. -->
+    <p class="tagline">A Chinese–English dictionary powered by CC-CEDICT — search any simplified or traditional word.
+    <p class="tagline">Search Functions:
+    <p class="tagline">汉字 - Simplified
+    <p class="tagline">漢字 - Traditional
+    <p class="tagline">汉* - All words that start with 汉 (Wildcard)
+
+    </p>
+    <!-- Where app.js renders the search results. -->
+    <div id="results"></div>
     <!-- Front-end script served from the /static mount (static/app.js). -->
     <script src="/static/app.js"></script>
 </body>

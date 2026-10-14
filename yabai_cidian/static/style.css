@@ -59,9 +59,9 @@ button {
   color: color-mix(in srgb, currentColor 60%, transparent);
 }
 
-/* Centered description shown under the search bar. */
+/* Description shown under the search bar. */
 .tagline {
-  text-align: center;
+  text-align: left;
   color: color-mix(in srgb, currentColor 65%, transparent);
   margin-top: 1rem;
 }
