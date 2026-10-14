@@ -123,7 +123,7 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
         db_path.unlink()
 
     connection = sqlite3.connect(db_path)
-    connection.executescript(SCHEMA)  # create the tables and indexes
+    connection.executescript(SCHEMA)  # Create the tables and indexes
     # Speed up a bulk load: disable crash-safe journaling while importing.
     connection.execute("PRAGMA journal_mode=OFF")
     connection.execute("PRAGMA synchronous=OFF")
