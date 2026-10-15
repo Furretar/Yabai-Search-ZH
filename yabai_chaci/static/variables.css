@@ -3,6 +3,9 @@
   /* Accent / highlight: on-toggles and clickable words. */
   --accent: #ffca28;
 
+  /* The site title (matches the accent). */
+  --title: var(--accent);
+
   /* The reading (pinyin / zhuyin) above the main word. */
   --reading: #ffffff;
 
@@ -11,7 +14,7 @@
 
   /* Tone colours, by tone number (1-4; 5 = neutral). */
   --tone1: #e74c3c;
-  --tone2: #e67e22;
+  --tone2: var(--accent);
   --tone3: #27ae60;
   --tone4: #2980b9;
   --tone5: #7f8c8d;

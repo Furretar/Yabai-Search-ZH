@@ -19,11 +19,11 @@ import urllib.request
 from pathlib import Path
 
 # Expand CEDICT abbreviations for the normalized column.
-from yabai_cidian.normalize import normalize_english
+from yabai_chaci.normalize import normalize_english
 
 # Reuse the pinyin helpers so the database gets the same marked/toneless forms
 # that the search layer computes at query time.
-from yabai_cidian.pinyin import numeric_to_marked, to_toneless
+from yabai_chaci.pinyin import numeric_to_marked, to_toneless
 
 # Project root is one directory above scripts/.
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,7 +79,7 @@ def download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"downloading {url}")
     # Identify ourselves to the server (harmless, but good etiquette).
-    request = urllib.request.Request(url, headers={"User-Agent": "yabai-cidian/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "yabai-chaci/0.1"})
     # Read in 1 MiB chunks and write straight through (low memory use).
     with urllib.request.urlopen(request) as response, dest.open("wb") as out:
         while chunk := response.read(1 << 20):

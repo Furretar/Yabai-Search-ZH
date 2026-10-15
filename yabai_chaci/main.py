@@ -1,4 +1,4 @@
-"""FastAPI app for yabai-cidian."""
+"""FastAPI app for Yabai-Chaci."""
 
 from __future__ import annotations
 
@@ -10,16 +10,17 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from yabai_cidian import db, segment
+from yabai_chaci import db, segment
+from yabai_chaci.pinyin import to_toneless
 
-# Directory of this file (the yabai_cidian package). Used to locate assets
+# Directory of this file (the yabai_chaci package). Used to locate assets
 # regardless of the directory the server is launched from.
 BASE = Path(__file__).resolve().parent
 
 # The application object that uvicorn imports and runs.
-app = FastAPI(title="yabai-cidian")
+app = FastAPI(title="Yabai-Chaci")
 
-# Serve files from yabai_cidian/static/ at the URL prefix /static/...
+# Serve files from yabai_chaci/static/ at the URL prefix /static/...
 # (e.g. /static/style.css, /static/app.js). Read-only, served verbatim.
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
@@ -35,8 +36,15 @@ def index(request: Request):
 
 @app.get("/api/search")
 def api_search(q: str = "", limit: int = Query(50, ge=1, le=200)):
-    """JSON search endpoint. `q` is the term; `limit` is clamped to 1..200."""
-    return {"query": q, "results": db.search(q, limit)}
+    """JSON search endpoint. `q` is the term; `limit` is clamped to 1..200.
+
+    `pinyin_match` is true when the query was an exact Chinese reading — in which
+    case `results` holds only those readings, no English-definition matches.
+    """
+    results = db.search(q, limit)
+    key = to_toneless(q)
+    pinyin_match = bool(key) and any(to_toneless(entry["pinyin"]) == key for entry in results)
+    return {"query": q, "pinyin_match": pinyin_match, "results": results}
 
 
 class AnnotateRequest(BaseModel):

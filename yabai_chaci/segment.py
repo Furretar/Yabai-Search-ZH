@@ -7,7 +7,7 @@ from pathlib import Path
 
 import jieba
 
-from yabai_cidian.db import DB_PATH
+from yabai_chaci.db import DB_PATH
 
 # The jieba user-dictionary we generate from CEDICT headwords.
 USERDICT_PATH = Path(__file__).resolve().parents[1] / "data" / "cedict_userdict.txt"
