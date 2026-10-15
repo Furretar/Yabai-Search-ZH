@@ -5,8 +5,8 @@
 
 /* Text-selection highlight. */
 ::selection {
-    background: var(--accent);
-    color: #000;
+    background: var(--selection-bg);
+    color: var(--on-accent);
 }
 
 /* Page body: centered column, readable line length and spacing. */
@@ -16,6 +16,9 @@ body {
     margin: 2rem auto;
     padding: 0 1rem;
     line-height: 1.5;
+    /* Page background; --bg is set per color scheme (falls back to the
+       system canvas color when unset). */
+    background: var(--bg, Canvas);
 }
 
 /* The site title links back to the home view. */
@@ -25,11 +28,28 @@ body {
     color: var(--title);
 }
 
+/* Links use the accent colour instead of the browser's default blue. */
+a {
+    color: var(--accent);
+}
+
+/* Site title with a smaller English subtitle, bottom-aligned to its right. */
+h1 {
+    display: flex;
+    align-items: flex-end;
+    gap: .4rem;
+}
+
+.site-subtitle {
+    font-size: .4em;
+    font-weight: normal;
+    color: var(--accent);
+}
+
 /* The search form: input and button side by side. */
 form {
     display: flex;
     gap: .5rem;
-    margin-bottom: 1.5rem;
 }
 
 /* Search text box grows to fill available space. */
@@ -37,7 +57,7 @@ input {
     flex: 1;
     padding: .5rem;
     font-size: 1rem;
-    border: 1px solid #888;
+    border: 1px solid var(--border);
     transition: border-color 0.3s ease;
 }
 
@@ -53,15 +73,46 @@ button {
     font-size: 1rem;
     color: var(--accent);
     border: 1px solid var(--accent);
+    border-radius: .35rem;
 }
 
-/* Display option switches under the search bar. */
+/* One surface behind the search bar and its options, so the expanded options
+   read as a dropdown connected to the search bar. */
+.search-panel {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: .5rem;
+    margin-bottom: 1.5rem;
+    overflow: hidden;
+    /* clip the children to the rounded corners */
+    transition: border-color 0.3s ease;
+}
+
+/* Focusing the input highlights the whole panel outline (not the input's). */
+.search-panel:focus-within {
+    border-color: var(--accent);
+}
+
+/* The search row sits inset and flush inside the panel. */
+.search-panel form {
+    padding: .35rem;
+}
+
+/* Inside the panel the input is borderless — the panel is the border. */
+.search-panel input {
+    border: none;
+    background: transparent;
+}
+
+/* Display option switches under the search bar. They wrap onto another line
+   when there isn't room (e.g. on a narrow phone screen). */
 .toggles {
     display: flex;
+    flex-wrap: wrap;
     gap: 1.25rem;
     margin-bottom: 1rem;
     font-size: 0.9rem;
-    color: color-mix(in srgb, currentColor 75%, transparent);
+    color: var(--control);
 }
 
 .toggles label {
@@ -71,21 +122,60 @@ button {
     cursor: pointer;
 }
 
-/* Collapsible "Options" panel holding the switches (native <details>). */
+/* Collapsible "Search options" disclosure, under the search row on the panel. */
 .options {
-    margin-bottom: 1rem;
+    border-top: 1px solid var(--options-divider);
 }
 
-.options summary {
-    width: fit-content;
-    cursor: pointer;
+/* The toggle is a text control, not a button — reset the generic button look. */
+.options-toggle {
+    display: block;
+    width: 100%;
+    padding: .5rem .75rem;
+    border: none;
+    background: none;
+    font: inherit;
     font-size: 0.9rem;
-    color: color-mix(in srgb, currentColor 75%, transparent);
+    text-align: left;
+    color: var(--control);
+    cursor: pointer;
 }
 
-/* Tuck the switches under the summary, without the standalone bottom margin. */
+/* The caret flips with the panel state. */
+.options-toggle::before {
+    content: "▸ ";
+}
+
+.options.open .options-toggle::before {
+    content: "▾ ";
+}
+
+/* Expand the panel with a pure-CSS height animation: a one-row grid whose row
+   goes 0fr <-> 1fr (animating to the content's own height). */
+.options-collapse {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 150ms ease;
+}
+
+.options.open .options-collapse {
+    grid-template-rows: 1fr;
+}
+
+/* Switches: clip inside the collapsing row, and fade in once there is room. */
 .options .toggles {
-    margin: .75rem 0 0;
+    overflow: hidden;
+    /* clip while collapsed; also lets the row shrink to 0 */
+    margin: 0;
+    padding: 0 .75rem .75rem;
+    opacity: 0;
+    transition: opacity 100ms ease;
+}
+
+/* Reveal the switches only after the panel has opened. */
+.options.open .toggles {
+    opacity: 1;
+    transition-delay: 90ms;
 }
 
 /* Render the checkboxes as slider switches. */
@@ -96,7 +186,7 @@ button {
     height: 1.35em;
     margin: 0;
     border-radius: 1em;
-    background: color-mix(in srgb, currentColor 35%, transparent);
+    background: var(--switch-track);
     position: relative;
     cursor: pointer;
     transition: background 0.15s ease;
@@ -110,7 +200,7 @@ button {
     width: 1em;
     height: 1em;
     border-radius: 50%;
-    background: #fff;
+    background: var(--switch-knob);
     transition: transform 0.15s ease;
 }
 
@@ -125,7 +215,7 @@ button {
 /* One dictionary result row. Slightly indented on the left to leave a little
    room for furigana wider than the word to spill. */
 .entry {
-    border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+    border-bottom: 1px solid var(--entry-divider);
     padding: .75rem 0 .75rem 0.5rem;
 }
 
@@ -181,7 +271,7 @@ button {
 
 /* The pinyin reading in a result. */
 .pinyin {
-    color: #c0392b;
+    color: var(--pinyin);
     margin-left: .5rem;
 }
 
@@ -200,6 +290,17 @@ button {
 
 /* De-emphasized text (e.g. "No results."). */
 .muted {
+    color: var(--muted);
+}
+
+/* Tone-insensitive fallback shown under a tonal query that matched nothing. */
+.fuzzy-heading {
+    margin-top: 1.5rem;
+    padding-top: .75rem;
+    border-top: 1px solid var(--entry-divider);
+    font-size: .9rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
     color: var(--muted);
 }
 

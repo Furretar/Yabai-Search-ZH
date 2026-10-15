@@ -1,21 +1,62 @@
 /* Colour scheme — edit these values to retheme the site. */
 :root {
-  /* Accent / highlight: on-toggles and clickable words. */
-  --accent: #ffca28;
+    /* Accent / highlight: on-switches, links, clickable words. */
+    --accent: #ffca28;
 
-  /* The site title (matches the accent). */
-  --title: var(--accent);
+    /* The site title (matches the accent). */
+    --title: var(--accent);
 
-  /* The reading (pinyin / zhuyin) above the main word. */
-  --reading: #ffffff;
+    /* The reading (pinyin / zhuyin) above the main word. */
+    --reading: #ffffff;
 
-  /* De-emphasised text (tagline, "other forms", "No results"). */
-  --muted: color-mix(in srgb, currentColor 65%, transparent);
+    /* De-emphasised text (tagline, "other forms", "No results"). */
+    --muted: color-mix(in srgb, currentColor 65%, transparent);
 
-  /* Tone colours, by tone number (1-4; 5 = neutral). */
-  --tone1: #e74c3c;
-  --tone2: var(--accent);
-  --tone3: #27ae60;
-  --tone4: #2980b9;
-  --tone5: #7f8c8d;
+    /* Dimmed control text (the "Search options" toggle, switch labels). */
+    --control: color-mix(in srgb, currentColor 75%, transparent);
+
+    /* Text placed on top of a highlight (e.g. selected text). */
+    --on-accent: #000000;
+
+    /* Selected-text highlight: a lighter yellow than the accent. */
+    --selection-bg: #f4d369;
+
+    /* Page background (light default; overridden for dark mode below). */
+    --bg: #ffffff;
+
+    /* The search bar / options surface, and its outline. */
+    --panel-bg: color-mix(in srgb, currentColor 8%, transparent);
+    --panel-border: #cccccc;
+
+    /* Text input border. */
+    --border: #cccccc;
+
+    /* Dividers. */
+    --options-divider: #e0e0e0;
+    --entry-divider: #e0e0e0;
+
+    /* Slider switches. */
+    --switch-track: color-mix(in srgb, currentColor 35%, transparent);
+    --switch-knob: #ffffff;
+
+    /* The reading shown beside a result. */
+    --pinyin: #c0392b;
+
+    /* Tone colours, by tone number (1-4; 5 = neutral). */
+    --tone1: #e74c3c;
+    --tone2: var(--accent);
+    --tone3: #27ae60;
+    --tone4: #2980b9;
+    --tone5: #7f8c8d;
+}
+
+/* Dark mode: page background, borders and dividers. */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #201c23;
+        --panel-border: #4a4a4a;
+        --border: #4a4a4a;
+        --options-divider: #3a3a3a;
+        --entry-divider: #3a3a3a;
+    }
 }

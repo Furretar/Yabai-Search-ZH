@@ -18,6 +18,8 @@ const state = { script: "simplified", toneColoring: false, phonetic: "pinyin", t
 
 // The most recent results, kept so the toggles can re-render without re-fetching.
 let currentEntries = [];
+let currentFuzzy = [];
+let currentQuery = "";
 
 // Tone-marked forms for each base vowel (index 0 = tone 1 ... 3 = tone 4).
 const TONE_MARKS = {
@@ -326,7 +328,9 @@ function clearResults() {
 // Show the pinyin hint when the query matched Chinese readings exactly — which
 // is also when English-definition matches are suppressed.
 function updateHint(query, pinyinMatch) {
-    if (pinyinMatch) {
+    // Hidden for tone-numbered or wildcard queries: the reading is exact/patterned,
+    // so the "use quotes for English" hint would be misleading.
+    if (pinyinMatch && !/[0-9*]/.test(query)) {
         hint.textContent = `Matching Chinese pinyin, use quotes to search the English word "${query.trim()}".`;
         hint.hidden = false;
     } else {
@@ -334,63 +338,84 @@ function updateHint(query, pinyinMatch) {
     }
 }
 
+// Build one result row for an entry.
+function entryRow(entry) {
+    // Show the chosen script as the main word.
+    const primary = state.script === "traditional" ? entry.traditional : entry.simplified;
+    // Use the Taiwan reading when the toggle is on and the entry lists one.
+    const reading = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
+
+    const row = document.createElement("div");
+    row.className = "entry";
+
+    const hanzi = document.createElement("span");
+    hanzi.className = "hanzi";
+    hanzi.append(furigana(primary, reading));
+    row.append(hanzi);
+
+    // Pull "Taiwan pr." / "also pr." notes out of the definition so they get
+    // their own rows instead of sitting in the main listing.
+    const prons = extractPronunciations(entry.english_normalized);
+    const defs = document.createElement("div");
+    defs.className = "defs";
+    defs.append(renderDefinition(prons.text, entry.taiwan_refs));
+    row.append(defs);
+
+    for (const note of prons.taiwan) {
+        row.append(detailRow("Taiwan pronunciation: ", furigana(primary, numericToMarked(note))));
+    }
+    for (const note of prons.others) {
+        row.append(detailRow("Also pronounced: ", furigana(primary, numericToMarked(note))));
+    }
+    for (const token of prons.classifiers) {
+        row.append(detailRow("Classifier: ", classifierNode(token)));
+    }
+    return row;
+}
+
 // Build the results list from the array of entries returned by the API.
-function render(entries) {
+function render(entries, query) {
     currentEntries = entries;
+    currentQuery = query;
     results.replaceChildren(); // clear previous results
 
     if (!entries.length) {
+        // Shown even when a fuzzy section follows (so it sits above it).
         const p = document.createElement("p");
         p.className = "muted";
-        p.textContent = "No results.";
+        p.textContent = `No results for ${query}.`;
         results.append(p);
         return;
     }
 
-    const useTraditional = state.script === "traditional";
+    for (const entry of entries) results.append(entryRow(entry));
+}
 
-    for (const entry of entries) {
-        // Show the chosen script as the main word.
-        const primary = useTraditional ? entry.traditional : entry.simplified;
+// Append the tone-insensitive "Fuzzy match" section under a separator.
+function renderFuzzy(entries) {
+    currentFuzzy = entries || [];
+    if (!currentFuzzy.length) return;
+    const heading = document.createElement("p");
+    heading.className = "fuzzy-heading";
+    heading.textContent = "Fuzzy match";
+    results.append(heading);
+    for (const entry of currentFuzzy) results.append(entryRow(entry));
+}
 
-        // Use the Taiwan reading when the toggle is on and the entry lists one.
-        const reading = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
-
-        const row = document.createElement("div");
-        row.className = "entry";
-
-        const hanzi = document.createElement("span");
-        hanzi.className = "hanzi";
-        hanzi.append(furigana(primary, reading));
-        row.append(hanzi);
-
-        // Pull "Taiwan pr." / "also pr." notes out of the definition so they get
-        // their own rows instead of sitting in the main listing.
-        const prons = extractPronunciations(entry.english_normalized);
-        const defs = document.createElement("div");
-        defs.className = "defs";
-        defs.append(renderDefinition(prons.text, entry.taiwan_refs));
-        row.append(defs);
-
-        for (const note of prons.taiwan) {
-            row.append(detailRow("Taiwan pronunciation: ", furigana(primary, numericToMarked(note))));
-        }
-        for (const note of prons.others) {
-            row.append(detailRow("Also pronounced: ", furigana(primary, numericToMarked(note))));
-        }
-        for (const token of prons.classifiers) {
-            row.append(detailRow("Classifier: ", classifierNode(token)));
-        }
-
-        results.append(row);
-    }
+// Re-draw the current results (and any fuzzy section) after a display toggle.
+function redraw() {
+    if (!currentEntries.length && !currentFuzzy.length) return;
+    render(currentEntries, currentQuery);
+    renderFuzzy(currentFuzzy);
 }
 
 // Query the API and hand the results to render().
 async function search(query) {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+    const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}`;
+    const response = await fetch(url);
     const data = await response.json();
-    render(data.results);
+    render(data.results, query);
+    renderFuzzy(data.fuzzy);
     updateHint(query, data.pinyin_match);
 }
 
@@ -500,22 +525,54 @@ function savePrefs() {
 scriptToggle.addEventListener("change", () => {
     state.script = scriptToggle.checked ? "traditional" : "simplified";
     savePrefs();
-    if (currentEntries.length) render(currentEntries);
+    redraw();
 });
 toneToggle.addEventListener("change", () => {
     state.toneColoring = toneToggle.checked;
     savePrefs();
-    if (currentEntries.length) render(currentEntries);
+    redraw();
 });
 phoneticToggle.addEventListener("change", () => {
     state.phonetic = phoneticToggle.checked ? "zhuyin" : "pinyin";
     savePrefs();
-    if (currentEntries.length) render(currentEntries);
+    redraw();
 });
 taiwanToggle.addEventListener("change", () => {
     state.taiwan = taiwanToggle.checked;
     savePrefs();
-    if (currentEntries.length) render(currentEntries);
+    // Re-run the search: Taiwan mode also matches Taiwan readings.
+    const query = input.value.trim();
+    if (query) search(query);
+    else redraw();
+});
+
+// Toggle the "Search options" panel. The open/close animation is pure CSS (the
+// .open class drives the grid row); here we only flip the class and ARIA state,
+// and remember the choice so the panel reopens expanded next time.
+const optionsPanel = document.querySelector(".options");
+const optionsToggle = optionsPanel.querySelector(".options-toggle");
+
+function setOptionsOpen(open) {
+    optionsPanel.classList.toggle("open", open);
+    optionsToggle.setAttribute("aria-expanded", String(open));
+    try {
+        localStorage.setItem("yabai-chaci-options", String(open));
+    } catch (e) {
+        // localStorage unavailable — nothing to save.
+    }
+}
+
+// Reopen the panel on load if it was left open.
+function restoreOptionsOpen() {
+    try {
+        setOptionsOpen(localStorage.getItem("yabai-chaci-options") === "true");
+    } catch (e) {
+        // localStorage unavailable — start closed.
+    }
+}
+
+optionsToggle.addEventListener("click", () => {
+    setOptionsOpen(!optionsPanel.classList.contains("open"));
 });
 
 // Run a search when the form is submitted (Enter or the button).
@@ -559,4 +616,5 @@ window.addEventListener("popstate", restoreFromUrl);
 
 // On first load: apply saved preferences, then restore a search from the URL.
 loadPrefs();
+restoreOptionsOpen();
 restoreFromUrl();

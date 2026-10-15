@@ -33,6 +33,13 @@ _MARK_TO_BASE = {
     ord(marked): base for base, marks in _TONE_MARKS.items() for marked in marks
 }
 
+# Maps a tone-marked character back to its tone number (1-4).
+_MARK_TONE = {
+    ord(mark): tone
+    for marks in _TONE_MARKS.values()
+    for tone, mark in enumerate(marks, start=1)
+}
+
 # Matches one pinyin syllable: letters (plus "u:" for ü) with an optional
 # trailing tone digit 1-5. Used to separate the syllable body from its tone.
 _SYLLABLE_RE = re.compile(r"^([A-Za-zü:]+)([1-5])?$")
@@ -83,6 +90,22 @@ def numeric_to_marked(pinyin: str) -> str:
     """'han4 yu3' -> 'hàn yǔ'."""
     # Split on whitespace, mark each syllable, then rejoin with single spaces.
     return " ".join(_mark_syllable(tok) for tok in pinyin.split())
+
+
+def to_numeric(pinyin: str) -> str:
+    """'hàn yǔ' -> 'han4 yu3' (the inverse of numeric_to_marked)."""
+    out = []
+    for token in pinyin.split():
+        tone = 5  # neutral when the syllable carries no mark
+        base = []
+        for char in token:
+            if ord(char) in _MARK_TONE:
+                tone = _MARK_TONE[ord(char)]
+                base.append(_MARK_TO_BASE[ord(char)])
+            else:
+                base.append(char)
+        out.append("".join(base) + str(tone))
+    return " ".join(out)
 
 
 def to_toneless(pinyin: str) -> str:

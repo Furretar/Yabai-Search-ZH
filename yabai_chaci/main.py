@@ -35,16 +35,23 @@ def index(request: Request):
 
 
 @app.get("/api/search")
-def api_search(q: str = "", limit: int = Query(50, ge=1, le=200)):
+def api_search(q: str = "", limit: int = Query(50, ge=1, le=200), taiwan: bool = False):
     """JSON search endpoint. `q` is the term; `limit` is clamped to 1..200.
 
+    `taiwan` lets a pinyin search also match Taiwan (MOE) readings.
     `pinyin_match` is true when the query was an exact Chinese reading — in which
     case `results` holds only those readings, no English-definition matches.
     """
-    results = db.search(q, limit)
+    results = db.search(q, limit, taiwan)
+    # If a tonal reading matched nothing, offer a tone-insensitive "fuzzy" search.
+    fuzzy = []
+    if not results:
+        variant = db.tonal_variant(q)
+        if variant:
+            fuzzy = db.search(variant, limit, taiwan)
     key = to_toneless(q)
     pinyin_match = bool(key) and any(to_toneless(entry["pinyin"]) == key for entry in results)
-    return {"query": q, "pinyin_match": pinyin_match, "results": results}
+    return {"query": q, "pinyin_match": pinyin_match, "results": results, "fuzzy": fuzzy}
 
 
 class AnnotateRequest(BaseModel):

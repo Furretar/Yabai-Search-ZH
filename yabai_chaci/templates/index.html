@@ -16,25 +16,36 @@
 
 <body>
     <!-- Page title / heading. -->
-    <h1><a id="home-link" href="/">牙白查词</a></h1>
-    <!-- Search bar. Wired up by app.js, which calls /api/search and renders
-       the results into #results below. -->
-    <form id="search-form" role="search" autocomplete="off">
-        <input type="search" id="q" name="q" placeholder="Seach with English, Chinese, or Pinyin" autofocus>
-        <button type="submit">Search</button>
-    </form>
-    <!-- Display options: collapsed by default; click "Options" to reveal the switches. -->
-    <details class="options">
-        <summary>Options</summary>
-        <div class="toggles">
-            <label><input type="checkbox" id="script-toggle"> Traditional</label>
-            <label><input type="checkbox" id="tone-toggle"> Tone colors</label>
-            <label><input type="checkbox" id="phonetic-toggle"> Zhuyin</label>
-            <label><input type="checkbox" id="taiwan-toggle"> Taiwan</label>
+    <h1>
+        <a id="home-link" href="/">牙白查词</a>
+        <span class="site-subtitle">Yabai Search</span>
+    </h1>
+    <!-- Search bar and its options share one surface, so the expanded options
+       look like a dropdown connected to the search bar. Wired up by app.js. -->
+    <div class="search-panel">
+        <form id="search-form" role="search" autocomplete="off">
+            <input type="search" id="q" name="q" placeholder="Seach with English, Chinese, or Pinyin" autofocus>
+            <button type="submit">Search</button>
+        </form>
+        <!-- Collapsed by default; the button toggles the panel (animated in CSS). -->
+        <div class="options">
+            <button type="button" class="options-toggle" aria-expanded="false" aria-controls="search-options">Search
+                options</button>
+            <div id="search-options" class="options-collapse">
+                <div class="toggles">
+                    <label><input type="checkbox" id="script-toggle"> Traditional</label>
+                    <label><input type="checkbox" id="tone-toggle"> Tone coloring</label>
+                    <label title="Use Zhuyin/Bopomofo/ㄅㄆㄇㄈ annotation."><input type="checkbox" id="phonetic-toggle">
+                        Zhuyin</label>
+                    <label title="Use Taiwanese Mandarin Pronunciation."><input type="checkbox" id="taiwan-toggle">
+                        Taiwan</label>
+                </div>
+            </div>
         </div>
-    </details>
+    </div>
     <!-- Centered description shown under the search bar. -->
-    <p class="tagline">A Chinese–English dictionary powered by CC-CEDICT — search any simplified or traditional word.
+    <p class="tagline">A Chinese-English dictionary powered by <a
+            href="https://www.mdbg.net/chinese/dictionary?page=cedict" target="_blank" rel="noopener">CC-CEDICT</a>.
     <p class="tagline">Search Functions:
     <p class="tagline">汉字 - Simplified
     <p class="tagline">漢字 - Traditional
