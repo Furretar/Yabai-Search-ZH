@@ -5,6 +5,7 @@
 const form = document.getElementById("search-form");
 const input = document.getElementById("q");
 const results = document.getElementById("results");
+const parsed = document.getElementById("parsed");
 const scriptToggle = document.getElementById("script-toggle");
 const toneToggle = document.getElementById("tone-toggle");
 const phoneticToggle = document.getElementById("phonetic-toggle");
@@ -297,6 +298,7 @@ function classifierNode(token) {
 function clearResults() {
   currentEntries = [];
   results.replaceChildren();
+  parsed.replaceChildren();
 }
 
 // Build the results list from the array of entries returned by the API.
@@ -362,6 +364,36 @@ async function search(query) {
   render(data.results);
 }
 
+// Render the segmented input as clickable words (clicking one searches it).
+function renderParsed(tokens) {
+  parsed.replaceChildren();
+  for (const token of tokens) {
+    const node = document.createElement("span");
+    node.className = "parsed-word";
+    node.textContent = token.text;
+    if (token.entries.length) {
+      node.classList.add("clickable");
+      node.addEventListener("click", () => search(token.text));
+    }
+    parsed.append(node);
+  }
+}
+
+// Segment the input. Multi-word text shows clickable words; a single word is
+// looked up directly.
+async function annotate(text) {
+  const response = await fetch("/api/annotate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  const data = await response.json();
+  const words = data.tokens.filter((token) => token.entries.length);
+  clearResults();
+  if (words.length > 1) renderParsed(data.tokens);
+  if (words.length) search(words[0].text); // auto-show the first matched word
+}
+
 // Show or hide the home-page tagline ("search functions" description).
 function showTagline(show) {
   document.querySelectorAll(".tagline").forEach((el) => {
@@ -379,7 +411,7 @@ function performSearch(query) {
   input.value = query;
   showTagline(false);
   history.pushState({ q: query }, "", `?q=${encodeURIComponent(query)}`);
-  search(query);
+  annotate(query);
 }
 
 // Restore the view (results or home) from whatever is in the URL now.
@@ -388,7 +420,7 @@ function restoreFromUrl() {
   if (query) {
     input.value = query;
     showTagline(false);
-    search(query);
+    annotate(query);
   } else {
     input.value = "";
     clearResults();

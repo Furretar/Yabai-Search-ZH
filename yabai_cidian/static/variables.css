@@ -1,0 +1,18 @@
+/* Colour scheme — edit these values to retheme the site. */
+:root {
+  /* Accent / highlight: on-toggles and clickable words. */
+  --accent: #ffca28;
+
+  /* The reading (pinyin / zhuyin) above the main word. */
+  --reading: #ffffff;
+
+  /* De-emphasised text (tagline, "other forms", "No results"). */
+  --muted: color-mix(in srgb, currentColor 65%, transparent);
+
+  /* Tone colours, by tone number (1-4; 5 = neutral). */
+  --tone1: #e74c3c;
+  --tone2: #e67e22;
+  --tone3: #27ae60;
+  --tone4: #2980b9;
+  --tone5: #7f8c8d;
+}

@@ -191,6 +191,20 @@ def _attach_taiwan(entries: list[dict]) -> list[dict]:
     return entries
 
 
+def lookup(word: str) -> list[dict]:
+    """Return entries whose simplified or traditional form is exactly `word`."""
+    connection = connect()
+    try:
+        rows = connection.execute(
+            "SELECT simplified, traditional, pinyin, english, english_normalized "
+            "FROM entries WHERE simplified = ? OR traditional = ? ORDER BY id",
+            (word, word),
+        ).fetchall()
+    finally:
+        connection.close()
+    return _attach_taiwan([dict(row) for row in rows])
+
+
 def search(query: str, limit: int = 50) -> list[dict]:
     """Search the dictionary.
 
