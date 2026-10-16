@@ -17,6 +17,23 @@ from yabai_chaci.pinyin import to_toneless
 # regardless of the directory the server is launched from.
 BASE = Path(__file__).resolve().parent
 
+# Directory holding the static assets served under /static/.
+_STATIC_DIR = BASE / "static"
+
+
+def asset_version() -> str:
+    """A cache-busting tag for the static assets: the newest mtime in static/.
+
+    Computed on every request (not just at startup), so editing style.css or
+    app.js changes the URL the browser asks for and it fetches the fresh file —
+    no server restart needed. Covers every file in static/, not just app.js.
+    """
+    try:
+        newest = max(path.stat().st_mtime for path in _STATIC_DIR.iterdir() if path.is_file())
+    except (FileNotFoundError, ValueError):
+        return "0"
+    return str(int(newest))
+
 # The application object that uvicorn imports and runs.
 app = FastAPI(title="Yabai-Chaci")
 
@@ -31,7 +48,24 @@ templates = Jinja2Templates(directory=str(BASE / "templates"))
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     """Home page: render the (currently blank) index.html template."""
-    return templates.TemplateResponse(request, "index.html")
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {"asset_version": asset_version(), "sources": db.sources()},
+    )
+
+
+@app.get("/about", response_class=HTMLResponse)
+def about(request: Request):
+    """About page: sources, licences and search tips."""
+    sources = db.sources()
+    # anchor -> updated date, for the per-source "Updated ..." lines.
+    updated = {source["anchor"]: source["updated"] for source in sources}
+    return templates.TemplateResponse(
+        request,
+        "about.html",
+        {"asset_version": asset_version(), "updated": updated},
+    )
 
 
 @app.get("/api/search")

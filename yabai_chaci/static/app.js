@@ -11,10 +11,26 @@ const scriptToggle = document.getElementById("script-toggle");
 const toneToggle = document.getElementById("tone-toggle");
 const phoneticToggle = document.getElementById("phonetic-toggle");
 const taiwanToggle = document.getElementById("taiwan-toggle");
+// TEMPORARY: one checkbox per dictionary, for the per-source definitions view.
+const sourceToggles = [...document.querySelectorAll(".source-toggle")];
+
+// Search-language dropdown (left of the search box): EN / ZH / TW.
+const langSelect = document.querySelector(".lang-select");
+const langButton = langSelect.querySelector(".lang-button");
+const langMenu = langSelect.querySelector(".lang-menu");
 
 // Display options. script: "simplified" | "traditional"; toneColoring: on/off;
-// phonetic: "pinyin" | "zhuyin"; taiwan: use the Taiwan reading when listed.
-const state = { script: "simplified", toneColoring: false, phonetic: "pinyin", taiwan: false };
+// phonetic: "pinyin" | "zhuyin"; taiwan: use the Taiwan reading when listed;
+// defSources: which dictionaries' definitions to show (empty = none);
+// lang: the selected search language (EN / ZH / TW).
+const state = {
+    script: "simplified",
+    toneColoring: false,
+    phonetic: "pinyin",
+    taiwan: false,
+    defSources: new Set(),
+    lang: "EN",
+};
 
 // The most recent results, kept so the toggles can re-render without re-fetching.
 let currentEntries = [];
@@ -267,16 +283,33 @@ function renderDefinition(text, taiwanRefs) {
 }
 
 // Pull pronunciation notes out of a definition: "Taiwan pr. [...]" and
-// "also/old pr. [...]". Returns the cleaned definition text plus the raw
-// numeric readings found in each category.
+// "also/old/colloquial pr. [...]". Returns the cleaned definition text plus the
+// raw numeric readings found in each category. Non-Taiwan notes keep their
+// register label (e.g. "colloquial") so it can be shown next to the reading
+// instead of being left behind as stray text in the definition.
 function extractPronunciations(text) {
     const taiwan = new Set();
-    const others = new Set();
+    const others = []; // { reading, label } — label is "" for a plain note
     const classifiers = new Set();
+    // A register word can sit right in front of "pr." ("colloquial pr.",
+    // "also pr.", "Beijing pr."). Capture it so it is removed together with the
+    // reading; otherwise words like "colloquial" would linger in the definition.
+    const PR_LABELS = "Taiwan|Taiwanese|colloquial|coll\\.|archaic|literary|formal|"
+        + "informal|dialectal|dialect|old|ancient|also|Beijing|commonly|Cantonese|"
+        + "surname|variant";
     const cleaned = text
-        .replace(/[;\s]*Taiwan pr\.\s*\[([^\]]+)\]/g, (_, p) => (taiwan.add(p), ""))
-        .replace(/[;\s]*(?:also|old)?\s*pr\.\s*\[([^\]]+)\]/g, (_, p) => (others.add(p), ""))
-        .replace(/[;\s]*pronounced\s+\[([^\]]+)\]/g, (_, p) => (others.add(p), ""))
+        .replace(
+            new RegExp(`[;\\s]*(?:(${PR_LABELS})\\s+)?pr\\.\\s*\\[([^\\]]+)\\]`, "g"),
+            (_, label, p) => {
+                const key = label ? label.replace(/\.$/, "") : "";
+                // "Taiwan pr." keeps its own row; everything else is an alternate
+                // reading, tagged with its label ("also" reads as a plain note).
+                if (key === "Taiwan") taiwan.add(p);
+                else others.push({ reading: p, label: key === "also" ? "" : key });
+                return "";
+            }
+        )
+        .replace(/[;\s]*pronounced\s+\[([^\]]+)\]/g, (_, p) => (others.push({ reading: p, label: "" }), ""))
         // Classifiers are a comma-separated list of "word[pinyin]" tokens, e.g.
         // "CL:個|个[ge4],位[wei4]". Match whole tokens so a trailing ")" (as in
         // "(CL:首[shou3])") is not swallowed, and capture every token.
@@ -287,7 +320,7 @@ function extractPronunciations(text) {
         // Remaining bare numeric-pinyin brackets, e.g. "... sb; Taiwan pr. [pang2],
         // [bang1], [bang4]". Only when preceded by a separator, so cross-references
         // like 字[pin] are left untouched.
-        .replace(/(?:^|[\s,;]+)\[([A-Za-zü:]+[0-9](?:\s+[A-Za-zü:]+[0-9])*)\]/g, (_, p) => (others.add(p), ""));
+        .replace(/(?:^|[\s,;]+)\[([A-Za-zü:]+[0-9](?:\s+[A-Za-zü:]+[0-9])*)\]/g, (_, p) => (others.push({ reading: p, label: "" }), ""));
     return {
         text: cleaned
             .replace(/\s*;\s*;/g, ";")
@@ -297,7 +330,7 @@ function extractPronunciations(text) {
             .replace(/\s{2,}/g, " ")
             .trim(),
         taiwan: [...taiwan],
-        others: [...others],
+        others,
         classifiers: [...classifiers],
     };
 }
@@ -310,13 +343,6 @@ function detailRow(label, node) {
     return row;
 }
 
-// Render a classifier token (e.g. "把[ba3]" or "個|个[ge4]") as furigana.
-function classifierNode(token) {
-    const m = token.match(/^([^\s|\[\]]+)(?:\|([^\s|\[\]]+))?\[([^\]]+)\]$/);
-    if (!m) return document.createTextNode(token);
-    return furigana(m[2] || m[1], numericToMarked(m[3]));
-}
-
 // Clear the results area (used by the home view; shows no "No results." message).
 function clearResults() {
     currentEntries = [];
@@ -326,16 +352,86 @@ function clearResults() {
 }
 
 // Show the pinyin hint when the query matched Chinese readings exactly — which
-// is also when English-definition matches are suppressed.
+// is also when English-definition matches are suppressed. Rather than telling the
+// user to add quotes, we offer a link that runs that quoted (English) search.
 function updateHint(query, pinyinMatch) {
     // Hidden for tone-numbered or wildcard queries: the reading is exact/patterned,
-    // so the "use quotes for English" hint would be misleading.
+    // so an English-search link would be misleading.
     if (pinyinMatch && !/[0-9*]/.test(query)) {
-        hint.textContent = `Matching Chinese pinyin, use quotes to search the English word "${query.trim()}".`;
+        const quoted = `"${query.trim()}"`;
+        hint.replaceChildren("Matching Chinese pinyin, search the English word ");
+        const link = document.createElement("a");
+        // A real href (so it can be opened/copied) plus JS to search in place.
+        link.href = `?q=${encodeURIComponent(quoted)}`;
+        link.textContent = quoted; // only the quoted word itself is the link
+        link.addEventListener("click", (event) => {
+            event.preventDefault();
+            performSearch(quoted);
+        });
+        hint.append(link);
         hint.hidden = false;
     } else {
         hint.hidden = true;
     }
+}
+
+// Small boxes listing the dictionaries that contain a headword. Each links to
+// that source's section on the About page.
+function sourceChips(sources) {
+    const box = document.createElement("div");
+    box.className = "sources";
+    for (const source of sources) {
+        const chip = document.createElement("a");
+        chip.className = "source";
+        chip.href = `/about#${encodeURIComponent(source.anchor)}`;
+        chip.textContent = source.label;
+        box.append(chip);
+    }
+    return box;
+}
+
+// A labeled block showing one dictionary's definitions for a result.
+function definitionsBlock(source, taiwanRefs) {
+    const block = document.createElement("div");
+    block.className = "def-source";
+    const header = document.createElement("a");
+    header.className = "def-source-name";
+    header.href = `/about#${encodeURIComponent(source.anchor)}`;
+    header.textContent = source.label;
+    block.append(header);
+
+    // Numbered senses (1., 2., ...), consistent across every dictionary.
+    source.defs.forEach((text, i) => {
+        const line = document.createElement("div");
+        line.className = "def-source-line";
+        const num = document.createElement("span");
+        num.className = "def-source-num";
+        num.textContent = `${i + 1}.`;
+        // Only CEDICT text carries [pinyin] cross-references; others are plain.
+        line.append(
+            num,
+            source.anchor === "cedict"
+                ? renderDefinition(text, taiwanRefs)
+                : document.createTextNode(text)
+        );
+        block.append(line);
+    });
+
+    // Standardized classifiers, shown in the chosen script (Traditional toggle).
+    if (source.classifiers && source.classifiers.length) {
+        const useTraditional = state.script === "traditional";
+        const forms = source.classifiers.map((c) =>
+            c.note ? c.note : (useTraditional ? c.traditional : c.simplified) || ""
+        );
+        const line = document.createElement("div");
+        line.className = "def-source-cls";
+        const label = document.createElement("span");
+        label.className = "def-source-cls-label";
+        label.textContent = "Classifier:";
+        line.append(label, document.createTextNode(" " + forms.join("; ")));
+        block.append(line);
+    }
+    return block;
 }
 
 // Build one result row for an entry.
@@ -353,22 +449,39 @@ function entryRow(entry) {
     hanzi.append(furigana(primary, reading));
     row.append(hanzi);
 
+    // Which dictionaries contain this headword, as small boxes between the word
+    // and its definitions.
+    if (entry.sources && entry.sources.length) {
+        row.append(sourceChips(entry.sources));
+    }
+
     // Pull "Taiwan pr." / "also pr." notes out of the definition so they get
     // their own rows instead of sitting in the main listing.
     const prons = extractPronunciations(entry.english_normalized);
-    const defs = document.createElement("div");
-    defs.className = "defs";
-    defs.append(renderDefinition(prons.text, entry.taiwan_refs));
-    row.append(defs);
+    // Definitions: only the switched-on dictionaries show — nothing checked
+    // means no definitions at all.
+    if (entry.definitions) {
+        for (const source of entry.definitions) {
+            if (!state.defSources.has(source.anchor)) continue;
+            // CC-CEDICT uses the cleaned text; its pronunciation/classifier notes
+            // are shown as separate rows below.
+            const defs = source.anchor === "cedict" ? [prons.text] : source.defs;
+            row.append(
+                definitionsBlock(
+                    { anchor: source.anchor, label: source.label, defs },
+                    entry.taiwan_refs
+                )
+            );
+        }
+    }
 
     for (const note of prons.taiwan) {
         row.append(detailRow("Taiwan pronunciation: ", furigana(primary, numericToMarked(note))));
     }
     for (const note of prons.others) {
-        row.append(detailRow("Also pronounced: ", furigana(primary, numericToMarked(note))));
-    }
-    for (const token of prons.classifiers) {
-        row.append(detailRow("Classifier: ", classifierNode(token)));
+        // Show the register label (e.g. "colloquial") alongside the reading.
+        const label = note.label ? `Also pronounced (${note.label}): ` : "Also pronounced: ";
+        row.append(detailRow(label, furigana(primary, numericToMarked(note.reading))));
     }
     return row;
 }
@@ -420,15 +533,23 @@ async function search(query) {
 }
 
 // Render the segmented input as clickable words (clicking one searches it).
+// Found words are annotated with furigana; whitespace is left plain.
 function renderParsed(tokens) {
     parsed.replaceChildren();
     for (const token of tokens) {
         const node = document.createElement("span");
         node.className = "parsed-word";
-        node.textContent = token.text;
-        if (token.entries.length) {
+        if (!token.text.trim()) {
+            node.classList.add("space"); // whitespace: no underline
+            node.textContent = token.text;
+        } else if (token.entries.length) {
+            const entry = token.entries[0];
+            const reading = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
+            node.append(furigana(token.text, reading));
             node.classList.add("clickable");
             node.addEventListener("click", () => search(token.text));
+        } else {
+            node.textContent = token.text;
         }
         parsed.append(node);
     }
@@ -464,6 +585,11 @@ function queryFromUrl() {
 
 // Run a search and put the query in the URL, so a reload keeps the results.
 function performSearch(query) {
+    // A "#anchor" query jumps to that section of the About page (e.g. #cedict).
+    if (query.startsWith("#") && query.length > 1) {
+        location.assign(`/about${query}`);
+        return;
+    }
     input.value = query;
     showTagline(false);
     history.pushState({ q: query }, "", `?q=${encodeURIComponent(query)}`);
@@ -500,6 +626,9 @@ function loadPrefs() {
         state.toneColoring = localStorage.getItem("yabai-chaci-tone") === "true";
         state.phonetic = localStorage.getItem("yabai-chaci-phonetic") === "zhuyin" ? "zhuyin" : "pinyin";
         state.taiwan = localStorage.getItem("yabai-chaci-taiwan") === "true";
+        const defSources = JSON.parse(localStorage.getItem("yabai-chaci-def-sources") || "[]");
+        state.defSources = new Set(defSources);
+        state.lang = localStorage.getItem("yabai-chaci-lang") || "EN";
     } catch (e) {
         // localStorage unavailable — keep the defaults.
     }
@@ -507,6 +636,8 @@ function loadPrefs() {
     toneToggle.checked = state.toneColoring;
     phoneticToggle.checked = state.phonetic === "zhuyin";
     taiwanToggle.checked = state.taiwan;
+    for (const input of sourceToggles) input.checked = state.defSources.has(input.dataset.anchor);
+    applyLang(state.lang);
 }
 
 // Persist the display preferences.
@@ -516,6 +647,8 @@ function savePrefs() {
         localStorage.setItem("yabai-chaci-tone", String(state.toneColoring));
         localStorage.setItem("yabai-chaci-phonetic", state.phonetic);
         localStorage.setItem("yabai-chaci-taiwan", String(state.taiwan));
+        localStorage.setItem("yabai-chaci-def-sources", JSON.stringify([...state.defSources]));
+        localStorage.setItem("yabai-chaci-lang", state.lang);
     } catch (e) {
         // localStorage unavailable — nothing to save.
     }
@@ -544,6 +677,48 @@ taiwanToggle.addEventListener("change", () => {
     const query = input.value.trim();
     if (query) search(query);
     else redraw();
+});
+
+// TEMPORARY: toggling a dictionary switches to the per-source definitions view.
+for (const toggle of sourceToggles) {
+    toggle.addEventListener("change", () => {
+        if (toggle.checked) state.defSources.add(toggle.dataset.anchor);
+        else state.defSources.delete(toggle.dataset.anchor);
+        savePrefs();
+        redraw();
+    });
+}
+
+// --- search-language dropdown (EN / ZH / TW) ------------------------------
+// Set the chosen language: update the button label and the selected option.
+// (Selection is stored but doesn't change search behaviour yet.)
+function applyLang(value) {
+    state.lang = value;
+    langButton.textContent = value;
+    for (const item of langMenu.querySelectorAll("[role='option']")) {
+        item.setAttribute("aria-selected", String(item.dataset.value === value));
+    }
+}
+
+function setLangOpen(open) {
+    langMenu.hidden = !open;
+    langButton.setAttribute("aria-expanded", String(open));
+}
+
+langButton.addEventListener("click", () => setLangOpen(langMenu.hidden));
+langMenu.addEventListener("click", (event) => {
+    const item = event.target.closest("[role='option']");
+    if (!item) return;
+    applyLang(item.dataset.value);
+    savePrefs();
+    setLangOpen(false);
+});
+// Close the menu when clicking elsewhere, or pressing Escape.
+document.addEventListener("click", (event) => {
+    if (!langSelect.contains(event.target)) setLangOpen(false);
+});
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setLangOpen(false);
 });
 
 // Toggle the "Search options" panel. The open/close animation is pure CSS (the

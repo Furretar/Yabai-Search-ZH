@@ -1,4 +1,4 @@
-/* Colour scheme — edit these values to retheme the site. */
+/* Colour scheme and sizes — edit these values to retheme the site. */
 :root {
     /* Accent / highlight: on-switches, links, clickable words. */
     --accent: #ffca28;
@@ -8,6 +8,24 @@
 
     /* The reading (pinyin / zhuyin) above the main word. */
     --reading: #ffffff;
+
+    /* Furigana sizing (the reading annotation shown above a word).
+       -reading values are a fraction (em) of the furigana's own size, so the
+       top annotation line can be scaled without touching the characters. */
+    --furigana-reading: 1.1rem;
+    /* top line: main word & definitions */
+    --furigana-detail: 0.9rem;
+    /* detail rows ("Also pronounced", class) */
+    --furigana-detail-reading: 0.9em;
+    /* detail rows: top annotation line */
+
+    /* Result text sizes. */
+    --headword-size: 2.5rem;
+    /* the Chinese word shown in a result */
+    --definition-size: 1.2rem;
+    /* the English definitions under it */
+    --detail-size: 1.0rem;
+    /* the muted detail rows ("Also pronounced", "Classifier") */
 
     /* De-emphasised text (tagline, "other forms", "No results"). */
     --muted: color-mix(in srgb, currentColor 65%, transparent);

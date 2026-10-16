@@ -19,6 +19,11 @@ body {
     /* Page background; --bg is set per color scheme (falls back to the
        system canvas color when unset). */
     background: var(--bg, Canvas);
+    /* Column layout so the footer can be pushed to the very bottom. */
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100vh - 4rem);
+    /* minus the 2rem top/bottom margins */
 }
 
 /* The site title links back to the home view. */
@@ -38,6 +43,7 @@ h1 {
     display: flex;
     align-items: flex-end;
     gap: .4rem;
+    font-size: 2.5rem;
 }
 
 .site-subtitle {
@@ -83,8 +89,8 @@ button {
     border: 1px solid var(--panel-border);
     border-radius: .5rem;
     margin-bottom: 1.5rem;
-    overflow: hidden;
-    /* clip the children to the rounded corners */
+    /* visible so the search-language menu can drop below the panel */
+    overflow: visible;
     transition: border-color 0.3s ease;
 }
 
@@ -102,6 +108,74 @@ button {
 .search-panel input {
     border: none;
     background: transparent;
+}
+
+/* Search-language dropdown, to the left of the input. The button shows the
+   short code ("EN"); the menu lists the long labels. */
+.lang-select {
+    position: relative;
+    display: flex;
+    align-items: center;
+    margin-right: .5rem;
+}
+
+/* A little gray separator between the language menu and the input. */
+.lang-select::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: 0;
+    width: 1px;
+    height: 1.2em;
+    transform: translateY(-50%);
+    background: var(--border);
+}
+
+.lang-button {
+    padding: .5rem .6rem;
+    border: none;
+    background: none;
+    font: inherit;
+    font-weight: 600;
+    color: var(--control);
+    cursor: pointer;
+}
+
+.lang-button::after {
+    content: " ▾";
+    font-size: .7em;
+}
+
+.lang-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 20;
+    margin: .25rem 0 0;
+    padding: .25rem 0;
+    list-style: none;
+    min-width: 11rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: .35rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
+}
+
+.lang-menu li {
+    padding: .35rem .75rem;
+    font-size: .9rem;
+    color: var(--control);
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.lang-menu li:hover {
+    background: var(--panel-bg);
+}
+
+.lang-menu li[aria-selected="true"] {
+    color: var(--accent);
+    font-weight: 600;
 }
 
 /* Display option switches under the search bar. They wrap onto another line
@@ -221,7 +295,7 @@ button {
 
 /* The Chinese characters in a result. */
 .hanzi {
-    font-size: 1.8rem;
+    font-size: var(--headword-size);
 }
 
 /* Furigana: a two-row grid with one column per character, so each reading sits
@@ -234,7 +308,7 @@ button {
 
 .furigana .reading {
     grid-row: 1;
-    font-size: 0.55em;
+    font-size: var(--furigana-reading);
     line-height: 1;
     white-space: nowrap;
 }
@@ -275,21 +349,97 @@ button {
     margin-left: .5rem;
 }
 
+/* Source chips: the dictionaries that contain a headword, shown between the word
+   and its definitions. */
+.sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .35rem;
+    margin-top: .3rem;
+}
+
+.source {
+    font-size: .75rem;
+    line-height: 1.2;
+    padding: .1rem .45rem;
+    border: 1px solid var(--border);
+    border-radius: .35rem;
+    color: var(--muted);
+    text-decoration: none;
+}
+
+.source:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
 /* The English definitions in a result. */
 .defs {
     margin-top: .25rem;
-    font-size: 1.2rem;
+    font-size: var(--definition-size);
+}
+
+/* TEMPORARY: a labeled block of one dictionary's definitions. */
+.def-source {
+    margin-top: .4rem;
+}
+
+.def-source-name {
+    font-size: .75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--muted);
+    text-decoration: none;
+}
+
+.def-source-line {
+    margin-top: .15rem;
+    font-size: var(--definition-size);
+}
+
+.def-source-num {
+    margin-right: .35rem;
+    color: var(--muted);
+}
+
+.def-source-cls {
+    margin-top: .2rem;
+    font-size: .85rem;
+    color: var(--muted);
+}
+
+.def-source-cls-label {
+    font-weight: 600;
 }
 
 /* The other script form shown under a result (e.g. traditional when showing simplified). */
 .other-forms {
     margin-top: .15rem;
-    font-size: .9rem;
+    font-size: var(--detail-size);
     color: var(--muted);
+}
+
+/* Furigana inside the muted detail rows (classifiers, alternate readings): keep
+   the word and its reading bigger than the surrounding label so the content
+   stands out instead of shrinking down with the muted text. */
+.other-forms .furigana {
+    font-size: var(--furigana-detail);
+}
+
+/* ...but enlarge only the on-top reading (the pinyin/zhuyin annotation) in those
+   rows; the character below keeps the 1.2rem size from the rule above. */
+.other-forms .furigana .reading {
+    font-size: var(--furigana-detail-reading);
 }
 
 /* De-emphasized text (e.g. "No results."). */
 .muted {
+    color: var(--muted);
+}
+
+/* The "Updated <date>" note beside a source on the About page. */
+.updated {
     color: var(--muted);
 }
 
@@ -311,6 +461,33 @@ button {
     margin-top: 1rem;
 }
 
+/* TEMPORARY: per-dictionary definition switches, under the search options. They
+   reuse the .toggles switch styling, so they render as yellow switches. */
+.source-toggles {
+    align-items: center;
+    padding: 0 .75rem .75rem;
+    margin-bottom: 0;
+}
+
+.source-toggles-label {
+    color: var(--muted);
+}
+
+/* Page footer (e.g. the About link), pinned to the bottom and centered. */
+footer {
+    margin-top: auto;
+    padding-top: 1rem;
+    border-top: 1px solid var(--entry-divider);
+    font-size: .9rem;
+    text-align: center;
+}
+
+/* The "Search Functions" bullet list. */
+ul.tagline {
+    margin: .35rem 0 0;
+    padding-left: 1.25rem;
+}
+
 /* The parsed input: each word is a clickable chip. */
 #parsed {
     line-height: 2;
@@ -320,13 +497,21 @@ button {
 .parsed-word {
     font-size: 1.5rem;
     padding: 0 .1rem;
+    /* Underline each segmented word so the boundaries are visible. */
+    text-decoration: underline;
+}
+
+/* Whitespace between words is not underlined. */
+.parsed-word.space {
+    text-decoration: none;
+}
+
+/* Underline shows through the furigana grid. */
+.parsed-word .char {
+    text-decoration: underline;
 }
 
 .parsed-word.clickable {
     color: var(--accent);
     cursor: pointer;
-}
-
-.parsed-word.clickable:hover {
-    text-decoration: underline;
 }

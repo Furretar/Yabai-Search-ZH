@@ -22,6 +22,8 @@ RULES: list[tuple[str, str]] = [
     (r"\babbr\.", "abbreviation"),
     # grammar / register
     (r"\bonom\.", "onomatopoeia"),
+    (r"\bsth\b", "something"), 
+
 ]
 
 # Compile the rules once, at import time (regex compilation is not free).

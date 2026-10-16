@@ -71,6 +71,35 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
     content_rowid='id',
     tokenize='unicode61'
 );
+
+-- Standardized senses and classifiers. Every source database has tables with
+-- these exact shapes, so the app reads definitions and classifiers the same way
+-- regardless of the dictionary. `senses` holds the definition split into
+-- numbered items; `classifiers` holds the measure words, with traditional and
+-- simplified forms kept separately so the Traditional toggle can switch them.
+DROP TABLE IF EXISTS senses;
+DROP TABLE IF EXISTS classifiers;
+
+CREATE TABLE senses (
+    word     TEXT NOT NULL,   -- headword the sense belongs to (simplified)
+    position INTEGER NOT NULL,-- 1-based order within the headword
+    text     TEXT NOT NULL    -- the sense itself
+);
+CREATE INDEX idx_senses_word ON senses(word);
+
+CREATE TABLE classifiers (
+    word        TEXT NOT NULL, -- headword the classifier applies to
+    traditional TEXT,          -- classifier, traditional form
+    simplified  TEXT,          -- classifier, simplified form
+    codes       TEXT,          -- variety codes (e.g. "m c" from Wiktionary)
+    note        TEXT           -- free-text classifier note (e.g. from MOE), else ''
+);
+CREATE INDEX idx_classifiers_word ON classifiers(word);
+
+-- Small key/value metadata table (lets the About page show when the data was
+-- last updated). Every source database has one.
+DROP TABLE IF EXISTS meta;
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
@@ -115,6 +144,43 @@ def parse_line(line: str):
     )
 
 
+# A CEDICT classifier token: "個|个[ge4]" or "滴[di1]".
+_CL_TOKEN_RE = re.compile(r"^([^|\[]+?)(?:\|([^|\[]+?))?\[[^\]]+\]$")
+# A definition item that is really a note (pronunciation/register), not a sense.
+_NOTE_RE = re.compile(
+    r"^(?:Taiwan|Beijing|also|old|ancient|colloquial|coll\.|commonly|Mandarin)?\s*"
+    r"(?:pr\.|pronounced)"
+)
+
+
+def split_senses(text: str) -> list[str]:
+    """Split a joined definition into clean, numbered senses.
+
+    CEDICT joins senses with "; ". Classifier lists ("CL:...") and pronunciation
+    notes ("also pr. [...]") are not senses, so they are dropped here (the
+    classifiers are stored separately).
+    """
+    senses = []
+    for item in text.split(";"):
+        item = item.strip()
+        if not item or item.startswith("CL:") or _NOTE_RE.match(item):
+            continue
+        senses.append(item)
+    return senses
+
+
+def extract_classifiers(text: str) -> list[tuple[str, str]]:
+    """(traditional, simplified) pairs for every CEDICT "CL:" classifier."""
+    found = []
+    for match in re.finditer(r"CL:\s*([^;]+)", text):
+        for token in match.group(1).split(","):
+            token = token.strip()
+            tm = _CL_TOKEN_RE.match(token)
+            if tm:
+                found.append((tm.group(1), tm.group(2) or tm.group(1)))
+    return found
+
+
 def build(source: Path, db_path: Path, limit: int | None) -> None:
     """(Re)build the SQLite database from `source`."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,6 +193,11 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
     # Speed up a bulk load: disable crash-safe journaling while importing.
     connection.execute("PRAGMA journal_mode=OFF")
     connection.execute("PRAGMA synchronous=OFF")
+    # CEDICT has no date in the file, so record when this snapshot was built.
+    connection.execute(
+        "INSERT INTO meta (key, value) VALUES ('updated', ?)",
+        (time.strftime("%Y-%m-%d"),),
+    )
 
     insert = (
         "INSERT INTO entries "
@@ -134,10 +205,26 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
         " english, english_normalized) "
         "VALUES (?,?,?,?,?,?,?)"
     )
-    rows: list[tuple] = []  # buffer of rows waiting to be written
+    insert_sense = "INSERT INTO senses (word, position, text) VALUES (?,?,?)"
+    insert_classifier = (
+        "INSERT INTO classifiers (word, traditional, simplified, codes, note) "
+        "VALUES (?,?,?,?,?)"
+    )
+    rows: list[tuple] = []  # buffer of entry rows waiting to be written
+    sense_rows: list[tuple] = []  # (word, position, text)
+    cls_rows: list[tuple] = []  # (word, traditional, simplified, codes, note)
     kept = 0  # entries accepted so far
     skipped = 0  # lines that didn't match the expected format
     started = time.time()
+
+    def flush() -> None:
+        """Write every buffered batch and clear the buffers."""
+        connection.executemany(insert, rows)
+        connection.executemany(insert_sense, sense_rows)
+        connection.executemany(insert_classifier, cls_rows)
+        rows.clear()
+        sense_rows.clear()
+        cls_rows.clear()
 
     with open_source(source) as handle:
         for line in handle:
@@ -148,17 +235,23 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
             if row is None:
                 skipped += 1
                 continue
+            traditional, simplified, _pinyin, _numeric, _toneless, english, normalized = row
             rows.append(row)
+            # Standardized senses (1., 2., ...) and classifiers, keyed by the
+            # simplified headword.
+            for position, sense in enumerate(split_senses(normalized), start=1):
+                sense_rows.append((simplified, position, sense))
+            for trad, simp in extract_classifiers(english):
+                cls_rows.append((simplified, trad, simp, "", ""))
             kept += 1
             # Flush every 5000 rows: fewer, larger transactions is faster.
             if len(rows) >= 5000:
-                connection.executemany(insert, rows)
-                rows.clear()
+                flush()
             # Stop early when the caller asked for a limited test import.
             if limit and kept >= limit:
                 break
     if rows:
-        connection.executemany(insert, rows)  # flush the last partial batch
+        flush()  # flush the last partial batch
 
     # Populate the full-text index from the normalized English column.
     print("building full-text index...")

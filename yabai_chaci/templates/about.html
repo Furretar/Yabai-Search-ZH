@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>About — Yabai-Chaci</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <!-- Colour scheme variables; edit variables.css to retheme. -->
+    <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+</head>
+
+<body>
+    <h1><a id="home-link" href="/">牙白查词</a> <span class="site-subtitle">Yabai Search</span></h1>
+
+    <p>牙白查词 / Yabai Search is a powerful Chinese–English dictionary. It supports many different search functions, along
+        with Simplified characters, Traditional characters, Zhuyin/Bopomofo, and Taiwanese Mandarin.</p>
+    <p>Planned: Character search support, monolingual definitions, audio, example sentences, frequency, more sources
+        (wikitionary).</p>
+
+    <h2>Search tips</h2>
+    <ul>
+        <li>漢字/汉字 - Search Simplified or Traditional Chinese</li>
+        <li>dangan - pinyin, any tone (matches 档案 单干)</li>
+        <li>*字 - Wildcard, search all words that end with 字</li>
+        <li>shi4shi2 - Specify tones</li>
+        <li>shi4shi - Leave tone blank, matches any tone</li>
+    </ul>
+
+    <h2 id="sources">Sources &amp; Licenses</h2>
+    <ul>
+        <li id="cedict"><a href="https://www.mdbg.net/chinese/dictionary?page=cedict" target="_blank" rel="noopener">CC-CEDICT</a>
+            - the dictionary entries (CC BY-SA 4.0).{% if updated.cedict %} <span class="updated">Updated {{ updated.cedict }}.</span>{% endif %}</li>
+        <li id="moe"><a href="https://language.moe.gov.tw/001/Upload/Files/site_content/M0001/respub/dict_concised_download.html" target="_blank" rel="noopener">《國語辭典簡編本》</a>
+            (Ministry of Education, Taiwan) - Taiwanese Mandarin readings (CC BY-ND 3.0 TW).{% if updated.moe %} <span class="updated">Updated {{ updated.moe }}.</span>{% endif %}</li>
+        <li id="wiktionary"><a href="https://en.wiktionary.org/" target="_blank" rel="noopener">Wiktionary</a>
+            (via <a href="https://kaikki.org/dictionary/Chinese/" target="_blank" rel="noopener">kaikki.org</a>) - word list
+            (CC BY-SA 4.0 / GFDL).{% if updated.wiktionary %} <span class="updated">Updated {{ updated.wiktionary }}.</span>{% endif %}</li>
+    </ul>
+    <h2>Contact</h2>
+
+    You can email me at wyattpetrock2@gmail.com or woahzers@proton.me. Or add furretar2 on discord.
+
+
+    <footer>
+        <a href="/">← Back to search</a>
+    </footer>
+</body>
+
+</html>

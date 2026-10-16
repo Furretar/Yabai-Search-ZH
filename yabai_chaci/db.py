@@ -15,6 +15,92 @@ DB_PATH = Path(__file__).resolve().parents[1] / "data" / "cedict.sqlite"
 # Path to the MOE dictionary (Taiwan readings), built by scripts/import_moe.py.
 MOE_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "moe.sqlite"
 
+# Path to the Wiktionary headword list (kaikki.org/Wiktextract), built by
+# scripts/import_wiktionary.py.
+WIKTIONARY_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "wiktionary.sqlite"
+
+# Which dictionaries contain a headword — drives the source chips, the
+# per-dictionary definitions and the classifiers shown under a result. Each dict:
+#   label      display name (chip / definition header)
+#   anchor     id of its section on the About page
+#   database   its SQLite file
+#   sql        returns one column of headwords; the `IN (...)` word list appears
+#              "repeat" times, so a query over two columns sets repeat=2
+#   sense_sql  returns (word, position, text) numbered senses for the headword
+#   cls_sql    returns (word, traditional, simplified, codes, note) classifiers
+# Every source database has `senses` and `classifiers` tables of the same shape
+# (see the importers), so these queries are identical across sources.
+_SENSES_SQL = "SELECT word, position, text FROM senses WHERE word IN ({ph}) ORDER BY position"
+_CLASSIFIERS_SQL = (
+    "SELECT word, traditional, simplified, codes, note FROM classifiers "
+    "WHERE word IN ({ph})"
+)
+# Wiktionary stores its senses as glosses in the `wiktionary` table, not `senses`.
+_WIKTIONARY_SENSES_SQL = (
+    "SELECT word, 0 AS position, gloss AS text FROM wiktionary "
+    "WHERE word IN ({ph}) AND gloss IS NOT NULL"
+)
+
+_SOURCE_QUERIES = [
+    {
+        "label": "CC-CEDICT",
+        "anchor": "cedict",
+        "database": DB_PATH,
+        "sql": "SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ({ph})"
+               " UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ({ph})",
+        "repeat": 2,
+        "sense_sql": _SENSES_SQL,
+        "cls_sql": _CLASSIFIERS_SQL,
+    },
+    {
+        "label": "國語辭典簡編本",
+        "anchor": "moe",
+        "database": MOE_DB_PATH,
+        "sql": "SELECT DISTINCT word FROM moe WHERE word IN ({ph})",
+        "repeat": 1,
+        "sense_sql": _SENSES_SQL,
+        "cls_sql": _CLASSIFIERS_SQL,
+    },
+    {
+        "label": "Wiktionary",
+        "anchor": "wiktionary",
+        "database": WIKTIONARY_DB_PATH,
+        "sql": "SELECT DISTINCT word FROM wiktionary WHERE word IN ({ph})",
+        "repeat": 1,
+        "sense_sql": _WIKTIONARY_SENSES_SQL,
+        "cls_sql": _CLASSIFIERS_SQL,
+    },
+]
+
+def sources() -> list[dict]:
+    """Each source's label, About-page anchor and last-updated date.
+
+    The label/anchor drive the source chips and definition headers; `updated` is
+    read from the source database's `meta` table (written by its importer) so the
+    About page can show when the data was last refreshed. `updated` is None when
+    the database isn't present yet.
+    """
+    info = []
+    for source in _SOURCE_QUERIES:
+        database = source["database"]
+        updated = None
+        if database.exists():
+            try:
+                connection = sqlite3.connect(database)
+                try:
+                    row = connection.execute(
+                        "SELECT value FROM meta WHERE key = 'updated'"
+                    ).fetchone()
+                    updated = row[0] if row else None
+                finally:
+                    connection.close()
+            except sqlite3.Error:
+                updated = None
+        info.append(
+            {"label": source["label"], "anchor": source["anchor"], "updated": updated}
+        )
+    return info
+
 # Cache of the traditional -> simplified character map, built once from the
 # dictionary's single-character entries. None until built.
 _simplify_cache: dict[str, str] | None = None
@@ -321,8 +407,120 @@ def _taiwan_reading(
     return _derive_taiwan(word, pinyin, char_map)
 
 
-def _attach_taiwan(entries: list[dict]) -> list[dict]:
-    """Fill in Taiwan readings: each entry's own word and its cross-references.
+def _attach_sources(entries: list[dict]) -> list[dict]:
+    """Set entry["sources"] to the labels of dictionaries that list the headword.
+
+    Membership is read from each dictionary's own storage (see _SOURCE_QUERIES),
+    so adding a dictionary there is all it takes to give its headwords a chip.
+    Every entry starts with an empty list.
+    """
+    words = sorted(
+        {entry["traditional"] for entry in entries}
+        | {entry["simplified"] for entry in entries}
+    )
+    for entry in entries:
+        entry["sources"] = []
+    if not words:
+        return entries
+    placeholders = ",".join("?" * len(words))
+    for source in _SOURCE_QUERIES:
+        database = source["database"]
+        if not database.exists():
+            continue
+        connection = sqlite3.connect(database)
+        try:
+            rows = connection.execute(
+                source["sql"].format(ph=placeholders), tuple(words) * source["repeat"]
+            ).fetchall()
+        finally:
+            connection.close()
+        found = {row[0] for row in rows}
+        for entry in entries:
+            if entry["traditional"] in found or entry["simplified"] in found:
+                entry["sources"].append(
+                    {"label": source["label"], "anchor": source["anchor"]}
+                )
+    return entries
+
+
+# Cap on the number of definitions shown per source, per headword (keeps a common
+# word from dumping dozens of Wiktionary glosses).
+_MAX_DEFS = 12
+
+
+def _attach_definitions(entries: list[dict]) -> list[dict]:
+    """Set entry["definitions"] to each dictionary's senses and classifiers.
+
+    A list, in registry order, of {"anchor", "label", "defs", "classifiers"} for
+    every source that has something for the headword. `defs` is the numbered
+    senses; `classifiers` is a list of {traditional, simplified, codes, note}.
+    """
+    words = sorted(
+        {entry["traditional"] for entry in entries}
+        | {entry["simplified"] for entry in entries}
+    )
+    for entry in entries:
+        entry["definitions"] = []
+    if not words:
+        return entries
+    placeholders = ",".join("?" * len(words))
+    params = tuple(words)
+
+    # Fetch every source's senses and classifiers once for the whole result set.
+    senses: dict[str, dict[str, list[str]]] = {}
+    classifiers: dict[str, dict[str, list[dict]]] = {}
+    for source in _SOURCE_QUERIES:
+        anchor = source["anchor"]
+        senses[anchor] = {}
+        classifiers[anchor] = {}
+        if not source["database"].exists():
+            continue
+        connection = sqlite3.connect(source["database"])
+        try:
+            for word, _position, text in connection.execute(
+                source["sense_sql"].format(ph=placeholders), params
+            ):
+                if text and text.strip():
+                    senses[anchor].setdefault(word, []).append(text.strip())
+            for word, trad, simp, codes, note in connection.execute(
+                source["cls_sql"].format(ph=placeholders), params
+            ):
+                classifiers[anchor].setdefault(word, []).append(
+                    {
+                        "traditional": trad,
+                        "simplified": simp,
+                        "codes": codes or "",
+                        "note": note or "",
+                    }
+                )
+        finally:
+            connection.close()
+
+    def for_entry(mapping: dict, entry: dict) -> list:
+        """The value for an entry, looked up by traditional then simplified."""
+        return mapping.get(entry["traditional"]) or mapping.get(entry["simplified"]) or []
+
+    for entry in entries:
+        defs = []
+        for source in _SOURCE_QUERIES:
+            anchor = source["anchor"]
+            values = for_entry(senses[anchor], entry)
+            clss = for_entry(classifiers[anchor], entry)
+            if values or clss:
+                defs.append(
+                    {
+                        "anchor": anchor,
+                        "label": source["label"],
+                        "defs": values[:_MAX_DEFS],
+                        "classifiers": clss[:_MAX_DEFS],
+                    }
+                )
+        entry["definitions"] = defs
+    return entries
+
+
+def _decorate(entries: list[dict]) -> list[dict]:
+    """Fill in Taiwan readings, source chips and per-dictionary definitions.
 
     A whole-word MOE reading is only used when the word has a single CEDICT
     reading — for polyphonic words the MOE reading is keyed by the word, not the
@@ -357,6 +555,11 @@ def _attach_taiwan(entries: list[dict]) -> list[dict]:
             if reading:
                 taiwan_refs[simplified] = reading
         entry["taiwan_refs"] = taiwan_refs
+
+    # Add the source chips and per-dictionary definitions last, once every entry
+    # dict is fully built.
+    _attach_sources(entries)
+    _attach_definitions(entries)
     return entries
 
 
@@ -371,7 +574,7 @@ def lookup(word: str) -> list[dict]:
         ).fetchall()
     finally:
         connection.close()
-    return _attach_taiwan([dict(row) for row in rows])
+    return _decorate([dict(row) for row in rows])
 
 
 def _has_cjk(text: str) -> bool:
@@ -498,7 +701,7 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
             rows = connection.execute(sql, params).fetchall()
         finally:
             connection.close()
-        return _attach_taiwan([dict(row) for row in rows])
+        return _decorate([dict(row) for row in rows])
 
     # Bopomofo / zhuyin (e.g. "ㄉㄢㄍㄢˋ"): convert to numeric pinyin first so
     # the tone-number branch below handles it.
@@ -546,7 +749,7 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
             if rank is not None:
                 ranked.append((rank, len(row["simplified"]), row["id"], dict(row)))
         ranked.sort(key=lambda item: item[:3])
-        return _attach_taiwan([item[3] for item in ranked[:limit]])
+        return _decorate([item[3] for item in ranked[:limit]])
 
     # Exact pinyin reading (e.g. "yabai" -> 牙白): if the query is a complete
     # Chinese pronunciation, show only those matches and skip English results.
@@ -556,35 +759,34 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
     segments = [to_toneless(part) for part in re.split(r"['’\s]+", query) if part]
     pinyin_key = to_toneless(query)
     if pinyin_key:
+        # A bare query matches the whole reading or a word that starts with it,
+        # with exact matches first ("xinu" and "xinu*" behave the same). A '*'
+        # makes it a pattern ("*xinu*" also matches words that merely contain it).
+        pattern = (
+            _like_pattern("*".join(to_toneless(part) for part in query.split("*")))
+            if wildcard
+            else _like_pattern(f"{pinyin_key}*")
+        )
         connection = connect()
         try:
-            if wildcard:
-                pattern = _like_pattern("*".join(to_toneless(part) for part in query.split("*")))
-                rows = connection.execute(
-                    "SELECT simplified, traditional, pinyin, english, english_normalized "
-                    "FROM entries WHERE pinyin_toneless LIKE ? ESCAPE '\\' "
-                    "ORDER BY length(simplified), id LIMIT ?",
-                    (pattern, limit),
-                ).fetchall()
-            else:
-                rows = connection.execute(
-                    "SELECT simplified, traditional, pinyin, english, english_normalized "
-                    "FROM entries WHERE pinyin_toneless = ? "
-                    "ORDER BY length(simplified), id LIMIT ?",
-                    (pinyin_key, limit),
-                ).fetchall()
-                # With the Taiwan toggle on, also match MOE (Taiwan) readings, so
-                # a query like "lese" finds 垃圾.
-                if taiwan:
-                    words = sorted(_moe_toneless_map().get(pinyin_key, ()))
-                    if words:
-                        holes = ",".join("?" * len(words))
-                        rows += connection.execute(
-                            "SELECT simplified, traditional, pinyin, english, english_normalized "
-                            f"FROM entries WHERE traditional IN ({holes}) "
-                            "ORDER BY length(simplified), id LIMIT ?",
-                            (*words, limit),
-                        ).fetchall()
+            rows = connection.execute(
+                "SELECT simplified, traditional, pinyin, english, english_normalized "
+                "FROM entries WHERE pinyin_toneless LIKE ? ESCAPE '\\' "
+                "ORDER BY (pinyin_toneless = ?) DESC, length(simplified), id LIMIT ?",
+                (pattern, pinyin_key, limit),
+            ).fetchall()
+            # With the Taiwan toggle on, also match MOE (Taiwan) readings, so a
+            # query like "lese" finds 垃圾.
+            if taiwan:
+                words = sorted(_moe_toneless_map().get(pinyin_key, ()))
+                if words:
+                    holes = ",".join("?" * len(words))
+                    rows += connection.execute(
+                        "SELECT simplified, traditional, pinyin, english, english_normalized "
+                        f"FROM entries WHERE traditional IN ({holes}) "
+                        "ORDER BY length(simplified), id LIMIT ?",
+                        (*words, limit),
+                    ).fetchall()
         finally:
             connection.close()
         # Only real (hanzi) words count; skip latin headwords like the slang
@@ -605,7 +807,7 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
                 seen.add(key)
                 entries.append(dict(row))
         if entries:
-            return _attach_taiwan(entries[:limit])
+            return _decorate(entries[:limit])
 
     # Chinese: convert to simplified, and treat a plain query as a prefix search.
     chinese = _convert(query, _simplify_map())
@@ -662,4 +864,4 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
     finally:
         connection.close()  # always close, even if the query raised
 
-    return _attach_taiwan([dict(row) for row in rows])
+    return _decorate([dict(row) for row in rows])
