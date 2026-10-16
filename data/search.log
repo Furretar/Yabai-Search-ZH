@@ -1,0 +1,308 @@
+[2026-10-16 21:04:56] '阮咸' -> 1 results in 55.0 ms
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT traditional, simplified FROM entries WHERE length(traditional) = 1 AND length(simplified) = 1 AND traditional <> simplified
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT k, v FROM 'main'.'entries_fts_config'
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE simplified LIKE '阮咸%' ESCAPE '\' OR english_normalized LIKE '%阮咸%' ESCAPE '\' ORDER BY (simplified = '阮咸') DESC, (simplified LIKE '阮咸%' ESCAPE '\') DESC, (english_normalized LIKE '阮咸%' ESCAPE '\') DESC, (id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH '"阮咸"')) DESC, length(simplified), id LIMIT 50
+    -- PRAGMA 'main'.data_version
+    -- PRAGMA 'main'.data_version
+    -- SELECT k, v FROM 'main'.'entries_fts_config'
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('阮咸') AND pinyin <> ''
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('阮') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('阮咸') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('阮咸')
+    SELECT DISTINCT word FROM moe WHERE word IN ('阮咸')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('阮咸')
+    SELECT word, position, text FROM senses WHERE word IN ('阮咸') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮咸')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('阮咸') OR main IN ('阮咸')
+    SELECT word, position, text FROM senses WHERE word IN ('阮咸') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮咸')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('阮咸') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮咸')
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE simplified = '阮' OR traditional = '阮' ORDER BY id
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('阮','阮') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('阮') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('阮')
+    SELECT DISTINCT word FROM moe WHERE word IN ('阮')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('阮')
+    SELECT word, position, text FROM senses WHERE word IN ('阮') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('阮') OR main IN ('阮')
+    SELECT word, position, text FROM senses WHERE word IN ('阮') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('阮') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮')
+
+[2026-10-16 21:04:57] '阮咸' -> 1 results in 36.8 ms
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT k, v FROM 'main'.'entries_fts_config'
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE simplified LIKE '阮咸%' ESCAPE '\' OR english_normalized LIKE '%阮咸%' ESCAPE '\' ORDER BY (simplified = '阮咸') DESC, (simplified LIKE '阮咸%' ESCAPE '\') DESC, (english_normalized LIKE '阮咸%' ESCAPE '\') DESC, (id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH '"阮咸"')) DESC, length(simplified), id LIMIT 50
+    -- PRAGMA 'main'.data_version
+    -- PRAGMA 'main'.data_version
+    -- SELECT k, v FROM 'main'.'entries_fts_config'
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('阮咸') AND pinyin <> ''
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('阮') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('阮咸') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('阮咸')
+    SELECT DISTINCT word FROM moe WHERE word IN ('阮咸')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('阮咸')
+    SELECT word, position, text FROM senses WHERE word IN ('阮咸') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮咸')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('阮咸') OR main IN ('阮咸')
+    SELECT word, position, text FROM senses WHERE word IN ('阮咸') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮咸')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('阮咸') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮咸')
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE simplified = '阮' OR traditional = '阮' ORDER BY id
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('阮','阮') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('阮') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('阮')
+    SELECT DISTINCT word FROM moe WHERE word IN ('阮')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('阮')
+    SELECT word, position, text FROM senses WHERE word IN ('阮') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('阮') OR main IN ('阮')
+    SELECT word, position, text FROM senses WHERE word IN ('阮') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('阮') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮')
+
+[2026-10-16 21:05:16] '阮咸' -> 1 results in 33.7 ms
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT k, v FROM 'main'.'entries_fts_config'
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE simplified LIKE '阮咸%' ESCAPE '\' OR english_normalized LIKE '%阮咸%' ESCAPE '\' ORDER BY (simplified = '阮咸') DESC, (simplified LIKE '阮咸%' ESCAPE '\') DESC, (english_normalized LIKE '阮咸%' ESCAPE '\') DESC, (id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH '"阮咸"')) DESC, length(simplified), id LIMIT 50
+    -- PRAGMA 'main'.data_version
+    -- PRAGMA 'main'.data_version
+    -- SELECT k, v FROM 'main'.'entries_fts_config'
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('阮咸') AND pinyin <> ''
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('阮') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('阮咸') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('阮咸')
+    SELECT DISTINCT word FROM moe WHERE word IN ('阮咸')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('阮咸')
+    SELECT word, position, text FROM senses WHERE word IN ('阮咸') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮咸')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('阮咸') OR main IN ('阮咸')
+    SELECT word, position, text FROM senses WHERE word IN ('阮咸') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮咸')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('阮咸') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮咸')
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE simplified = '阮' OR traditional = '阮' ORDER BY id
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('阮','阮') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('阮') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('阮')
+    SELECT DISTINCT word FROM moe WHERE word IN ('阮')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('阮')
+    SELECT word, position, text FROM senses WHERE word IN ('阮') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('阮') OR main IN ('阮')
+    SELECT word, position, text FROM senses WHERE word IN ('阮') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('阮') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('阮')
+
+[2026-10-16 21:07:01] 'a' -> 38 results in 46.7 ms
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE pinyin_toneless LIKE 'a%' ESCAPE '\' ORDER BY (pinyin_toneless = 'a') DESC, length(simplified), id LIMIT 50
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('吖','呵','啊','啊','啊','啊','啊','嗄','腌','錒','阿','㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','卬','哀','哀','哎','唉','唉','唵','啽','嗌','嗷','嘊','噯','噯','圫','坳','垇','垵','埃','埃','埯','墺','壒','奡','奧','奧','娭','媕','媼') AND pinyin <> ''
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('啊','腌臢','阿富汗','坳','礙','岸','愛','昂','炎帝','神農','釐','墺','埯','埃及','埃塞俄比亞','奧地利','奧林匹克','娭姐','媕婀') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT DISTINCT word FROM moe WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT word, position, text FROM senses WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') OR main IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT word, position, text FROM senses WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT k, v FROM 'main'.'entries_fts_config'
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE id IN (    SELECT rowid FROM entries_fts WHERE entries_fts MATCH '"a"') ORDER BY length(simplified), id LIMIT 1
+    -- PRAGMA 'main'.data_version
+    -- PRAGMA 'main'.data_version
+    -- SELECT k, v FROM 'main'.'entries_fts_config'
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('Q') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('Q') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('Q')
+    SELECT DISTINCT word FROM moe WHERE word IN ('Q')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('Q')
+    SELECT word, position, text FROM senses WHERE word IN ('Q') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('Q')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('Q') OR main IN ('Q')
+    SELECT word, position, text FROM senses WHERE word IN ('Q') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('Q')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('Q') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('Q')
+
+[2026-10-16 21:07:57] 'a' -> 38 results in 253.2 ms
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE pinyin_toneless LIKE 'a%' ESCAPE '\' ORDER BY (pinyin_toneless = 'a') DESC, length(simplified), id LIMIT 50
+    SELECT DISTINCT word, pinyin FROM moe WHERE pinyin <> ''
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE traditional IN ('啊','阿') ORDER BY length(simplified), id LIMIT 50
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('吖','呵','啊','啊','啊','啊','啊','嗄','腌','錒','阿','㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','卬','哀','哀','哎','唉','唉','唵','啽','嗌','嗷','嘊','噯','噯','圫','坳','垇','垵','埃','埃','埯','墺','壒','奡','奧','奧','娭','媕','媼','阿') AND pinyin <> ''
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('啊','腌臢','阿富汗','坳','礙','岸','愛','昂','炎帝','神農','釐','墺','埯','埃及','埃塞俄比亞','奧地利','奧林匹克','娭姐','媕婀') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT DISTINCT word FROM moe WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT word, position, text FROM senses WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') OR main IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT word, position, text FROM senses WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT k, v FROM 'main'.'entries_fts_config'
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE id IN (    SELECT rowid FROM entries_fts WHERE entries_fts MATCH '"a"') ORDER BY length(simplified), id LIMIT 1
+    -- PRAGMA 'main'.data_version
+    -- PRAGMA 'main'.data_version
+    -- SELECT k, v FROM 'main'.'entries_fts_config'
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('Q') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('Q') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('Q')
+    SELECT DISTINCT word FROM moe WHERE word IN ('Q')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('Q')
+    SELECT word, position, text FROM senses WHERE word IN ('Q') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('Q')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('Q') OR main IN ('Q')
+    SELECT word, position, text FROM senses WHERE word IN ('Q') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('Q')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('Q') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('Q')
+
+[2026-10-16 21:07:57] 'a' -> 38 results in 36.7 ms
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE pinyin_toneless LIKE 'a%' ESCAPE '\' ORDER BY (pinyin_toneless = 'a') DESC, length(simplified), id LIMIT 50
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('吖','呵','啊','啊','啊','啊','啊','嗄','腌','錒','阿','㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','卬','哀','哀','哎','唉','唉','唵','啽','嗌','嗷','嘊','噯','噯','圫','坳','垇','垵','埃','埃','埯','墺','壒','奡','奧','奧','娭','媕','媼') AND pinyin <> ''
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('啊','腌臢','阿富汗','坳','礙','岸','愛','昂','炎帝','神農','釐','墺','埯','埃及','埃塞俄比亞','奧地利','奧林匹克','娭姐','媕婀') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT DISTINCT word FROM moe WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT word, position, text FROM senses WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') OR main IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT word, position, text FROM senses WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('㘭','㝵','㟁','㤅','俺','傲','僾','凹','卬','吖','呵','哀','哎','唉','唵','啀','啊','啽','嗄','嗌','嗳','嗷','嘊','噯','圫','坳','垇','垵','埃','埯','墺','壒','奡','奥','奧','娭','媕','媪','媼','岸','腌','錒','锕','阿')
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT k, v FROM 'main'.'entries_fts_config'
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE id IN (    SELECT rowid FROM entries_fts WHERE entries_fts MATCH '"a"') ORDER BY length(simplified), id LIMIT 1
+    -- PRAGMA 'main'.data_version
+    -- PRAGMA 'main'.data_version
+    -- SELECT k, v FROM 'main'.'entries_fts_config'
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('Q') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('Q') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('Q')
+    SELECT DISTINCT word FROM moe WHERE word IN ('Q')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('Q')
+    SELECT word, position, text FROM senses WHERE word IN ('Q') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('Q')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('Q') OR main IN ('Q')
+    SELECT word, position, text FROM senses WHERE word IN ('Q') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('Q')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('Q') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('Q')
+
+[2026-10-16 21:08:02] '啊' -> 14 results in 40.1 ms
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT k, v FROM 'main'.'entries_fts_config'
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE simplified LIKE '啊%' ESCAPE '\' OR english_normalized LIKE '%啊%' ESCAPE '\' ORDER BY (simplified = '啊') DESC, (simplified LIKE '啊%' ESCAPE '\') DESC, (english_normalized LIKE '啊%' ESCAPE '\') DESC, (id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH '"啊"')) DESC, length(simplified), id LIMIT 50
+    -- PRAGMA 'main'.data_version
+    -- PRAGMA 'main'.data_version
+    -- SELECT k, v FROM 'main'.'entries_fts_config'
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('啊','啊','啊','啊','啊','啊呀','啊喲','也','兮','呀','呵','哇','哪','嗄','歟','吶','啦','天哪') AND pinyin <> ''
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('啊','嗎','呢','呢啊','哪','天啊') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT DISTINCT word FROM moe WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT word, position, text FROM senses WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟') OR main IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT word, position, text FROM senses WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE simplified = '天啊' OR traditional = '天啊' ORDER BY id
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('天啊') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('天啊') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('天啊')
+    SELECT DISTINCT word FROM moe WHERE word IN ('天啊')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('天啊')
+    SELECT word, position, text FROM senses WHERE word IN ('天啊') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('天啊')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('天啊') OR main IN ('天啊')
+    SELECT word, position, text FROM senses WHERE word IN ('天啊') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('天啊')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('天啊') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('天啊')
+
+[2026-10-16 21:10:59] '啊' -> 14 results in 55.2 ms
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT k, v FROM 'main'.'entries_fts_config'
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE simplified LIKE '啊%' ESCAPE '\' OR english_normalized LIKE '%啊%' ESCAPE '\' ORDER BY (simplified = '啊') DESC, (simplified LIKE '啊%' ESCAPE '\') DESC, (english_normalized LIKE '啊%' ESCAPE '\') DESC, (id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH '"啊"')) DESC, length(simplified), id LIMIT 50
+    -- PRAGMA 'main'.data_version
+    -- PRAGMA 'main'.data_version
+    -- SELECT k, v FROM 'main'.'entries_fts_config'
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    -- SELECT pgno FROM 'main'.'entries_fts_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('啊','啊','啊','啊','啊','啊呀','啊喲','也','兮','呀','呵','哇','哪','嗄','歟','吶','啦','天哪') AND pinyin <> ''
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('啊','嗎','呢','呢啊','哪','天啊') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT DISTINCT word FROM moe WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT word, position, text FROM senses WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟') OR main IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT word, position, text FROM senses WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('也','兮','吶','呀','呐','呵','哇','哪','啊','啊呀','啊哟','啊喲','啦','嗄','天哪','欤','歟')
+    ATTACH DATABASE '/home/wyatt/Documents/Yabai-Chaci/data/moe.sqlite' AS moe
+    SELECT simplified, traditional, pinyin, english, english_normalized FROM entries WHERE simplified = '天啊' OR traditional = '天啊' ORDER BY id
+    SELECT DISTINCT word, pinyin FROM moe WHERE word IN ('天啊') AND pinyin <> ''
+    SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ('天啊') UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ('天啊')
+    SELECT DISTINCT word FROM moe WHERE word IN ('天啊')
+    SELECT DISTINCT word FROM wiktionary WHERE word IN ('天啊')
+    SELECT word, position, text FROM senses WHERE word IN ('天啊') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('天啊')
+    SELECT variant, traditional, main, pinyin FROM forms WHERE variant IN ('天啊') OR main IN ('天啊')
+    SELECT word, position, text FROM senses WHERE word IN ('天啊') ORDER BY position
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('天啊')
+    SELECT word, 0 AS position, gloss AS text FROM wiktionary WHERE word IN ('天啊') AND gloss IS NOT NULL
+    SELECT word, traditional, simplified, codes, note FROM classifiers WHERE word IN ('天啊')
+

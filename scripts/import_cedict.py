@@ -96,6 +96,19 @@ CREATE TABLE classifiers (
 );
 CREATE INDEX idx_classifiers_word ON classifiers(word);
 
+-- Variant forms. CEDICT often carries a "see X[reading]" entry for a character
+-- that is only an alternative form/reading of another one. Those are recorded
+-- here (keyed by the main form) so they show as "other forms", not definitions.
+DROP TABLE IF EXISTS forms;
+CREATE TABLE forms (
+    variant     TEXT NOT NULL,  -- the variant's simplified headword ("see X" entry)
+    traditional TEXT,           -- the variant's traditional form
+    main        TEXT NOT NULL,  -- the main form it points to (simplified)
+    pinyin      TEXT            -- the variant's own reading
+);
+CREATE INDEX idx_forms_variant ON forms(variant);
+CREATE INDEX idx_forms_main ON forms(main);
+
 -- Small key/value metadata table (lets the About page show when the data was
 -- last updated). Every source database has one.
 DROP TABLE IF EXISTS meta;
@@ -151,6 +164,22 @@ _NOTE_RE = re.compile(
     r"^(?:Taiwan|Beijing|also|old|ancient|colloquial|coll\.|commonly|Mandarin)?\s*"
     r"(?:pr\.|pronounced)"
 )
+
+
+# A cross-reference-only definition, e.g. "see 夂[zhǐ]" (a variant-form entry).
+_SEE_RE = re.compile(r"^see\s+(.+?)\[([^\]]+)\]$")
+
+
+def see_target(english: str) -> str | None:
+    """The main form referenced by a "see X[reading]" definition, or None.
+
+    CEDICT uses these entries for characters that are only an alternative
+    form/reading of another; we record them as "other forms", not definitions.
+    """
+    match = _SEE_RE.match(english.strip())
+    if not match:
+        return None
+    return match.group(1).split("|")[-1]  # simplified form if written "trad|simp"
 
 
 def split_senses(text: str) -> list[str]:
@@ -210,9 +239,11 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
         "INSERT INTO classifiers (word, traditional, simplified, codes, note) "
         "VALUES (?,?,?,?,?)"
     )
+    insert_form = "INSERT INTO forms (variant, traditional, main, pinyin) VALUES (?,?,?,?)"
     rows: list[tuple] = []  # buffer of entry rows waiting to be written
     sense_rows: list[tuple] = []  # (word, position, text)
     cls_rows: list[tuple] = []  # (word, traditional, simplified, codes, note)
+    form_rows: list[tuple] = []  # (word, traditional, simplified, pinyin)
     kept = 0  # entries accepted so far
     skipped = 0  # lines that didn't match the expected format
     started = time.time()
@@ -222,9 +253,11 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
         connection.executemany(insert, rows)
         connection.executemany(insert_sense, sense_rows)
         connection.executemany(insert_classifier, cls_rows)
+        connection.executemany(insert_form, form_rows)
         rows.clear()
         sense_rows.clear()
         cls_rows.clear()
+        form_rows.clear()
 
     with open_source(source) as handle:
         for line in handle:
@@ -235,14 +268,21 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
             if row is None:
                 skipped += 1
                 continue
-            traditional, simplified, _pinyin, _numeric, _toneless, english, normalized = row
+            traditional, simplified, pinyin, _numeric, _toneless, english, normalized = row
             rows.append(row)
-            # Standardized senses (1., 2., ...) and classifiers, keyed by the
-            # simplified headword.
-            for position, sense in enumerate(split_senses(normalized), start=1):
-                sense_rows.append((simplified, position, sense))
-            for trad, simp in extract_classifiers(english):
-                cls_rows.append((simplified, trad, simp, "", ""))
+            target = see_target(english)
+            if target:
+                # A "see X[reading]" entry is a variant of the main form X: record
+                # the mapping (so X lists the variant under "Other forms", and the
+                # variant itself shows X's result).
+                form_rows.append((simplified, traditional, target, pinyin))
+            else:
+                # Standardized senses (1., 2., ...) and classifiers, keyed by
+                # the simplified headword.
+                for position, sense in enumerate(split_senses(normalized), start=1):
+                    sense_rows.append((simplified, position, sense))
+                for trad, simp in extract_classifiers(english):
+                    cls_rows.append((simplified, trad, simp, "", ""))
             kept += 1
             # Flush every 5000 rows: fewer, larger transactions is faster.
             if len(rows) >= 5000:

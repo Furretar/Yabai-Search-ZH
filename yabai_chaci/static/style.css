@@ -88,7 +88,7 @@ button {
     background: var(--panel-bg);
     border: 1px solid var(--panel-border);
     border-radius: .5rem;
-    margin-bottom: 1.5rem;
+    margin-bottom: .85rem;
     /* visible so the search-language menu can drop below the panel */
     overflow: visible;
     transition: border-color 0.3s ease;
@@ -189,7 +189,8 @@ button {
     color: var(--control);
 }
 
-.toggles label {
+.toggles label,
+.dict-column label {
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
@@ -201,15 +202,17 @@ button {
     border-top: 1px solid var(--options-divider);
 }
 
-/* The toggle is a text control, not a button — reset the generic button look. */
+/* The toggle is a text control, not a button — reset the generic button look.
+   Kept compact so the collapsed "Search options" / "Dictionaries" rows are slim. */
 .options-toggle {
     display: block;
     width: 100%;
-    padding: .5rem .75rem;
+    padding: .45rem .75rem;
     border: none;
     background: none;
     font: inherit;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
+    line-height: 1.3;
     text-align: left;
     color: var(--control);
     cursor: pointer;
@@ -224,16 +227,23 @@ button {
     content: "▾ ";
 }
 
-/* Expand the panel with a pure-CSS height animation: a one-row grid whose row
-   goes 0fr <-> 1fr (animating to the content's own height). */
+/* Expand/collapse with a pure-CSS height animation (max-height 0 <-> large).
+   A max-height of 0 truly collapses the row, so the panel is compact when shut. */
 .options-collapse {
-    display: grid;
-    grid-template-rows: 0fr;
-    transition: grid-template-rows 150ms ease;
+    overflow: hidden;
+    max-height: 0;
+    transition: max-height 200ms ease;
 }
 
 .options.open .options-collapse {
-    grid-template-rows: 1fr;
+    max-height: 24rem;
+}
+
+/* The collapsing child must be border-box and free to shrink to 0, so its own
+   padding doesn't poke out below the search bar while the panel is collapsed. */
+.options-collapse > * {
+    box-sizing: border-box;
+    min-height: 0;
 }
 
 /* Switches: clip inside the collapsing row, and fade in once there is room. */
@@ -253,9 +263,16 @@ button {
 }
 
 /* Render the checkboxes as slider switches. */
-.toggles input[type="checkbox"] {
+.toggles input[type="checkbox"],
+.dict-column input[type="checkbox"] {
     appearance: none;
     -webkit-appearance: none;
+    /* Reset the global `input { flex: 1; padding; border; font-size }` rule, so
+       the switch keeps its own fixed size in every layout. */
+    flex: none;
+    padding: 0;
+    border: none;
+    font-size: inherit;
     width: 2.4em;
     height: 1.35em;
     margin: 0;
@@ -266,7 +283,8 @@ button {
     transition: background 0.15s ease;
 }
 
-.toggles input[type="checkbox"]::before {
+.toggles input[type="checkbox"]::before,
+.dict-column input[type="checkbox"]::before {
     content: "";
     position: absolute;
     top: 0.18em;
@@ -278,19 +296,31 @@ button {
     transition: transform 0.15s ease;
 }
 
-.toggles input[type="checkbox"]:checked {
+.toggles input[type="checkbox"]:checked,
+.dict-column input[type="checkbox"]:checked {
     background: var(--accent);
 }
 
-.toggles input[type="checkbox"]:checked::before {
+.toggles input[type="checkbox"]:checked::before,
+.dict-column input[type="checkbox"]:checked::before {
     transform: translateX(1.05em);
+}
+
+/* An empty group (Mainland, for now) can't be toggled. */
+.dict-column input[type="checkbox"]:disabled {
+    opacity: .4;
+    cursor: default;
 }
 
 /* One dictionary result row. Slightly indented on the left to leave a little
    room for furigana wider than the word to spill. */
 .entry {
-    border-bottom: 1px solid var(--entry-divider);
     padding: .75rem 0 .75rem 0.5rem;
+}
+
+/* A divider between adjacent results, but not below the last one. */
+.entry + .entry {
+    border-top: 1px solid var(--entry-divider);
 }
 
 /* The Chinese characters in a result. */
@@ -311,6 +341,11 @@ button {
     font-size: var(--furigana-reading);
     line-height: 1;
     white-space: nowrap;
+}
+
+/* Furigana inside a definition (cross-referenced words) has its own size. */
+.def-source-line .furigana .reading {
+    font-size: var(--furigana-def);
 }
 
 .furigana .char {
@@ -379,18 +414,16 @@ button {
     font-size: var(--definition-size);
 }
 
-/* TEMPORARY: a labeled block of one dictionary's definitions. */
+/* A labeled block of one dictionary's definitions. */
 .def-source {
     margin-top: .4rem;
 }
 
 .def-source-name {
-    font-size: .75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: .04em;
+    font-size: .8rem;
+    font-weight: 700; /* bold */
+    letter-spacing: .03em;
     color: var(--muted);
-    text-decoration: none;
 }
 
 .def-source-line {
@@ -404,8 +437,10 @@ button {
 }
 
 .def-source-cls {
-    margin-top: .2rem;
+    margin-top: .05rem; /* compact list of Classifier / Also pronounced lines */
+    margin-left: 1rem; /* indent them under the definitions */
     font-size: .85rem;
+    line-height: 1.25;
     color: var(--muted);
 }
 
@@ -413,28 +448,46 @@ button {
     font-weight: 600;
 }
 
-/* The other script form shown under a result (e.g. traditional when showing simplified). */
-.other-forms {
-    margin-top: .15rem;
-    font-size: var(--detail-size);
-    color: var(--muted);
+/* Furigana inside the classifier / detail lines (e.g. the reading above the word
+   in "Also pronounced"). The character keeps the row's size so it matches the
+   Classifier text; the reading sits a little smaller above it. */
+.def-source-cls .furigana {
+    font-size: 1em;
 }
 
-/* Furigana inside the muted detail rows (classifiers, alternate readings): keep
-   the word and its reading bigger than the surrounding label so the content
-   stands out instead of shrinking down with the muted text. */
-.other-forms .furigana {
-    font-size: var(--furigana-detail);
-}
-
-/* ...but enlarge only the on-top reading (the pinyin/zhuyin annotation) in those
-   rows; the character below keeps the 1.2rem size from the rule above. */
-.other-forms .furigana .reading {
+.def-source-cls .furigana .reading {
     font-size: var(--furigana-detail-reading);
+}
+
+/* A cross-referenced word inside a definition ("see also 洪秀全"): a clickable,
+   underlined link. */
+.def-link {
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+}
+
+.def-link .char {
+    text-decoration: underline;
+}
+
+/* Plain-text cross-reference links (e.g. MOE's "→阮咸"). */
+.def-link.def-text {
+    text-decoration: underline;
 }
 
 /* De-emphasized text (e.g. "No results."). */
 .muted {
+    color: var(--muted);
+}
+
+/* The result count at the top of the main results ("0 RESULTS"). */
+.results-count {
+    margin: 0 0 .5rem;
+    font-size: .8rem;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
     color: var(--muted);
 }
 
@@ -454,6 +507,12 @@ button {
     color: var(--muted);
 }
 
+/* "Matches in other dictionaries": yellow rule and text. */
+.matches-heading {
+    border-top-color: var(--accent);
+    color: var(--accent);
+}
+
 /* Description shown under the search bar. */
 .tagline {
     text-align: left;
@@ -461,15 +520,46 @@ button {
     margin-top: 1rem;
 }
 
-/* TEMPORARY: per-dictionary definition switches, under the search options. They
-   reuse the .toggles switch styling, so they render as yellow switches. */
-.source-toggles {
-    align-items: center;
+/* Dictionaries panel (an .options collapsible): pick dictionaries by language.
+   The switches reuse the .toggles styling, so they render as yellow switches. */
+.dict-body {
+    overflow: hidden; /* clip while the panel animates open/closed */
+    min-height: 0;
+    box-sizing: border-box;
     padding: 0 .75rem .75rem;
-    margin-bottom: 0;
+    opacity: 0; /* hidden while collapsed, like the Search options switches */
+    transition: opacity 100ms ease;
 }
 
-.source-toggles-label {
+.options.open .dict-body {
+    opacity: 1;
+    transition-delay: 90ms;
+}
+
+.dict-columns {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    font-size: .9rem; /* same context as .toggles, so the switches match in size */
+}
+
+.dict-column-head {
+    font-weight: 600;
+    color: var(--control);
+}
+
+.dict-items {
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    margin-top: .5rem;
+    font-size: .9rem;
+    color: var(--control);
+}
+
+.dict-note {
+    margin: .75rem 0 0;
+    font-size: .8rem;
     color: var(--muted);
 }
 
@@ -491,7 +581,12 @@ ul.tagline {
 /* The parsed input: each word is a clickable chip. */
 #parsed {
     line-height: 2;
-    margin-bottom: .75rem;
+    margin-bottom: .5rem;
+}
+
+/* The pinyin hint sits right under the parsed words — keep it tight. */
+#hint {
+    margin-top: 0;
 }
 
 .parsed-word {

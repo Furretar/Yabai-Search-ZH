@@ -14,10 +14,10 @@
        top annotation line can be scaled without touching the characters. */
     --furigana-reading: 1.1rem;
     /* top line: main word & definitions */
-    --furigana-detail: 0.9rem;
-    /* detail rows ("Also pronounced", class) */
-    --furigana-detail-reading: 0.9em;
+    --furigana-detail-reading: 0.7rem;
     /* detail rows: top annotation line */
+    --furigana-def: 0.9rem;
+    /* the reading above a word referenced inside a definition */
 
     /* Result text sizes. */
     --headword-size: 2.5rem;

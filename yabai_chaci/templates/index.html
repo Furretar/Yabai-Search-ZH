@@ -25,7 +25,7 @@
     <div class="search-panel">
         <form id="search-form" role="search" autocomplete="off">
             <!-- Search-language dropdown (EN / ZH / TW), left of the input. -->
-            <div class="lang-select">
+            <div class="lang-select" data-defaults='{{ defaults | tojson }}'>
                 <button type="button" class="lang-button" aria-haspopup="listbox"
                     aria-expanded="false">EN</button>
                 <ul class="lang-menu" role="listbox" hidden>
@@ -52,14 +52,30 @@
                 </div>
             </div>
         </div>
-        <!-- TEMPORARY: per-dictionary definition switches, under the search
-           options. When one is on, each result shows a labeled block of that
-           dictionary's definitions. Wired up in app.js. -->
-        <div class="toggles source-toggles">
-            <span class="source-toggles-label">Definitions from:</span>
-            {% for source in sources %}
-            <label><input type="checkbox" class="source-toggle" data-anchor="{{ source.anchor }}"> {{ source.label }}</label>
-            {% endfor %}
+        <!-- Dictionaries: pick which dictionaries to use, grouped by language.
+           Unselected ones are used as backup (see app.js). -->
+        <div class="options dictionaries">
+            <button type="button" class="options-toggle" aria-expanded="false"
+                aria-controls="dictionary-options">Dictionaries</button>
+            <div id="dictionary-options" class="options-collapse">
+                <div class="dict-body">
+                    <div class="dict-columns">
+                        {% for lang, name in [('english', 'English'), ('mainland', 'Mainland'), ('taiwan', 'Taiwan')] %}
+                        <div class="dict-column" data-lang="{{ lang }}">
+                            <label class="dict-column-head">
+                                <input type="checkbox" class="dict-group" data-lang="{{ lang }}"> <span>{{ name }}</span>
+                            </label>
+                            <div class="dict-items">
+                                {% for d in dictionaries if d.lang == lang %}
+                                <label><input type="checkbox" class="dict-toggle" data-anchor="{{ d.anchor }}"> {{ d.label }}</label>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <p class="dict-note">Unselected dictionaries will be used as backup if no results are found for the selected dictionaries.</p>
+                </div>
+            </div>
         </div>
     </div>
     <!-- Centered description shown under the search bar. -->

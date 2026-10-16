@@ -19,6 +19,38 @@ MOE_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "moe.sqlite"
 # scripts/import_wiktionary.py.
 WIKTIONARY_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "wiktionary.sqlite"
 
+# --- debug log -------------------------------------------------------------
+# While `start_log()` is active, every SQL statement run on a connection is
+# captured (SQLite's trace callback) so the app can log the last few searches.
+_ACTIVE_LOG: list[str] | None = None
+
+
+def start_log() -> None:
+    """Begin capturing the SQL statements executed from now on."""
+    global _ACTIVE_LOG
+    _ACTIVE_LOG = []
+
+
+def end_log() -> list[str]:
+    """Stop capturing and return the captured SQL statements."""
+    global _ACTIVE_LOG
+    statements = _ACTIVE_LOG or []
+    _ACTIVE_LOG = None
+    return statements
+
+
+def _trace(statement: str) -> None:
+    """SQLite trace callback: record each statement while logging is active."""
+    if _ACTIVE_LOG is not None:
+        _ACTIVE_LOG.append(statement)
+
+
+def _connect(database) -> sqlite3.Connection:
+    """Open a SQLite connection with the debug trace callback attached."""
+    connection = sqlite3.connect(database)
+    connection.set_trace_callback(_trace)
+    return connection
+
 # Which dictionaries contain a headword — drives the source chips, the
 # per-dictionary definitions and the classifiers shown under a result. Each dict:
 #   label      display name (chip / definition header)
@@ -35,6 +67,12 @@ _CLASSIFIERS_SQL = (
     "SELECT word, traditional, simplified, codes, note FROM classifiers "
     "WHERE word IN ({ph})"
 )
+# Variant forms ("see X" entries) — only some sources have a `forms` table. Each
+# row maps a variant to its main form.
+_FORMS_SQL = (
+    "SELECT variant, traditional, main, pinyin FROM forms "
+    "WHERE variant IN ({ph}) OR main IN ({ph})"
+)
 # Wiktionary stores its senses as glosses in the `wiktionary` table, not `senses`.
 _WIKTIONARY_SENSES_SQL = (
     "SELECT word, 0 AS position, gloss AS text FROM wiktionary "
@@ -45,25 +83,32 @@ _SOURCE_QUERIES = [
     {
         "label": "CC-CEDICT",
         "anchor": "cedict",
+        "lang": "english",
         "database": DB_PATH,
         "sql": "SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ({ph})"
                " UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ({ph})",
         "repeat": 2,
         "sense_sql": _SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
+        "forms_sql": _FORMS_SQL,
+        "pinyin_sql": "SELECT pinyin FROM entries "
+                      "WHERE ? IN (traditional, simplified) LIMIT 1",
     },
     {
         "label": "國語辭典簡編本",
         "anchor": "moe",
+        "lang": "taiwan",
         "database": MOE_DB_PATH,
         "sql": "SELECT DISTINCT word FROM moe WHERE word IN ({ph})",
         "repeat": 1,
         "sense_sql": _SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
+        "pinyin_sql": "SELECT pinyin FROM moe WHERE word = ? AND pinyin <> '' LIMIT 1",
     },
     {
         "label": "Wiktionary",
         "anchor": "wiktionary",
+        "lang": "english",
         "database": WIKTIONARY_DB_PATH,
         "sql": "SELECT DISTINCT word FROM wiktionary WHERE word IN ({ph})",
         "repeat": 1,
@@ -86,7 +131,7 @@ def sources() -> list[dict]:
         updated = None
         if database.exists():
             try:
-                connection = sqlite3.connect(database)
+                connection = _connect(database)
                 try:
                     row = connection.execute(
                         "SELECT value FROM meta WHERE key = 'updated'"
@@ -100,6 +145,106 @@ def sources() -> list[dict]:
             {"label": source["label"], "anchor": source["anchor"], "updated": updated}
         )
     return info
+
+
+def dictionaries() -> list[dict]:
+    """Every dictionary with its key, label, anchor and language group.
+
+    Drives the Dictionaries panel (English / Mainland / Taiwan columns).
+    """
+    return [
+        {
+            "key": source["anchor"],
+            "label": source["label"],
+            "anchor": source["anchor"],
+            "lang": source["lang"],
+        }
+        for source in _SOURCE_QUERIES
+    ]
+
+
+def _script_forms(word: str) -> list[str]:
+    """`word` plus its traditional and simplified variants.
+
+    Lets a traditional query (e.g. 馬) find a simplified entry (马) and vice
+    versa. The character maps are derived from CEDICT's single-character entries.
+    """
+    simplify = _simplify_map()
+    to_traditional = {simp: trad for trad, simp in simplify.items()}
+    return sorted(
+        {
+            word,
+            "".join(simplify.get(char, char) for char in word),  # -> simplified
+            "".join(to_traditional.get(char, char) for char in word),  # -> traditional
+        }
+    )
+
+
+def dictionary_matches(word: str) -> list[dict]:
+    """Definitions for `word` from every dictionary, in the original language.
+
+    Backs the "Matches in other dictionaries" section. Matching is
+    script-insensitive (see _script_forms); each result carries both the
+    traditional and simplified forms of the matched headword so the UI can show
+    it in the chosen script.
+    """
+    word = (word or "").strip()
+    if not word:
+        return []
+    forms = _script_forms(word)
+    placeholders = ",".join("?" * len(forms))
+    simplify = _simplify_map()
+    to_traditional = {simp: trad for trad, simp in simplify.items()}
+    matches = []
+    for source in _SOURCE_QUERIES:
+        if not source["database"].exists():
+            continue
+        connection = _connect(source["database"])
+        try:
+            rows = connection.execute(
+                source["sql"].format(ph=placeholders),
+                tuple(forms) * source["repeat"],
+            ).fetchall()
+            found = [row[0] for row in rows]
+            if not found:
+                continue
+            head = word if word in found else found[0]
+            senses = [
+                text
+                for _w, _p, text in connection.execute(
+                    source["sense_sql"].format(ph="?"), (head,)
+                )
+                if text and text.strip()
+            ]
+            classifiers = [
+                {"traditional": t, "simplified": s, "codes": c or "", "note": n or ""}
+                for _w, t, s, c, n in connection.execute(
+                    source["cls_sql"].format(ph="?"), (head,)
+                )
+            ]
+            # The reading (tone-marked pinyin), so the UI can show furigana.
+            pinyin = ""
+            if source.get("pinyin_sql"):
+                row = connection.execute(source["pinyin_sql"], (head,)).fetchone()
+                pinyin = (row[0] or "") if row else ""
+        finally:
+            connection.close()
+        if not senses and not classifiers:
+            continue  # the word is listed but has nothing to show
+        matches.append(
+            {
+                "key": source["anchor"],
+                "label": source["label"],
+                "anchor": source["anchor"],
+                "lang": source["lang"],
+                "traditional": "".join(to_traditional.get(char, char) for char in head),
+                "simplified": "".join(simplify.get(char, char) for char in head),
+                "pinyin": pinyin,
+                "senses": senses[:_MAX_DEFS],
+                "classifiers": classifiers[:_MAX_DEFS],
+            }
+        )
+    return matches
 
 # Cache of the traditional -> simplified character map, built once from the
 # dictionary's single-character entries. None until built.
@@ -128,7 +273,7 @@ def connect() -> sqlite3.Connection:
     The MOE database is attached as "moe" (when present) so a query can also
     match Taiwan readings.
     """
-    connection = sqlite3.connect(DB_PATH)
+    connection = _connect(DB_PATH)
     # Row factory lets us read columns by name, e.g. row["pinyin"].
     connection.row_factory = sqlite3.Row
     if MOE_DB_PATH.exists():
@@ -199,7 +344,7 @@ def _moe_readings(words: list[str]) -> dict[str, list[str]]:
     if not words or not MOE_DB_PATH.exists():
         return {}
     placeholders = ",".join("?" * len(words))
-    connection = sqlite3.connect(MOE_DB_PATH)
+    connection = _connect(MOE_DB_PATH)
     try:
         rows = connection.execute(
             f"SELECT DISTINCT word, pinyin FROM moe "
@@ -256,7 +401,7 @@ def _moe_char_map() -> dict[str, list[str]]:
     if _moe_char_cache is None:
         mapping: dict[str, list[str]] = defaultdict(list)
         if MOE_DB_PATH.exists():
-            connection = sqlite3.connect(MOE_DB_PATH)
+            connection = _connect(MOE_DB_PATH)
             try:
                 rows = connection.execute(
                     "SELECT word, pinyin FROM moe "
@@ -279,7 +424,7 @@ def _moe_toneless_map() -> dict[str, set[str]]:
     if _moe_toneless_cache is None:
         mapping: dict[str, set[str]] = defaultdict(set)
         if MOE_DB_PATH.exists():
-            connection = sqlite3.connect(MOE_DB_PATH)
+            connection = _connect(MOE_DB_PATH)
             try:
                 rows = connection.execute(
                     "SELECT DISTINCT word, pinyin FROM moe WHERE pinyin <> ''"
@@ -304,7 +449,7 @@ def _zhuyin_map() -> dict[str, str]:
     if _zhuyin_cache is None:
         mapping: dict[str, str] = {}
         if MOE_DB_PATH.exists():
-            connection = sqlite3.connect(MOE_DB_PATH)
+            connection = _connect(MOE_DB_PATH)
             try:
                 rows = connection.execute(
                     "SELECT DISTINCT zhuyin, pinyin FROM moe "
@@ -427,7 +572,7 @@ def _attach_sources(entries: list[dict]) -> list[dict]:
         database = source["database"]
         if not database.exists():
             continue
-        connection = sqlite3.connect(database)
+        connection = _connect(database)
         try:
             rows = connection.execute(
                 source["sql"].format(ph=placeholders), tuple(words) * source["repeat"]
@@ -466,16 +611,17 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
     placeholders = ",".join("?" * len(words))
     params = tuple(words)
 
-    # Fetch every source's senses and classifiers once for the whole result set.
+    # Fetch every source's senses, classifiers and forms once for the result set.
     senses: dict[str, dict[str, list[str]]] = {}
     classifiers: dict[str, dict[str, list[dict]]] = {}
+    form_rows_all: list[tuple] = []
     for source in _SOURCE_QUERIES:
         anchor = source["anchor"]
         senses[anchor] = {}
         classifiers[anchor] = {}
         if not source["database"].exists():
             continue
-        connection = sqlite3.connect(source["database"])
+        connection = _connect(source["database"])
         try:
             for word, _position, text in connection.execute(
                 source["sense_sql"].format(ph=placeholders), params
@@ -492,6 +638,12 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                         "codes": codes or "",
                         "note": note or "",
                     }
+                )
+            if source.get("forms_sql"):
+                form_rows_all.extend(
+                    connection.execute(
+                        source["forms_sql"].format(ph=placeholders), params * 2
+                    ).fetchall()
                 )
         finally:
             connection.close()
@@ -511,11 +663,21 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                     {
                         "anchor": anchor,
                         "label": source["label"],
+                        "lang": source["lang"],
                         "defs": values[:_MAX_DEFS],
                         "classifiers": clss[:_MAX_DEFS],
                     }
                 )
         entry["definitions"] = defs
+        # Variant forms: this entry's main form (if it is a "see X" variant), and
+        # the variants that point at this entry (shown as "Other forms").
+        words = {entry["traditional"], entry["simplified"]}
+        entry["main"] = next((row[2] for row in form_rows_all if row[0] in words), None)
+        entry["forms"] = [
+            {"traditional": row[1], "simplified": row[0], "pinyin": row[3] or ""}
+            for row in form_rows_all
+            if row[2] in words
+        ]
     return entries
 
 
@@ -577,7 +739,7 @@ def lookup(word: str) -> list[dict]:
     return _decorate([dict(row) for row in rows])
 
 
-def _has_cjk(text: str) -> bool:
+def has_cjk(text: str) -> bool:
     """True when `text` contains a CJK ideograph.
 
     Used to tell a real Chinese word apart from a latin headword (CEDICT has a
@@ -795,7 +957,7 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
         seen = set()
         entries = []
         for row in rows:
-            if not _has_cjk(row["simplified"]):
+            if not has_cjk(row["simplified"]):
                 continue
             # A pinned segmentation must match the entry's own syllable split.
             if len(segments) > 1 and not wildcard:
@@ -818,7 +980,7 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
 
     # Only a query containing hanzi can match the Chinese word column; a latin
     # query is pinyin or English and must not match latin headwords like "word".
-    is_chinese = _has_cjk(literal)
+    is_chinese = has_cjk(literal)
 
     # English: match anywhere in the definitions unless a "*" is given.
     english = query if "*" in query else f"*{query}*"

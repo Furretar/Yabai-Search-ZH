@@ -11,30 +11,34 @@ const scriptToggle = document.getElementById("script-toggle");
 const toneToggle = document.getElementById("tone-toggle");
 const phoneticToggle = document.getElementById("phonetic-toggle");
 const taiwanToggle = document.getElementById("taiwan-toggle");
-// TEMPORARY: one checkbox per dictionary, for the per-source definitions view.
-const sourceToggles = [...document.querySelectorAll(".source-toggle")];
+// Dictionaries panel: group switches (English/Mainland/Taiwan) and per-dict.
+const dictGroupToggles = [...document.querySelectorAll(".dict-group")];
+const dictToggles = [...document.querySelectorAll(".dict-toggle")];
 
 // Search-language dropdown (left of the search box): EN / ZH / TW.
 const langSelect = document.querySelector(".lang-select");
 const langButton = langSelect.querySelector(".lang-button");
 const langMenu = langSelect.querySelector(".lang-menu");
+// Default dictionaries per language (from default_dictionaries.py).
+const langDefaults = JSON.parse(langSelect.dataset.defaults || "{}");
 
 // Display options. script: "simplified" | "traditional"; toneColoring: on/off;
 // phonetic: "pinyin" | "zhuyin"; taiwan: use the Taiwan reading when listed;
-// defSources: which dictionaries' definitions to show (empty = none);
+// dicts: the selected dictionaries (bulk of the Dictionaries panel);
 // lang: the selected search language (EN / ZH / TW).
 const state = {
     script: "simplified",
     toneColoring: false,
     phonetic: "pinyin",
     taiwan: false,
-    defSources: new Set(),
+    dicts: new Set(), // selected dictionary anchors
     lang: "EN",
 };
 
 // The most recent results, kept so the toggles can re-render without re-fetching.
 let currentEntries = [];
 let currentFuzzy = [];
+let currentMatches = [];
 let currentQuery = "";
 
 // Tone-marked forms for each base vowel (index 0 = tone 1 ... 3 = tone 4).
@@ -259,6 +263,40 @@ function furigana(text, pinyin) {
 // or "个[ge4]". Group 1 = traditional (or the only form), 2 = simplified,
 // 3 = numeric pinyin.
 const CROSS_REF = /([^\s|\[\]:/]+)(?:\|([^\s|\[\]:/]+))?\[([^\]]+)\]/g;
+// MOE (and other non-CEDICT) definitions write cross-references as "→word".
+const ARROW_CROSS_REF = /→\s*([\u3400-\u9fff]+)/g;
+
+// A clickable link that searches `text`. `node` is the label (e.g. furigana);
+// without it the text itself is the (underlined) label.
+function searchLink(text, node) {
+    const link = document.createElement("a");
+    link.className = node ? "def-link" : "def-link def-text";
+    link.href = `?q=${encodeURIComponent(text)}`;
+    if (node) link.append(node);
+    else link.textContent = text;
+    link.addEventListener("click", (event) => {
+        event.preventDefault();
+        performSearch(text);
+    });
+    return link;
+}
+
+// Render a plain (non-CEDICT) definition, turning "→word" cross-references into
+// links that search the referenced word.
+function renderCrossRefs(text) {
+    const fragment = document.createDocumentFragment();
+    let last = 0;
+    let match;
+    ARROW_CROSS_REF.lastIndex = 0;
+    while ((match = ARROW_CROSS_REF.exec(text)) !== null) {
+        if (match.index > last) fragment.append(text.slice(last, match.index));
+        fragment.append("→");
+        fragment.append(searchLink(match[1]));
+        last = match.index + match[0].length;
+    }
+    if (last < text.length) fragment.append(text.slice(last));
+    return fragment;
+}
 
 // Build a definition: plain text, with cross-references rendered as furigana.
 // `taiwanRefs` maps referenced words to their Taiwan reading (used when the
@@ -275,7 +313,9 @@ function renderDefinition(text, taiwanRefs) {
             state.taiwan && taiwanRefs && taiwanRefs[word]
                 ? taiwanRefs[word]
                 : numericToMarked(match[3]);
-        fragment.append(furigana(word, reading));
+        // Cross-references ("see also 洪秀全[…]") render as clickable, underlined
+        // links that search the referenced word.
+        fragment.append(searchLink(word, furigana(word, reading)));
         last = match.index + match[0].length;
     }
     if (last < text.length) fragment.append(text.slice(last));
@@ -335,11 +375,15 @@ function extractPronunciations(text) {
     };
 }
 
-// A muted detail row under a result (other forms / alternate pronunciations).
+// A muted detail row under a result (alternate pronunciations), styled exactly
+// like the Classifier line: bold label + value, same size/colour/indent.
 function detailRow(label, node) {
     const row = document.createElement("div");
-    row.className = "other-forms";
-    row.append(label, node);
+    row.className = "def-source-cls";
+    const name = document.createElement("span");
+    name.className = "def-source-cls-label";
+    name.textContent = label.replace(/:\s*$/, ":");
+    row.append(name, document.createTextNode(" "), node);
     return row;
 }
 
@@ -354,10 +398,11 @@ function clearResults() {
 // Show the pinyin hint when the query matched Chinese readings exactly — which
 // is also when English-definition matches are suppressed. Rather than telling the
 // user to add quotes, we offer a link that runs that quoted (English) search.
-function updateHint(query, pinyinMatch) {
-    // Hidden for tone-numbered or wildcard queries: the reading is exact/patterned,
-    // so an English-search link would be misleading.
-    if (pinyinMatch && !/[0-9*]/.test(query)) {
+function updateHint(query, pinyinMatch, englishMatch) {
+    // Shown only when the query matched pinyin exactly AND the English search
+    // would find something; hidden for tone-numbered, wildcard, or
+    // already-quoted queries (they'd end up double-quoted).
+    if (pinyinMatch && englishMatch && !/[0-9*"]/.test(query)) {
         const quoted = `"${query.trim()}"`;
         hint.replaceChildren("Matching Chinese pinyin, search the English word ");
         const link = document.createElement("a");
@@ -390,15 +435,10 @@ function sourceChips(sources) {
     return box;
 }
 
-// A labeled block showing one dictionary's definitions for a result.
-function definitionsBlock(source, taiwanRefs) {
-    const block = document.createElement("div");
-    block.className = "def-source";
-    const header = document.createElement("a");
-    header.className = "def-source-name";
-    header.href = `/about#${encodeURIComponent(source.anchor)}`;
-    header.textContent = source.label;
-    block.append(header);
+// The body of one dictionary's definitions: numbered senses and the classifier
+// line (no heading). Shared by result blocks and match boxes.
+function definitionBody(source, taiwanRefs) {
+    const body = document.createDocumentFragment();
 
     // Numbered senses (1., 2., ...), consistent across every dictionary.
     source.defs.forEach((text, i) => {
@@ -407,14 +447,13 @@ function definitionsBlock(source, taiwanRefs) {
         const num = document.createElement("span");
         num.className = "def-source-num";
         num.textContent = `${i + 1}.`;
-        // Only CEDICT text carries [pinyin] cross-references; others are plain.
         line.append(
             num,
             source.anchor === "cedict"
                 ? renderDefinition(text, taiwanRefs)
-                : document.createTextNode(text)
+                : renderCrossRefs(text)
         );
-        block.append(line);
+        body.append(line);
     });
 
     // Standardized classifiers, shown in the chosen script (Traditional toggle).
@@ -429,8 +468,21 @@ function definitionsBlock(source, taiwanRefs) {
         label.className = "def-source-cls-label";
         label.textContent = "Classifier:";
         line.append(label, document.createTextNode(" " + forms.join("; ")));
-        block.append(line);
+        body.append(line);
     }
+    return body;
+}
+
+// A labeled block showing one dictionary's definitions for a result. The
+// dictionary name is plain bold text — the About links live on the source chips
+// above, not here.
+function definitionsBlock(source, taiwanRefs) {
+    const block = document.createElement("div");
+    block.className = "def-source";
+    const name = document.createElement("span");
+    name.className = "def-source-name";
+    name.textContent = source.label;
+    block.append(name, definitionBody(source, taiwanRefs));
     return block;
 }
 
@@ -456,34 +508,54 @@ function entryRow(entry) {
     }
 
     // Pull "Taiwan pr." / "also pr." notes out of the definition so they get
-    // their own rows instead of sitting in the main listing.
+    // their own rows. These belong to the CC-CEDICT entry, so they're placed
+    // right after its block (above the next dictionary).
     const prons = extractPronunciations(entry.english_normalized);
-    // Definitions: only the switched-on dictionaries show — nothing checked
-    // means no definitions at all.
-    if (entry.definitions) {
-        for (const source of entry.definitions) {
-            if (!state.defSources.has(source.anchor)) continue;
-            // CC-CEDICT uses the cleaned text; its pronunciation/classifier notes
-            // are shown as separate rows below.
-            const defs = source.anchor === "cedict" ? [prons.text] : source.defs;
-            row.append(
-                definitionsBlock(
-                    { anchor: source.anchor, label: source.label, defs },
-                    entry.taiwan_refs
-                )
-            );
-        }
-    }
-
+    const notes = [];
     for (const note of prons.taiwan) {
-        row.append(detailRow("Taiwan pronunciation: ", furigana(primary, numericToMarked(note))));
+        notes.push(detailRow("Taiwan pronunciation: ", furigana(primary, numericToMarked(note))));
     }
     for (const note of prons.others) {
         // Show the register label (e.g. "colloquial") alongside the reading.
         const label = note.label ? `Also pronounced (${note.label}): ` : "Also pronounced: ";
-        row.append(detailRow(label, furigana(primary, numericToMarked(note.reading))));
+        notes.push(detailRow(label, furigana(primary, numericToMarked(note.reading))));
     }
+    // Variant forms (CEDICT "see X[reading]" entries), each with its reading.
+    if (entry.forms && entry.forms.length) {
+        const fragment = document.createDocumentFragment();
+        entry.forms.forEach((form, i) => {
+            if (i) fragment.append("; ");
+            const word = state.script === "traditional" ? form.traditional : form.simplified;
+            fragment.append(form.pinyin ? furigana(word, form.pinyin) : document.createTextNode(word));
+        });
+        notes.push(detailRow("Other forms: ", fragment));
+    }
+
+    // Definitions: only the selected dictionaries. Any dictionary not selected
+    // shows up in the "Matches in other dictionaries" section instead.
+    let notesPlaced = false;
+    if (entry.definitions) {
+        for (const source of entry.definitions) {
+            if (!state.dicts.has(source.anchor)) continue;
+            row.append(definitionsBlock(source, entry.taiwan_refs));
+            if (source.anchor === "cedict" && notes.length) {
+                row.append(...notes);
+                notesPlaced = true;
+            }
+        }
+    }
+    if (notes.length && !notesPlaced) row.append(...notes); // CC-CEDICT not shown
     return row;
+}
+
+// A result is shown only when one of the selected dictionaries has a definition
+// for it; a word found only in unselected dictionaries lives in the "Matches in
+// other dictionaries" section instead.
+function hasSelectedDefs(entry) {
+    if ((entry.definitions || []).some((s) => state.dicts.has(s.anchor))) return true;
+    // A "see X" variant has no senses — only "other forms" (CC-CEDICT) — but it
+    // should still show when CC-CEDICT is on.
+    return (entry.forms || []).length > 0 && state.dicts.has("cedict");
 }
 
 // Build the results list from the array of entries returned by the API.
@@ -492,16 +564,14 @@ function render(entries, query) {
     currentQuery = query;
     results.replaceChildren(); // clear previous results
 
-    if (!entries.length) {
-        // Shown even when a fuzzy section follows (so it sits above it).
-        const p = document.createElement("p");
-        p.className = "muted";
-        p.textContent = `No results for ${query}.`;
-        results.append(p);
-        return;
-    }
+    const shown = entries.filter(hasSelectedDefs);
+    // A yellow count at the top of the main results ("0 RESULTS", "3 RESULTS").
+    const count = document.createElement("p");
+    count.className = "results-count";
+    count.textContent = `${shown.length} RESULT${shown.length === 1 ? "" : "S"}`;
+    results.append(count);
 
-    for (const entry of entries) results.append(entryRow(entry));
+    for (const entry of shown) results.append(entryRow(entry));
 }
 
 // Append the tone-insensitive "Fuzzy match" section under a separator.
@@ -515,11 +585,86 @@ function renderFuzzy(entries) {
     for (const entry of currentFuzzy) results.append(entryRow(entry));
 }
 
+// Append the "Matches in other dictionaries" section. Matches are grouped by
+// language and headword — every dictionary of the same language for the same
+// word shares one box. Languages show current-first, then Mainland, then Taiwan.
+function renderMatches() {
+    const others = visibleMatches();
+    if (!others.length) return;
+    const heading = document.createElement("p");
+    heading.className = "fuzzy-heading matches-heading";
+    heading.textContent = "Matches in other dictionaries";
+    results.append(heading);
+
+    for (const lang of matchLanguageOrder()) {
+        const inLang = others.filter((m) => m.lang === lang);
+        if (!inLang.length) continue;
+        // Group that language's dictionaries by headword.
+        const byWord = new Map();
+        for (const match of inLang) {
+            const key = `${match.traditional}\u0000${match.simplified}`;
+            if (!byWord.has(key)) byWord.set(key, []);
+            byWord.get(key).push(match);
+        }
+        for (const sources of byWord.values()) results.append(matchesBlock(sources));
+    }
+}
+
+// The matches from dictionaries that are NOT currently selected.
+function visibleMatches() {
+    return currentMatches.filter((m) => !state.dicts.has(m.anchor));
+}
+
+// Languages in display order: the selected one first, then Mainland, then Taiwan.
+function matchLanguageOrder() {
+    const current =
+        { EN: "english", ZH: "mainland", TW: "taiwan" }[state.lang] || "english";
+    const order = [];
+    for (const lang of [current, "mainland", "taiwan", "english"]) {
+        if (!order.includes(lang)) order.push(lang);
+    }
+    return order;
+}
+
+// One box for all the same-language dictionaries that matched a headword: the
+// headword (furigana + tone coloring), a chip per dictionary, then every
+// dictionary's definitions.
+function matchesBlock(sources) {
+    const first = sources[0];
+    const row = document.createElement("div");
+    row.className = "entry";
+    const hanzi = document.createElement("span");
+    hanzi.className = "hanzi";
+    const word = state.script === "traditional" ? first.traditional : first.simplified;
+    if (first.pinyin) {
+        hanzi.append(furigana(word, first.pinyin));
+    } else {
+        hanzi.textContent = word;
+    }
+    row.append(hanzi);
+    row.append(sourceChips(sources.map((s) => ({ label: s.label, anchor: s.anchor }))));
+    for (const source of sources) {
+        row.append(
+            definitionsBlock(
+                {
+                    anchor: source.anchor,
+                    label: source.label,
+                    defs: source.senses,
+                    classifiers: source.classifiers,
+                },
+                {}
+            )
+        );
+    }
+    return row;
+}
+
 // Re-draw the current results (and any fuzzy section) after a display toggle.
 function redraw() {
-    if (!currentEntries.length && !currentFuzzy.length) return;
+    if (!currentEntries.length && !currentFuzzy.length && !currentMatches.length) return;
     render(currentEntries, currentQuery);
     renderFuzzy(currentFuzzy);
+    renderMatches();
 }
 
 // Query the API and hand the results to render().
@@ -527,9 +672,11 @@ async function search(query) {
     const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}`;
     const response = await fetch(url);
     const data = await response.json();
+    currentMatches = data.matches || [];
     render(data.results, query);
     renderFuzzy(data.fuzzy);
-    updateHint(query, data.pinyin_match);
+    renderMatches();
+    updateHint(query, data.pinyin_match, data.english_match);
 }
 
 // Render the segmented input as clickable words (clicking one searches it).
@@ -626,9 +773,13 @@ function loadPrefs() {
         state.toneColoring = localStorage.getItem("yabai-chaci-tone") === "true";
         state.phonetic = localStorage.getItem("yabai-chaci-phonetic") === "zhuyin" ? "zhuyin" : "pinyin";
         state.taiwan = localStorage.getItem("yabai-chaci-taiwan") === "true";
-        const defSources = JSON.parse(localStorage.getItem("yabai-chaci-def-sources") || "[]");
-        state.defSources = new Set(defSources);
         state.lang = localStorage.getItem("yabai-chaci-lang") || "EN";
+        const stored = JSON.parse(localStorage.getItem("yabai-chaci-dicts") || "null");
+        // On a fresh start use the language's defaults (EN -> cedict only).
+        state.dicts =
+            stored === null
+                ? new Set(langDefaults[state.lang] || langDefaults.EN || ["cedict"])
+                : new Set(stored);
     } catch (e) {
         // localStorage unavailable — keep the defaults.
     }
@@ -636,7 +787,8 @@ function loadPrefs() {
     toneToggle.checked = state.toneColoring;
     phoneticToggle.checked = state.phonetic === "zhuyin";
     taiwanToggle.checked = state.taiwan;
-    for (const input of sourceToggles) input.checked = state.defSources.has(input.dataset.anchor);
+    for (const input of dictToggles) input.checked = state.dicts.has(input.dataset.anchor);
+    syncGroups();
     applyLang(state.lang);
 }
 
@@ -647,7 +799,7 @@ function savePrefs() {
         localStorage.setItem("yabai-chaci-tone", String(state.toneColoring));
         localStorage.setItem("yabai-chaci-phonetic", state.phonetic);
         localStorage.setItem("yabai-chaci-taiwan", String(state.taiwan));
-        localStorage.setItem("yabai-chaci-def-sources", JSON.stringify([...state.defSources]));
+        localStorage.setItem("yabai-chaci-dicts", JSON.stringify([...state.dicts]));
         localStorage.setItem("yabai-chaci-lang", state.lang);
     } catch (e) {
         // localStorage unavailable — nothing to save.
@@ -679,11 +831,43 @@ taiwanToggle.addEventListener("change", () => {
     else redraw();
 });
 
-// TEMPORARY: toggling a dictionary switches to the per-source definitions view.
-for (const toggle of sourceToggles) {
+// Dictionaries panel: a group switch toggles its whole column, and each
+// per-dictionary switch selects one dictionary.
+function groupFor(toggle) {
+    return toggle.closest(".dict-column").dataset.lang;
+}
+
+// Reflect the selected dictionaries on the group switches: a column switch is
+// on as soon as *any* dictionary in that column is selected.
+function syncGroups() {
+    for (const group of dictGroupToggles) {
+        const members = dictToggles.filter((t) => groupFor(t) === group.dataset.lang);
+        const on = members.filter((t) => state.dicts.has(t.dataset.anchor)).length;
+        group.disabled = members.length === 0; // e.g. Mainland (empty for now)
+        group.checked = on > 0;
+        group.indeterminate = false;
+    }
+}
+
+for (const group of dictGroupToggles) {
+    group.addEventListener("change", () => {
+        for (const toggle of dictToggles) {
+            if (groupFor(toggle) !== group.dataset.lang) continue;
+            toggle.checked = group.checked;
+            if (group.checked) state.dicts.add(toggle.dataset.anchor);
+            else state.dicts.delete(toggle.dataset.anchor);
+        }
+        group.indeterminate = false;
+        savePrefs();
+        redraw();
+    });
+}
+
+for (const toggle of dictToggles) {
     toggle.addEventListener("change", () => {
-        if (toggle.checked) state.defSources.add(toggle.dataset.anchor);
-        else state.defSources.delete(toggle.dataset.anchor);
+        if (toggle.checked) state.dicts.add(toggle.dataset.anchor);
+        else state.dicts.delete(toggle.dataset.anchor);
+        syncGroups();
         savePrefs();
         redraw();
     });
@@ -705,11 +889,23 @@ function setLangOpen(open) {
     langButton.setAttribute("aria-expanded", String(open));
 }
 
+// Selecting a search language switches on its default dictionaries and off all
+// the others (see yabai_chaci/default_dictionaries.py).
+function applyDictDefaults(value) {
+    if (!(value in langDefaults)) return;
+    state.dicts = new Set(langDefaults[value]);
+    for (const toggle of dictToggles) {
+        toggle.checked = state.dicts.has(toggle.dataset.anchor);
+    }
+    syncGroups();
+}
+
 langButton.addEventListener("click", () => setLangOpen(langMenu.hidden));
 langMenu.addEventListener("click", (event) => {
     const item = event.target.closest("[role='option']");
     if (!item) return;
     applyLang(item.dataset.value);
+    applyDictDefaults(item.dataset.value);
     savePrefs();
     setLangOpen(false);
 });
@@ -721,34 +917,31 @@ document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") setLangOpen(false);
 });
 
-// Toggle the "Search options" panel. The open/close animation is pure CSS (the
-// .open class drives the grid row); here we only flip the class and ARIA state,
-// and remember the choice so the panel reopens expanded next time.
-const optionsPanel = document.querySelector(".options");
-const optionsToggle = optionsPanel.querySelector(".options-toggle");
-
-function setOptionsOpen(open) {
-    optionsPanel.classList.toggle("open", open);
-    optionsToggle.setAttribute("aria-expanded", String(open));
+// Collapsible panels ("Search options", "Dictionaries"). Each `.options` element
+// has an `.options-toggle` button; the `.open` class drives the CSS height
+// animation. The open/closed choice is remembered per panel.
+for (const panel of document.querySelectorAll(".options")) {
+    const toggle = panel.querySelector(".options-toggle");
+    const key = "yabai-chaci-panel-" + (toggle.getAttribute("aria-controls") || "");
+    toggle.addEventListener("click", () => {
+        const open = !panel.classList.contains("open");
+        panel.classList.toggle("open", open);
+        toggle.setAttribute("aria-expanded", String(open));
+        try {
+            localStorage.setItem(key, String(open));
+        } catch (e) {
+            // localStorage unavailable — nothing to save.
+        }
+    });
     try {
-        localStorage.setItem("yabai-chaci-options", String(open));
-    } catch (e) {
-        // localStorage unavailable — nothing to save.
-    }
-}
-
-// Reopen the panel on load if it was left open.
-function restoreOptionsOpen() {
-    try {
-        setOptionsOpen(localStorage.getItem("yabai-chaci-options") === "true");
+        if (localStorage.getItem(key) === "true") {
+            panel.classList.add("open");
+            toggle.setAttribute("aria-expanded", "true");
+        }
     } catch (e) {
         // localStorage unavailable — start closed.
     }
 }
-
-optionsToggle.addEventListener("click", () => {
-    setOptionsOpen(!optionsPanel.classList.contains("open"));
-});
 
 // Run a search when the form is submitted (Enter or the button).
 form.addEventListener("submit", (event) => {
@@ -791,5 +984,4 @@ window.addEventListener("popstate", restoreFromUrl);
 
 // On first load: apply saved preferences, then restore a search from the URL.
 loadPrefs();
-restoreOptionsOpen();
 restoreFromUrl();

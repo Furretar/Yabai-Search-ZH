@@ -70,13 +70,28 @@ referenced inside definitions (`taiwan_refs`), which render as furigana too.
 
 ## Data model
 
-- `data/cedict.sqlite` (CC-CEDICT via MDBG’s export) — table `entries`:
-  `id`, `traditional`, `simplified`, `pinyin` (marked), `pinyin_numeric`
-  (`han4 yu3`), `pinyin_toneless` (`hanyu`), `english`,
-  `english_normalized`, `freq_rank`; plus FTS5 table `entries_fts` over
-  `english_normalized`.
-- `data/moe.sqlite` — table `moe`: `word`, `zhuyin`, `pinyin`, `radical`,
-  `strokes`, `definition`.
+Each dictionary lives in its own SQLite database under `data/` and is read the
+same way, so a source is interchangeable:
+
+- a **headword table** (at least a `word` column) — used for the source chips;
+- **`senses(word, position, text)`** — the definition split into numbered items;
+- **`classifiers(word, traditional, simplified, codes, note)`** — measure words;
+- **`forms(word, traditional, simplified, pinyin)`** — variant forms (below);
+- **`meta(key, value)`** — `updated`, shown on the About page.
+
+The databases are `cedict.sqlite` (CC-CEDICT, table `entries` + FTS5
+`entries_fts`), `moe.sqlite` (MOE 國語辭典簡編本, table `moe`), and
+`wiktionary.sqlite` (kaikki.org / Wiktextract). They’re registered in
+`_SOURCE_QUERIES` (`yabai_chaci/db.py`).
+
+### Variant forms (`forms`)
+
+CEDICT has entries whose entire definition is a cross-reference, e.g.
+`血 血 [xiě] /see 血[xuè]/`. These are *not* senses: the importer recognises
+`see X[reading]` (`see_target`) and stores the entry in the `forms` table keyed
+by the **main** form (`X`), keeping the variant’s own reading. The UI lists them
+as **Other forms:** (`<form> [<reading>]`) instead of numbered definitions, so a
+`xuè` result shows `Other forms: 血 [xiě]` rather than `1. see 血[xuè]`.
 
 ## Helper concepts
 
