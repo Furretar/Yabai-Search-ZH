@@ -28,7 +28,7 @@ def asset_version() -> str:
     """A cache-busting tag for the static assets: the newest mtime in static/.
 
     Computed on every request (not just at startup), so editing style.css or
-    app.js changes the URL the browser asks for and it fetches the fresh file —
+    app.js changes the URL the browser asks for and it fetches the fresh file -
     no server restart needed. Covers every file in static/, not just app.js.
     """
     try:
@@ -67,92 +67,57 @@ def index(request: Request):
 def about(request: Request):
     """About page: sources, licences and search tips."""
     sources = db.sources()
-    # anchor -> updated date, for the per-source "Updated ..." lines.
+    # Per-source "Updated ..." dates and entry counts.
     updated = {source["anchor"]: source["updated"] for source in sources}
+    counts = {source["anchor"]: source["entries"] for source in sources}
     return templates.TemplateResponse(
         request,
         "about.html",
-        {"asset_version": asset_version(), "updated": updated},
+        {
+            "asset_version": asset_version(),
+            "updated": updated,
+            "counts": counts,
+            "freq": db.frequency_source(),
+        },
     )
 
 
-def _build_matches(results: list[dict], query: str) -> list[dict]:
-    """Every dictionary's entry for each result headword (and a Chinese query).
-
-    Backs the "Matches in other dictionaries" section: the same words the search
-    found, but shown from the dictionaries that aren't currently selected.
-    """
-    matches: list[dict] = []
-    seen: set[tuple] = set()
-
-    def add(anchor, label, lang, traditional, simplified, pinyin, senses, classifiers):
-        key = (anchor, traditional, simplified)
-        if key in seen or (not senses and not classifiers):
-            return
-        seen.add(key)
-        matches.append(
-            {
-                "anchor": anchor,
-                "label": label,
-                "lang": lang,
-                "traditional": traditional,
-                "simplified": simplified,
-                "pinyin": pinyin,
-                "senses": senses,
-                "classifiers": classifiers,
-            }
-        )
-
-    # From the results themselves (no extra database work).
-    for entry in results:
-        for definition in entry["definitions"]:
-            add(
-                definition["anchor"],
-                definition["label"],
-                definition["lang"],
-                entry["traditional"],
-                entry["simplified"],
-                entry["pinyin"],
-                definition["defs"],
-                definition["classifiers"],
-            )
-
-    # A Chinese query that found no result may still be in other dictionaries, so
-    # look it up explicitly (only then — otherwise it would duplicate the results).
-    phrase = query.strip()
-    if not results and db.has_cjk(phrase):
-        for match in db.dictionary_matches(phrase):
-            add(
-                match["anchor"],
-                match["label"],
-                match["lang"],
-                match["traditional"],
-                match["simplified"],
-                match["pinyin"],
-                match["senses"],
-                match["classifiers"],
-            )
-    return matches
+def _reading_count(entry: dict) -> int:
+    """How many CEDICT definitions this entry's own reading has."""
+    for definition in entry.get("definitions", []):
+        if definition.get("anchor") == "cedict":
+            for group in definition.get("groups", []):
+                if group.get("pinyin") == entry.get("pinyin"):
+                    return len(group.get("senses", []))
+    return 0
 
 
 def _expand_variants(results: list[dict]) -> list[dict]:
-    """Replace "see X" variant results with X's own entries.
+    """Collapse results to one entry per headword.
 
-    A CEDICT entry whose definition is only "see X" is a variant form; searching
-    it should simply show the main word's normal result.
+    "see X" / "variant of X" entries become X's own entries (other variants are
+    shown under X's "Other forms"). When a headword has several readings, keep the
+    one with the most definitions, so e.g. 落 shows the standard `luò` (12 senses)
+    rather than the rare `lào` (1 sense).
     """
-    expanded: list[dict] = []
-    seen: set[tuple] = set()
+    best: dict[tuple, tuple[int, dict]] = {}
+    order: list[tuple] = []
     for entry in results:
-        shown = db.lookup(entry["main"]) if entry.get("main") else [entry]
+        if entry.get("main"):
+            shown = [e for e in db.lookup(entry["main"]) if not e.get("main")]
+        else:
+            shown = [entry]
         for e in shown:
             # De-duplicate by headword, not reading: the capitalized (surname) and
-            # plain versions of a word (e.g. 阮 Ruǎn / ruǎn) show once.
+            # plain versions of a word (e.g. 阮 Ruǎn / ruǎn) collapse to one.
             key = (e["traditional"], e["simplified"])
-            if key not in seen:
-                seen.add(key)
-                expanded.append(e)
-    return expanded
+            score = _reading_count(e)
+            if key not in best:
+                best[key] = (score, e)
+                order.append(key)
+            elif score > best[key][0]:
+                best[key] = (score, e)
+    return [best[key][1] for key in order]
 
 
 # Debug log: the last 10 searches, with the SQL each one ran (see db.start_log).
@@ -190,7 +155,7 @@ def api_search(q: str = "", limit: int = Query(50, ge=1, le=200), taiwan: bool =
     """JSON search endpoint. `q` is the term; `limit` is clamped to 1..200.
 
     `taiwan` lets a pinyin search also match Taiwan (MOE) readings.
-    `pinyin_match` is true when the query was an exact Chinese reading — in which
+    `pinyin_match` is true when the query was an exact Chinese reading - in which
     case `results` holds only those readings, no English-definition matches.
     """
     db.start_log()  # capture the SQL this search runs (for data/search.log)
@@ -211,9 +176,6 @@ def api_search(q: str = "", limit: int = Query(50, ge=1, le=200), taiwan: bool =
         english_match = False
         if pinyin_match:
             english_match = bool(db.search(f'"{q.strip()}"', limit=1))
-        # "Matches in other dictionaries": every result's headword, plus a Chinese
-        # query itself, as each dictionary defines it.
-        matches = _build_matches(results, q)
     finally:
         statements = db.end_log()
     _record_search(q, (time.perf_counter() - started) * 1000, len(results), statements)
@@ -223,7 +185,6 @@ def api_search(q: str = "", limit: int = Query(50, ge=1, le=200), taiwan: bool =
         "english_match": english_match,
         "results": results,
         "fuzzy": fuzzy,
-        "matches": matches,
     }
 
 

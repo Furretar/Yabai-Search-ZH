@@ -7,6 +7,7 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
+from yabai_chaci.overrides import HIDE_FORMS, TAIWAN_READINGS
 from yabai_chaci.pinyin import numeric_to_marked, to_numeric, to_toneless
 
 # Path to the generated CEDICT database: <project root>/data/cedict.sqlite.
@@ -18,6 +19,10 @@ MOE_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "moe.sqlite"
 # Path to the Wiktionary headword list (kaikki.org/Wiktextract), built by
 # scripts/import_wiktionary.py.
 WIKTIONARY_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "wiktionary.sqlite"
+
+# Path to the SUBTLEX-CH word frequencies (Cai & Brysbaert, 2010), built by
+# scripts/import_subtlex.py.
+SUBTLEX_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "subtlex.sqlite"
 
 # --- debug log -------------------------------------------------------------
 # While `start_log()` is active, every SQL statement run on a connection is
@@ -51,7 +56,7 @@ def _connect(database) -> sqlite3.Connection:
     connection.set_trace_callback(_trace)
     return connection
 
-# Which dictionaries contain a headword — drives the source chips, the
+# Which dictionaries contain a headword - drives the source chips, the
 # per-dictionary definitions and the classifiers shown under a result. Each dict:
 #   label      display name (chip / definition header)
 #   anchor     id of its section on the About page
@@ -63,15 +68,18 @@ def _connect(database) -> sqlite3.Connection:
 # Every source database has `senses` and `classifiers` tables of the same shape
 # (see the importers), so these queries are identical across sources.
 _SENSES_SQL = "SELECT word, position, text FROM senses WHERE word IN ({ph}) ORDER BY position"
+# CEDICT also stores the reading each sense belongs to, so its definitions can be
+# grouped per reading (for polyphonic words).
+_CEDICT_SENSES_SQL = "SELECT word, position, text, reading FROM senses WHERE word IN ({ph})"
 _CLASSIFIERS_SQL = (
     "SELECT word, traditional, simplified, codes, note FROM classifiers "
     "WHERE word IN ({ph})"
 )
-# Variant forms ("see X" entries) — only some sources have a `forms` table. Each
+# Variant forms ("see X" entries) - only some sources have a `forms` table. Each
 # row maps a variant to its main form.
 _FORMS_SQL = (
-    "SELECT variant, traditional, main, pinyin FROM forms "
-    "WHERE variant IN ({ph}) OR main IN ({ph})"
+    "SELECT variant_trad, variant_simp, main_trad, main_simp, pinyin FROM forms "
+    "WHERE variant_trad IN ({ph}) OR main_trad IN ({ph})"
 )
 # Wiktionary stores its senses as glosses in the `wiktionary` table, not `senses`.
 _WIKTIONARY_SENSES_SQL = (
@@ -88,11 +96,12 @@ _SOURCE_QUERIES = [
         "sql": "SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ({ph})"
                " UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ({ph})",
         "repeat": 2,
-        "sense_sql": _SENSES_SQL,
+        "sense_sql": _CEDICT_SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
         "forms_sql": _FORMS_SQL,
         "pinyin_sql": "SELECT pinyin FROM entries "
                       "WHERE ? IN (traditional, simplified) LIMIT 1",
+        "count_sql": "SELECT COUNT(*) FROM entries",
     },
     {
         "label": "國語辭典簡編本",
@@ -104,6 +113,7 @@ _SOURCE_QUERIES = [
         "sense_sql": _SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
         "pinyin_sql": "SELECT pinyin FROM moe WHERE word = ? AND pinyin <> '' LIMIT 1",
+        "count_sql": "SELECT COUNT(*) FROM moe",
     },
     {
         "label": "Wiktionary",
@@ -114,6 +124,7 @@ _SOURCE_QUERIES = [
         "repeat": 1,
         "sense_sql": _WIKTIONARY_SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
+        "count_sql": "SELECT COUNT(DISTINCT word) FROM wiktionary",
     },
 ]
 
@@ -129,22 +140,55 @@ def sources() -> list[dict]:
     for source in _SOURCE_QUERIES:
         database = source["database"]
         updated = None
+        entries = None
         if database.exists():
             try:
                 connection = _connect(database)
+            except sqlite3.Error:
+                connection = None
+            if connection is not None:
                 try:
                     row = connection.execute(
                         "SELECT value FROM meta WHERE key = 'updated'"
                     ).fetchone()
                     updated = row[0] if row else None
+                    # Live count, so it reflects the data after any re-import.
+                    if source.get("count_sql"):
+                        entries = connection.execute(source["count_sql"]).fetchone()[0]
+                except sqlite3.Error:
+                    pass
                 finally:
                     connection.close()
-            except sqlite3.Error:
-                updated = None
         info.append(
-            {"label": source["label"], "anchor": source["anchor"], "updated": updated}
+            {
+                "label": source["label"],
+                "anchor": source["anchor"],
+                "updated": updated,
+                "entries": entries,
+            }
         )
     return info
+
+
+def frequency_source() -> dict | None:
+    """Info about the SUBTLEX-CH frequency list (or None if it isn't imported)."""
+    if not SUBTLEX_DB_PATH.exists():
+        return None
+    updated = None
+    entries = None
+    try:
+        connection = _connect(SUBTLEX_DB_PATH)
+    except sqlite3.Error:
+        return None
+    try:
+        row = connection.execute("SELECT value FROM meta WHERE key = 'updated'").fetchone()
+        updated = row[0] if row else None
+        entries = connection.execute("SELECT COUNT(*) FROM freq").fetchone()[0]
+    except sqlite3.Error:
+        pass
+    finally:
+        connection.close()
+    return {"label": "SUBTLEX-CH", "anchor": "subtlex", "updated": updated, "entries": entries}
 
 
 def dictionaries() -> list[dict]:
@@ -262,7 +306,7 @@ _zhuyin_cache: dict[str, str] | None = None
 # Cache of {word: number of distinct CEDICT readings}. None until built.
 _reading_count_cache: dict[str, int] | None = None
 
-# Words that never take a Taiwan reading — the word-level MOE reading does not
+# Words that never take a Taiwan reading - the word-level MOE reading does not
 # fit their CEDICT sense. Add more here as needed.
 _TAIWAN_EXCEPTIONS = {"啊"}
 
@@ -278,6 +322,8 @@ def connect() -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     if MOE_DB_PATH.exists():
         connection.execute("ATTACH DATABASE ? AS moe", (str(MOE_DB_PATH),))
+    if SUBTLEX_DB_PATH.exists():
+        connection.execute("ATTACH DATABASE ? AS subtlex", (str(SUBTLEX_DB_PATH),))
     return connection
 
 
@@ -588,6 +634,38 @@ def _attach_sources(entries: list[dict]) -> list[dict]:
     return entries
 
 
+def _attach_freq(entries: list[dict]) -> list[dict]:
+    """Attach each entry's SUBTLEX-CH frequency (rank / count / per-million).
+
+    Matched by the simplified form, then the traditional form; None when the word
+    isn't in SUBTLEX-CH.
+    """
+    words = sorted(
+        {entry["simplified"] for entry in entries}
+        | {entry["traditional"] for entry in entries}
+    )
+    for entry in entries:
+        entry["freq"] = None
+    if not words or not SUBTLEX_DB_PATH.exists():
+        return entries
+    placeholders = ",".join("?" * len(words))
+    connection = _connect(SUBTLEX_DB_PATH)
+    try:
+        rows = connection.execute(
+            f"SELECT word, rank, count, per_million FROM freq WHERE word IN ({placeholders})",
+            tuple(words),
+        ).fetchall()
+    finally:
+        connection.close()
+    by_word = {
+        word: {"rank": rank, "count": count, "per_million": per_million}
+        for word, rank, count, per_million in rows
+    }
+    for entry in entries:
+        entry["freq"] = by_word.get(entry["simplified"]) or by_word.get(entry["traditional"])
+    return entries
+
+
 # Cap on the number of definitions shown per source, per headword (keeps a common
 # word from dumping dozens of Wiktionary glosses).
 _MAX_DEFS = 12
@@ -623,11 +701,11 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
             continue
         connection = _connect(source["database"])
         try:
-            for word, _position, text in connection.execute(
-                source["sense_sql"].format(ph=placeholders), params
-            ):
+            for row in connection.execute(source["sense_sql"].format(ph=placeholders), params):
+                word, text = row[0], row[2]
+                reading = row[3] if len(row) > 3 else ""  # CEDICT only
                 if text and text.strip():
-                    senses[anchor].setdefault(word, []).append(text.strip())
+                    senses[anchor].setdefault(word, []).append((reading or "", text.strip()))
             for word, trad, simp, codes, note in connection.execute(
                 source["cls_sql"].format(ph=placeholders), params
             ):
@@ -656,28 +734,50 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
         defs = []
         for source in _SOURCE_QUERIES:
             anchor = source["anchor"]
-            values = for_entry(senses[anchor], entry)
+            values = for_entry(senses[anchor], entry)  # list of (reading, text)
             clss = for_entry(classifiers[anchor], entry)
             if values or clss:
+                # Group the senses by reading (CEDICT); other sources carry none.
+                groups: list[dict] = []
+                index: dict[str, list[str]] = {}
+                for reading, text in values:
+                    key = reading or ""
+                    if key not in index:
+                        index[key] = []
+                        groups.append({"pinyin": key, "senses": index[key]})
+                    index[key].append(text)
+                for group in groups:
+                    group["senses"] = group["senses"][:_MAX_DEFS]
                 defs.append(
                     {
                         "anchor": anchor,
                         "label": source["label"],
                         "lang": source["lang"],
-                        "defs": values[:_MAX_DEFS],
+                        "groups": groups,
+                        "defs": [text for _reading, text in values[:_MAX_DEFS]],
                         "classifiers": clss[:_MAX_DEFS],
                     }
                 )
         entry["definitions"] = defs
-        # Variant forms: this entry's main form (if it is a "see X" variant), and
-        # the variants that point at this entry (shown as "Other forms").
-        words = {entry["traditional"], entry["simplified"]}
-        entry["main"] = next((row[2] for row in form_rows_all if row[0] in words), None)
-        entry["forms"] = [
-            {"traditional": row[1], "simplified": row[0], "pinyin": row[3] or ""}
-            for row in form_rows_all
-            if row[2] in words
-        ]
+        # Variant forms. `main` is the redirect target when this entry is a
+        # "see X" / "variant of X" entry pointing at a *different* form (self-references
+        # like 血[xiě] -> 血[xuè] are ignored here). `forms` lists the variants that
+        # point at this entry, shown as "Other forms". Matching is by the
+        # traditional form, which stays distinct even when simplified collide
+        # (軟 vs 輭, both simplified 软).
+        trad = entry["traditional"]
+        entry["main"] = next(
+            (row[2] for row in form_rows_all if row[0] == trad and row[2] != trad),
+            None,
+        )
+        if trad in HIDE_FORMS or entry["simplified"] in HIDE_FORMS:
+            entry["forms"] = []
+        else:
+            entry["forms"] = [
+                {"traditional": row[0], "simplified": row[1] or row[0], "pinyin": row[4] or ""}
+                for row in form_rows_all
+                if row[2] == trad
+            ]
     return entries
 
 
@@ -685,7 +785,7 @@ def _decorate(entries: list[dict]) -> list[dict]:
     """Fill in Taiwan readings, source chips and per-dictionary definitions.
 
     A whole-word MOE reading is only used when the word has a single CEDICT
-    reading — for polyphonic words the MOE reading is keyed by the word, not the
+    reading - for polyphonic words the MOE reading is keyed by the word, not the
     sense, so it would clobber the entry's specific reading (e.g. 啊's five
     readings collapsing to one, or 呵[ā] becoming hē). Everything else falls back
     to per-character readings, which only swap a character when unambiguous.
@@ -697,10 +797,13 @@ def _decorate(entries: list[dict]) -> list[dict]:
     def taiwan_for(word: str, pinyin: str, options: list[str]) -> str | None:
         return _taiwan_reading(word, pinyin, options, counts, char_map)
 
-    # The entry's own word.
+    # The entry's own word (a manual override in overrides.py takes precedence).
     by_word = _moe_readings([entry["traditional"] for entry in entries])
     for entry in entries:
-        entry["pinyin_taiwan"] = taiwan_for(
+        override = TAIWAN_READINGS.get(entry["traditional"]) or TAIWAN_READINGS.get(
+            entry["simplified"]
+        )
+        entry["pinyin_taiwan"] = override or taiwan_for(
             entry["traditional"], entry["pinyin"], by_word.get(entry["traditional"], [])
         )
 
@@ -718,10 +821,11 @@ def _decorate(entries: list[dict]) -> list[dict]:
                 taiwan_refs[simplified] = reading
         entry["taiwan_refs"] = taiwan_refs
 
-    # Add the source chips and per-dictionary definitions last, once every entry
-    # dict is fully built.
+    # Add the source chips, per-dictionary definitions and frequency last, once
+    # every entry dict is fully built.
     _attach_sources(entries)
     _attach_definitions(entries)
+    _attach_freq(entries)
     return entries
 
 
@@ -832,6 +936,17 @@ def tonal_variant(query: str) -> str | None:
     return parsed[0] if parsed else None
 
 
+def _freq_order() -> list[str]:
+    """ORDER BY terms that put the most frequent words first (SUBTLEX-CH).
+
+    Empty when SUBTLEX isn't imported. Words missing from SUBTLEX sort last.
+    """
+    if not SUBTLEX_DB_PATH.exists():
+        return []
+    rank = "(SELECT rank FROM subtlex.freq WHERE subtlex.freq.word = entries.simplified)"
+    return [f"({rank} IS NULL)", rank]
+
+
 def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
     """Search the dictionary.
 
@@ -851,11 +966,12 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
         phrase = query[1:-1].strip()
         if not phrase:
             return []
+        order = ", ".join(_freq_order() + ["length(simplified)", "id"])
         sql = (
             "SELECT simplified, traditional, pinyin, english, english_normalized "
             "FROM entries WHERE id IN ("
             "    SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?"
-            ") ORDER BY length(simplified), id LIMIT ?"
+            f") ORDER BY {order} LIMIT ?"
         )
         params = ['"' + phrase.replace('"', '""') + '"', limit]
         connection = connect()
@@ -931,10 +1047,12 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
         )
         connection = connect()
         try:
+            freq_order = ", ".join(_freq_order())
+            freq_clause = f", {freq_order}" if freq_order else ""
             rows = connection.execute(
                 "SELECT simplified, traditional, pinyin, english, english_normalized "
                 "FROM entries WHERE pinyin_toneless LIKE ? ESCAPE '\\' "
-                "ORDER BY (pinyin_toneless = ?) DESC, length(simplified), id LIMIT ?",
+                f"ORDER BY (pinyin_toneless = ?) DESC{freq_clause}, length(simplified), id LIMIT ?",
                 (pattern, pinyin_key, limit),
             ).fetchall()
             # With the Taiwan toggle on, also match MOE (Taiwan) readings, so a
@@ -1011,7 +1129,7 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
             "WHERE entries_fts MATCH ?)) DESC"
         )
         order_params.append('"' + query.replace('"', '""') + '"')
-    order_parts += ["length(simplified)", "id"]
+    order_parts += _freq_order() + ["length(simplified)", "id"]
 
     sql = (
         "SELECT simplified, traditional, pinyin, english, english_normalized "

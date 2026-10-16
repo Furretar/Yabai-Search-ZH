@@ -1,6 +1,6 @@
 {
   # Human-readable description of what this flake provides.
-  description = "Yabai-Chaci — a CC-CEDICT Chinese-English dictionary";
+  description = "Yabai-Chaci - a CC-CEDICT Chinese-English dictionary";
 
   # Pin nixpkgs to the same release the host system uses, so libraries match.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";

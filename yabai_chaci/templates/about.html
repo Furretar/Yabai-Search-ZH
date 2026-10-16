@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>About — Yabai-Chaci</title>
+    <title>About - Yabai-Chaci</title>
     <link rel="icon" type="image/png" href="/static/favicon.png">
     <!-- Colour scheme variables; edit variables.css to retheme. -->
     <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
@@ -16,27 +16,64 @@
 
     <p>牙白查词 / Yabai Search is a powerful Chinese–English dictionary. It supports many different search functions, along
         with Simplified characters, Traditional characters, Zhuyin/Bopomofo, and Taiwanese Mandarin.</p>
-    <p>Planned: Character search support, monolingual definitions, audio, example sentences, frequency, more sources
-        (wikitionary).</p>
-
     <h2>Search tips</h2>
     <ul>
         <li>漢字/汉字 - Search Simplified or Traditional Chinese</li>
-        <li>dangan - pinyin, any tone (matches 档案 单干)</li>
+        <li>dangan - Pinyin, any tone (matches 档案 单干)</li>
         <li>*字 - Wildcard, search all words that end with 字</li>
         <li>shi4shi2 - Specify tones</li>
         <li>shi4shi - Leave tone blank, matches any tone</li>
     </ul>
 
     <h2 id="sources">Sources &amp; Licenses</h2>
-    <ul>
-        <li id="cedict"><a href="https://www.mdbg.net/chinese/dictionary?page=cedict" target="_blank" rel="noopener">CC-CEDICT</a>
-            - the dictionary entries (CC BY-SA 4.0).{% if updated.cedict %} <span class="updated">Updated {{ updated.cedict }}.</span>{% endif %}</li>
-        <li id="moe"><a href="https://language.moe.gov.tw/001/Upload/Files/site_content/M0001/respub/dict_concised_download.html" target="_blank" rel="noopener">《國語辭典簡編本》</a>
-            (Ministry of Education, Taiwan) - Taiwanese Mandarin readings (CC BY-ND 3.0 TW).{% if updated.moe %} <span class="updated">Updated {{ updated.moe }}.</span>{% endif %}</li>
-        <li id="wiktionary"><a href="https://en.wiktionary.org/" target="_blank" rel="noopener">Wiktionary</a>
-            (via <a href="https://kaikki.org/dictionary/Chinese/" target="_blank" rel="noopener">kaikki.org</a>) - word list
-            (CC BY-SA 4.0 / GFDL).{% if updated.wiktionary %} <span class="updated">Updated {{ updated.wiktionary }}.</span>{% endif %}</li>
+
+    <h3>English</h3>
+    <ul class="sources-list">
+        <li id="cedict">
+            <a href="https://www.mdbg.net/chinese/dictionary?page=cedict" target="_blank" rel="noopener">CC-CEDICT</a>
+            {% if counts.cedict %}<span class="count">{{ "{:,}".format(counts.cedict) }} entries</span>{% endif %}
+            <span class="licence">CC BY-SA 4.0</span>
+            {% if updated.cedict %}<span class="updated">Updated {{ updated.cedict }}</span>{% endif %}
+            <div class="source-desc">An open-source Chinese-English dictionary project.</div>
+        </li>
+        <li id="wiktionary">
+            <a href="https://en.wiktionary.org/" target="_blank" rel="noopener">Wiktionary</a>
+            {% if counts.wiktionary %}<span class="count">{{ "{:,}".format(counts.wiktionary) }} entries</span>{% endif
+            %}
+            <span class="licence">CC BY-SA 4.0 / GFDL</span>
+            {% if updated.wiktionary %}<span class="updated">Updated {{ updated.wiktionary }}</span>{% endif %}
+            <div class="source-desc">Chinese entries from the community-built Wiktionary - English definitions,
+                usage notes and etymology (read from the <a href="https://kaikki.org/dictionary/Chinese/" target="_blank"
+                    rel="noopener">kaikki.org</a> extract).</div>
+        </li>
+    </ul>
+
+    <h3>Mainland</h3>
+    <p class="muted">No sources yet.</p>
+
+    <h3>Taiwan</h3>
+    <ul class="sources-list">
+        <li id="moe">
+            <a href="https://language.moe.gov.tw/001/Upload/Files/site_content/M0001/respub/dict_concised_download.html"
+                target="_blank" rel="noopener">《國語辭典簡編本》</a>
+            {% if counts.moe %}<span class="count">{{ "{:,}".format(counts.moe) }} entries</span>{% endif %}
+            <span class="licence">CC BY-ND 3.0 TW</span>
+            {% if updated.moe %}<span class="updated">Updated {{ updated.moe }}</span>{% endif %}
+            <div class="source-desc">Taiwan's Ministry of Education concise Mandarin dictionary - Taiwanese
+                pronunciations and monolingual definitions written in Chinese.</div>
+        </li>
+    </ul>
+
+    <h3>Frequency</h3>
+    <ul class="sources-list">
+        <li id="subtlex">
+            <a href="https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexch" target="_blank" rel="noopener">SUBTLEX-CH</a>
+            {% if freq and freq.entries %}<span class="count">{{ "{:,}".format(freq.entries) }} words</span>{% endif %}
+            <span class="licence">CC BY 4.0</span>
+            {% if freq and freq.updated %}<span class="updated">Updated {{ freq.updated }}</span>{% endif %}
+            <div class="source-desc">Chinese word frequencies from film and TV subtitles (Cai &amp; Brysbaert,
+                2010), used to rank results.</div>
+        </li>
     </ul>
     <h2>Contact</h2>
 

@@ -8,7 +8,7 @@ Keys are the dictionary "anchors" from ``_SOURCE_QUERIES`` in ``db.py``
 (e.g. "cedict", "moe", "wiktionary").
 
 Importing this module is cheap and Python caches it, so the values are read from
-memory at runtime — no per-request disk access.
+memory at runtime - no per-request disk access.
 """
 
 # Search language -> the dictionary anchors enabled by default.

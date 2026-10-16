@@ -62,6 +62,14 @@ CREATE TABLE senses (
 );
 CREATE INDEX idx_senses_word ON senses(word);
 
+-- Examples ("[例]…") split out of the senses, kept separate for now.
+CREATE TABLE examples (
+    word     TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    text     TEXT NOT NULL
+);
+CREATE INDEX idx_examples_word ON examples(word);
+
 CREATE TABLE classifiers (
     word        TEXT NOT NULL,
     traditional TEXT,
@@ -116,6 +124,19 @@ def clean_definition(text: str) -> str:
     return text.replace("_x000D_", "").replace("\u3000", " ").strip()
 
 
+# MOE appends examples to a sense as "[例]…".
+_EXAMPLE_RE = re.compile(r"\s*[\[【﹝]例[\]】﹞]\s*(.*)$")
+
+
+def split_example(sense: str) -> tuple[str, str | None]:
+    """Split a sense into (definition, example); example is None when absent."""
+    match = _EXAMPLE_RE.search(sense)
+    if not match:
+        return sense, None
+    example = match.group(1).strip().rstrip("◎").strip()
+    return sense[: match.start()].strip(), (example or None)
+
+
 # MOE numbers each sense "1. 2. 3." on its own line.
 _SENSE_NUM_RE = re.compile(r"^\s*\d+\s*[.、]\s*")
 
@@ -156,6 +177,7 @@ def build(zip_path: Path, db_path: Path) -> None:
 
     rows = []
     sense_rows = []  # (word, position, text)
+    example_rows = []  # (word, position, text)
     cls_rows = []  # (word, traditional, simplified, codes, note)
     count = 0
     for values in read_rows(zip_path):
@@ -178,7 +200,10 @@ def build(zip_path: Path, db_path: Path) -> None:
         # notes as standardized classifier rows.
         senses, notes = split_senses(definition)
         for position, sense in enumerate(senses, start=1):
-            sense_rows.append((word, position, sense))
+            definition_text, example = split_example(sense)
+            sense_rows.append((word, position, definition_text))
+            if example:
+                example_rows.append((word, position, example))
         for note in notes:
             cls_rows.append((word, None, None, "", note))
         count += 1
@@ -190,6 +215,9 @@ def build(zip_path: Path, db_path: Path) -> None:
     )
     connection.executemany(
         "INSERT INTO senses (word, position, text) VALUES (?,?,?)", sense_rows
+    )
+    connection.executemany(
+        "INSERT INTO examples (word, position, text) VALUES (?,?,?)", example_rows
     )
     connection.executemany(
         "INSERT INTO classifiers (word, traditional, simplified, codes, note) "

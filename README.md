@@ -59,7 +59,7 @@ word, `_taiwan_reading` decides:
 - words in `_TAIWAN_EXCEPTIONS` get **none** (currently `啊`);
 - a **monophonic** word (exactly one CEDICT reading) may take its whole-word
   MOE reading, even when it differs entirely (垃圾 → `lè sè`);
-- a **polyphonic** word keeps its own reading — the MOE reading is keyed by word,
+- a **polyphonic** word keeps its own reading - the MOE reading is keyed by word,
   not by sense, so using it wholesale would collapse 啊’s five readings into one
   or turn 呵[ā] into hē;
 - otherwise, per-character derivation, and only for characters that are
@@ -73,11 +73,11 @@ referenced inside definitions (`taiwan_refs`), which render as furigana too.
 Each dictionary lives in its own SQLite database under `data/` and is read the
 same way, so a source is interchangeable:
 
-- a **headword table** (at least a `word` column) — used for the source chips;
-- **`senses(word, position, text)`** — the definition split into numbered items;
-- **`classifiers(word, traditional, simplified, codes, note)`** — measure words;
-- **`forms(word, traditional, simplified, pinyin)`** — variant forms (below);
-- **`meta(key, value)`** — `updated`, shown on the About page.
+- a **headword table** (at least a `word` column) - used for the source chips;
+- **`senses(word, position, text)`** - the definition split into numbered items;
+- **`classifiers(word, traditional, simplified, codes, note)`** - measure words;
+- **`forms(word, traditional, simplified, pinyin)`** - variant forms (below);
+- **`meta(key, value)`** - `updated`, shown on the About page.
 
 The databases are `cedict.sqlite` (CC-CEDICT, table `entries` + FTS5
 `entries_fts`), `moe.sqlite` (MOE 國語辭典簡編本, table `moe`), and
@@ -87,24 +87,26 @@ The databases are `cedict.sqlite` (CC-CEDICT, table `entries` + FTS5
 ### Variant forms (`forms`)
 
 CEDICT has entries whose entire definition is a cross-reference, e.g.
-`血 血 [xiě] /see 血[xuè]/`. These are *not* senses: the importer recognises
-`see X[reading]` (`see_target`) and stores the entry in the `forms` table keyed
-by the **main** form (`X`), keeping the variant’s own reading. The UI lists them
-as **Other forms:** (`<form> [<reading>]`) instead of numbered definitions, so a
-`xuè` result shows `Other forms: 血 [xiě]` rather than `1. see 血[xuè]`.
+`血 血 [xiě] /see 血[xuè]/` or `輭 软 [ruǎn] /variant of 軟|软[ruǎn]/`. These are
+*not* senses: the importer recognises `see X` / `variant of X` (`see_target`) and
+stores the entry in the `forms` table (keyed by the **traditional** forms, which
+stay distinct even when simplified collide), keeping the variant's own reading.
+The UI lists them as **Other forms:** (`<form> [<reading>]`) instead of numbered
+definitions, so a `xuè` result shows `Other forms: 血 [xiě]` rather than
+`1. see 血[xuè]`, and `软` shows once with `Other forms: 輭 [ruǎn]`.
 
 ## Helper concepts
 
-- **pinyin / toneless** — `to_toneless` strips tone marks, tone digits and
+- **pinyin / toneless** - `to_toneless` strips tone marks, tone digits and
   spaces to a search key: `hàn yǔ` or `han4 yu3` → `hanyu`.
-- **marked ⇄ numeric** — `numeric_to_marked` (`han4 yu3` → `hàn yǔ`) and its
+- **marked ⇄ numeric** - `numeric_to_marked` (`han4 yu3` → `hàn yǔ`) and its
   inverse `to_numeric`.
-- **wildcards** — `_like_pattern` turns the user’s `*` into SQL `%`, escaping
+- **wildcards** - `_like_pattern` turns the user’s `*` into SQL `%`, escaping
   literal `%`, `_` and `\`.
-- **CJK check** — `_has_cjk` (does a string contain a hanzi?).
-- **simplified conversion** — `_simplify_map` learns traditional→simplified from
+- **CJK check** - `_has_cjk` (does a string contain a hanzi?).
+- **simplified conversion** - `_simplify_map` learns traditional→simplified from
   CEDICT’s single-character entries; latin queries are converted too.
-- **furigana** — the small pinyin/zhuyin annotation shown above each character
+- **furigana** - the small pinyin/zhuyin annotation shown above each character
   (per character when counts line up, otherwise as one line above the word).
 
 ## Worked examples

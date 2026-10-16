@@ -82,7 +82,8 @@ DROP TABLE IF EXISTS classifiers;
 
 CREATE TABLE senses (
     word     TEXT NOT NULL,   -- headword the sense belongs to (simplified)
-    position INTEGER NOT NULL,-- 1-based order within the headword
+    reading  TEXT,            -- the tone-marked reading this sense belongs to (e.g. lào)
+    position INTEGER NOT NULL,-- 1-based order within the reading
     text     TEXT NOT NULL    -- the sense itself
 );
 CREATE INDEX idx_senses_word ON senses(word);
@@ -101,13 +102,14 @@ CREATE INDEX idx_classifiers_word ON classifiers(word);
 -- here (keyed by the main form) so they show as "other forms", not definitions.
 DROP TABLE IF EXISTS forms;
 CREATE TABLE forms (
-    variant     TEXT NOT NULL,  -- the variant's simplified headword ("see X" entry)
-    traditional TEXT,           -- the variant's traditional form
-    main        TEXT NOT NULL,  -- the main form it points to (simplified)
-    pinyin      TEXT            -- the variant's own reading
+    variant_trad TEXT NOT NULL,  -- the variant's traditional form (distinct key)
+    variant_simp TEXT,           -- the variant's simplified form
+    main_trad    TEXT NOT NULL,  -- the main form's traditional form
+    main_simp    TEXT,           -- the main form's simplified form
+    pinyin       TEXT            -- the variant's own reading
 );
-CREATE INDEX idx_forms_variant ON forms(variant);
-CREATE INDEX idx_forms_main ON forms(main);
+CREATE INDEX idx_forms_variant ON forms(variant_trad);
+CREATE INDEX idx_forms_main ON forms(main_trad);
 
 -- Small key/value metadata table (lets the About page show when the data was
 -- last updated). Every source database has one.
@@ -166,20 +168,25 @@ _NOTE_RE = re.compile(
 )
 
 
-# A cross-reference-only definition, e.g. "see 夂[zhǐ]" (a variant-form entry).
-_SEE_RE = re.compile(r"^see\s+(.+?)\[([^\]]+)\]$")
+# A cross-reference-only definition: "see X[reading]" or "variant of X[reading]".
+# CEDICT uses these for forms that are only an alternative of another character.
+_SEE_RE = re.compile(r"^(?:see|variant of)\s+([^\[\];()\s]+?)(?:\[[^\]]+\])?$")
 
 
-def see_target(english: str) -> str | None:
-    """The main form referenced by a "see X[reading]" definition, or None.
+def see_target(english: str) -> tuple[str, str] | None:
+    """The main form's (traditional, simplified) from a "see X" / "variant of X".
 
-    CEDICT uses these entries for characters that are only an alternative
-    form/reading of another; we record them as "other forms", not definitions.
+    Such entries are only an alternative form/reading of another; we record them
+    as "other forms", not as definitions.
     """
     match = _SEE_RE.match(english.strip())
     if not match:
         return None
-    return match.group(1).split("|")[-1]  # simplified form if written "trad|simp"
+    target = match.group(1)
+    if "|" in target:  # written "trad|simp"
+        traditional, simplified = target.split("|", 1)
+        return traditional, simplified
+    return target, target
 
 
 def split_senses(text: str) -> list[str]:
@@ -234,12 +241,15 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
         " english, english_normalized) "
         "VALUES (?,?,?,?,?,?,?)"
     )
-    insert_sense = "INSERT INTO senses (word, position, text) VALUES (?,?,?)"
+    insert_sense = "INSERT INTO senses (word, reading, position, text) VALUES (?,?,?,?)"
     insert_classifier = (
         "INSERT INTO classifiers (word, traditional, simplified, codes, note) "
         "VALUES (?,?,?,?,?)"
     )
-    insert_form = "INSERT INTO forms (variant, traditional, main, pinyin) VALUES (?,?,?,?)"
+    insert_form = (
+        "INSERT INTO forms (variant_trad, variant_simp, main_trad, main_simp, pinyin) "
+        "VALUES (?,?,?,?,?)"
+    )
     rows: list[tuple] = []  # buffer of entry rows waiting to be written
     sense_rows: list[tuple] = []  # (word, position, text)
     cls_rows: list[tuple] = []  # (word, traditional, simplified, codes, note)
@@ -272,15 +282,18 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
             rows.append(row)
             target = see_target(english)
             if target:
-                # A "see X[reading]" entry is a variant of the main form X: record
-                # the mapping (so X lists the variant under "Other forms", and the
-                # variant itself shows X's result).
-                form_rows.append((simplified, traditional, target, pinyin))
+                # A "see X" / "variant of X" entry is a variant of the main form X:
+                # record it (so X lists the variant under "Other forms", and the
+                # variant itself shows X's result). Keyed by the traditional forms,
+                # which are distinct (e.g. 軟 vs 輭) even when simplified collide.
+                main_trad, main_simp = target
+                form_rows.append((traditional, simplified, main_trad, main_simp, pinyin))
             else:
-                # Standardized senses (1., 2., ...) and classifiers, keyed by
-                # the simplified headword.
+                # Standardized senses (1., 2., ...) and classifiers, keyed by the
+                # simplified headword and tagged with their reading, so polyphonic
+                # words can be shown per reading.
                 for position, sense in enumerate(split_senses(normalized), start=1):
-                    sense_rows.append((simplified, position, sense))
+                    sense_rows.append((simplified, pinyin, position, sense))
                 for trad, simp in extract_classifiers(english):
                     cls_rows.append((simplified, trad, simp, "", ""))
             kept += 1

@@ -104,7 +104,7 @@ button {
     padding: .35rem;
 }
 
-/* Inside the panel the input is borderless — the panel is the border. */
+/* Inside the panel the input is borderless - the panel is the border. */
 .search-panel input {
     border: none;
     background: transparent;
@@ -202,7 +202,7 @@ button {
     border-top: 1px solid var(--options-divider);
 }
 
-/* The toggle is a text control, not a button — reset the generic button look.
+/* The toggle is a text control, not a button - reset the generic button look.
    Kept compact so the collapsed "Search options" / "Dictionaries" rows are slim. */
 .options-toggle {
     display: block;
@@ -357,7 +357,7 @@ button {
     color: var(--reading);
 }
 
-/* Tone coloring (when the "Tone colors" switch is on) — pinyin and characters. */
+/* Tone coloring (when the "Tone colors" switch is on) - pinyin and characters. */
 .furigana .tone1 {
     color: var(--tone1);
 }
@@ -384,6 +384,16 @@ button {
     margin-left: .5rem;
 }
 
+/* SUBTLEX-CH frequency box, shown under the headword. The chip reuses the
+   .source look (outline only, yellow outline on hover). */
+.freq {
+    margin-top: .15rem;
+}
+
+.freq .source {
+    cursor: default;
+}
+
 /* Source chips: the dictionaries that contain a headword, shown between the word
    and its definitions. */
 .sources {
@@ -394,17 +404,28 @@ button {
 }
 
 .source {
+    font: inherit;
     font-size: .75rem;
     line-height: 1.2;
     padding: .1rem .45rem;
     border: 1px solid var(--border);
     border-radius: .35rem;
+    background: none;
     color: var(--muted);
-    text-decoration: none;
+    cursor: pointer;
+    transition: color .15s ease, border-color .15s ease, background .15s ease,
+        transform .2s ease;
 }
 
 .source:hover {
     color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* A dictionary toggled on for this result: lit yellow. */
+.source.on {
+    color: var(--on-accent);
+    background: var(--accent);
     border-color: var(--accent);
 }
 
@@ -420,10 +441,18 @@ button {
 }
 
 .def-source-name {
+    display: inline-block; /* so margin-bottom adds space under the title */
+    margin-bottom: .25rem;
     font-size: .8rem;
     font-weight: 700; /* bold */
     letter-spacing: .03em;
     color: var(--muted);
+    text-decoration: none;
+}
+
+.def-source-name:hover {
+    color: var(--accent);
+    text-decoration: underline;
 }
 
 .def-source-line {
@@ -436,12 +465,24 @@ button {
     color: var(--muted);
 }
 
+/* A reading header inside a dictionary's definitions (CEDICT polyphonic words). */
+.def-reading {
+    margin-top: .3rem;
+    font-weight: 600;
+    color: var(--control);
+}
+
 .def-source-cls {
-    margin-top: .05rem; /* compact list of Classifier / Also pronounced lines */
+    margin-top: 0; /* flush list of Also pronounced lines */
     margin-left: 1rem; /* indent them under the definitions */
     font-size: .85rem;
     line-height: 1.25;
     color: var(--muted);
+}
+
+/* The Classifier line (inside a dictionary block) gets a bit more space above it. */
+.def-source .def-source-cls {
+    margin-top: .3rem;
 }
 
 .def-source-cls-label {
@@ -491,8 +532,27 @@ button {
     color: var(--muted);
 }
 
-/* The "Updated <date>" note beside a source on the About page. */
-.updated {
+/* Sources & Licenses on the About page: "Title · licence · Updated <date>", with
+   an indented description line underneath. */
+.sources-list li {
+    margin-bottom: .5rem;
+}
+
+.licence,
+.updated,
+.count {
+    color: var(--muted);
+}
+
+.licence::before,
+.updated::before,
+.count::before {
+    content: "· ";
+}
+
+.source-desc {
+    margin-left: 1rem;
+    font-size: .95em;
     color: var(--muted);
 }
 
@@ -505,12 +565,6 @@ button {
     text-transform: uppercase;
     letter-spacing: .05em;
     color: var(--muted);
-}
-
-/* "Matches in other dictionaries": yellow rule and text. */
-.matches-heading {
-    border-top-color: var(--accent);
-    color: var(--accent);
 }
 
 /* Description shown under the search bar. */
@@ -557,12 +611,6 @@ button {
     color: var(--control);
 }
 
-.dict-note {
-    margin: .75rem 0 0;
-    font-size: .8rem;
-    color: var(--muted);
-}
-
 /* Page footer (e.g. the About link), pinned to the bottom and centered. */
 footer {
     margin-top: auto;
@@ -584,7 +632,7 @@ ul.tagline {
     margin-bottom: .5rem;
 }
 
-/* The pinyin hint sits right under the parsed words — keep it tight. */
+/* The pinyin hint sits right under the parsed words - keep it tight. */
 #hint {
     margin-top: 0;
 }
