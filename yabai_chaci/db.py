@@ -135,6 +135,7 @@ _SOURCE_QUERIES = [
         "lang": "taiwan",
         "database": MOE_DB_PATH,
         "sql": "SELECT DISTINCT word FROM moe WHERE word IN ({ph})",
+        "all_sql": "SELECT DISTINCT word FROM moe WHERE word <> ''",
         "repeat": 1,
         "sense_sql": _SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
@@ -147,6 +148,7 @@ _SOURCE_QUERIES = [
         "lang": "english",
         "database": WIKTIONARY_DB_PATH,
         "sql": "SELECT DISTINCT word FROM wiktionary WHERE word IN ({ph})",
+        "all_sql": "SELECT DISTINCT word FROM wiktionary WHERE word <> ''",
         "repeat": 1,
         "sense_sql": _WIKTIONARY_SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
@@ -827,7 +829,8 @@ def lookup(word: str) -> list[dict]:
             "SELECT simplified, traditional, pinyin, english, english_normalized "
             "FROM entries WHERE simplified = ? OR traditional = ? "
             "ORDER BY (SELECT COUNT(*) FROM senses s "
-            "          WHERE s.word = entries.traditional AND s.reading = entries.pinyin) DESC, "
+            "          WHERE s.word = entries.simplified "
+            "          AND s.reading = entries.pinyin) DESC, "
             "entries.id",
             (word, word),
         ).fetchall()
@@ -938,6 +941,231 @@ def _freq_order() -> list[str]:
         return []
     rank = "(SELECT rank FROM subtlex.freq WHERE subtlex.freq.word = entries.simplified)"
     return [f"({rank} IS NULL)", rank]
+
+
+def _source_only_entries(query: str, limit: int = 10) -> list[dict]:
+    """Headwords that only the secondary sources (or SUBTLEX) have.
+
+    Search results normally come from CEDICT alone. This finds matching headwords
+    in the other source databases plus the frequency list, so a word CEDICT lacks
+    is still searchable. The rows are CEDICT-shaped (simplified/traditional/
+    pinyin/english*) so `_decorate` can attach their definitions, chips and
+    frequency like any other entry.
+    """
+    text = (query or "").strip()
+    if not text:
+        return []
+    all_stars = not text.strip("*").strip()  # "*" (or "**") means every headword
+    forms = _script_forms(text)
+    placeholders = ",".join("?" * len(forms))
+    params = tuple(forms)
+
+    # Words CEDICT already covers are handled by the normal search.
+    connection = connect()
+    try:
+        if all_stars:
+            known = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT traditional FROM entries "
+                    "UNION SELECT DISTINCT simplified FROM entries"
+                )
+            }
+        else:
+            known = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT traditional FROM entries WHERE traditional IN ({ph}) "
+                    "UNION SELECT simplified FROM entries WHERE simplified IN ({ph})".format(
+                        ph=placeholders
+                    ),
+                    params * 2,
+                )
+            }
+    finally:
+        connection.close()
+
+    heads: list[str] = []
+    pinyin_by_head: dict[str, str] = {}
+    seen: set[str] = set()
+
+    def add(head: str, pinyin: str = "") -> bool:
+        """Record a headword unless CEDICT/another source already has it.
+
+        Returns True once `limit` headwords have been collected.
+        """
+        key = to_simplified(head)
+        if not head or key in known or key in seen:
+            return len(heads) >= limit
+        seen.add(key)
+        heads.append(head)
+        if pinyin:
+            pinyin_by_head[head] = pinyin
+        return len(heads) >= limit
+
+    for source in _SOURCE_QUERIES:
+        if source["anchor"] == "cedict" or not source["database"].exists():
+            continue
+        database = _connect(source["database"])
+        try:
+            if all_stars:
+                if not source.get("all_sql"):
+                    continue
+                rows = database.execute(source["all_sql"]).fetchall()
+            else:
+                rows = database.execute(
+                    source["sql"].format(ph=placeholders), params * source["repeat"]
+                ).fetchall()
+            for (head,) in rows:
+                pinyin = ""
+                if source.get("pinyin_sql"):
+                    row = database.execute(source["pinyin_sql"], (head,)).fetchone()
+                    pinyin = (row[0] or "") if row else ""
+                if add(head, pinyin):
+                    break
+        finally:
+            database.close()
+        if len(heads) >= limit:
+            break
+
+    # The frequency list can contribute headwords too (it has no definitions).
+    if len(heads) < limit and SUBTLEX_DB_PATH.exists():
+        database = _connect(SUBTLEX_DB_PATH)
+        try:
+            if all_stars:
+                rows = database.execute("SELECT word FROM freq ORDER BY rank").fetchall()
+            else:
+                rows = database.execute(
+                    f"SELECT word FROM freq WHERE word IN ({placeholders}) ORDER BY rank",
+                    params,
+                ).fetchall()
+        finally:
+            database.close()
+        for (head,) in rows:
+            if add(head):
+                break
+
+    return [
+        {
+            "simplified": to_simplified(head),
+            "traditional": to_traditional(head),
+            "pinyin": pinyin_by_head.get(head, ""),
+            "english": "",
+            "english_normalized": "",
+        }
+        for head in heads
+    ]
+
+
+# How many results a "list everything" (*) page shows.
+ALL_PAGE_SIZE = 100
+
+# Cache of every distinct simplified headword across all sources, sorted.
+_all_headwords_cache: list[str] | None = None
+
+
+def _all_headwords_list() -> list[str]:
+    """Every distinct simplified headword across all sources, sorted and cached.
+
+    Simplified forms are collected (via OpenCC) so traditional/simplified pairs
+    collapse to one entry - otherwise a page of 100 raw headwords would display
+    fewer rows after the pairs are merged.
+    """
+    global _all_headwords_cache
+    if _all_headwords_cache is not None:
+        return _all_headwords_cache
+    connection = connect()
+    try:
+        parts = [
+            "SELECT simplified AS headword FROM entries",
+            "SELECT traditional FROM entries",
+        ]
+        if MOE_DB_PATH.exists():
+            parts.append("SELECT word FROM moe.moe WHERE word <> ''")
+        if SUBTLEX_DB_PATH.exists():
+            parts.append("SELECT word FROM subtlex.freq WHERE word <> ''")
+        if WIKTIONARY_DB_PATH.exists():
+            connection.execute("ATTACH DATABASE ? AS wikt", (str(WIKTIONARY_DB_PATH),))
+            parts.append("SELECT word FROM wikt.wiktionary WHERE word <> ''")
+        union = " UNION ".join(parts)
+        rows = connection.execute(f"SELECT DISTINCT headword FROM ({union})").fetchall()
+    finally:
+        connection.close()
+    seen: set[str] = set()
+    heads: list[str] = []
+    for (head,) in rows:
+        key = to_simplified(head)
+        if key and key not in seen:
+            seen.add(key)
+            heads.append(key)
+    heads.sort()
+    _all_headwords_cache = heads
+    return heads
+
+
+def all_headwords(offset: int = 0, limit: int = ALL_PAGE_SIZE) -> tuple[list[str], int]:
+    """One page of every distinct headword across all sources, plus the total.
+
+    Used by the "*" search. Headwords are ordered by Unicode so paging is stable.
+    """
+    heads = _all_headwords_list()
+    return heads[offset : offset + limit], len(heads)
+
+
+def entries_for_headwords(headwords: list[str]) -> list[dict]:
+    """Build CEDICT-shaped entries for a page of headwords.
+
+    A headword CEDICT knows uses its real row; one only the other sources have
+    gets a minimal row, so `_decorate` can still attach its definitions, chips
+    and frequency.
+    """
+    if not headwords:
+        return []
+    placeholders = ",".join("?" * len(headwords))
+    connection = connect()
+    try:
+        rows = connection.execute(
+            "SELECT simplified, traditional, pinyin, english, english_normalized "
+            f"FROM entries WHERE simplified IN ({placeholders}) "
+            f"OR traditional IN ({placeholders})",
+            headwords + headwords,
+        ).fetchall()
+    finally:
+        connection.close()
+
+    by_word: dict[str, dict] = {}
+    for row in rows:
+        entry = dict(row)
+        by_word.setdefault(entry["simplified"], entry)
+        by_word.setdefault(entry["traditional"], entry)
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for head in headwords:
+        key = to_simplified(head)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(
+            by_word.get(head)
+            or {
+                "simplified": key,
+                "traditional": to_traditional(head),
+                "pinyin": "",
+                "english": "",
+                "english_normalized": "",
+            }
+        )
+    return _decorate(entries)
+
+
+def source_entries(word: str) -> list[dict]:
+    """Source-only entries for a word that CEDICT lacks (used by annotate).
+
+    Returns at most one CEDICT-shaped row (e.g. from MOE) so the parsed input can
+    show its reading and be clickable, even though it has no CEDICT entry.
+    """
+    return _source_only_entries(word, limit=1)
 
 
 def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
@@ -1082,16 +1310,22 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
         if entries:
             return _decorate(entries[:limit])
 
-    # Chinese: convert to simplified, and treat a plain query as a prefix search.
+    # Chinese: convert to simplified. A plain query matches anywhere in the word,
+    # ranked exact first, then words starting with the query, then the rest.
     chinese = to_simplified(query)
-    if "*" not in chinese:
-        chinese += "*"
-    pattern_chinese = _like_pattern(chinese)
     literal = chinese.replace("*", "")  # the "exact" word, ranked first
 
     # Only a query containing hanzi can match the Chinese word column; a latin
     # query is pinyin or English and must not match latin headwords like "word".
     is_chinese = has_cjk(literal)
+
+    if "*" in query:
+        # Explicit wildcard (e.g. "*字"): honour it as typed.
+        pattern_chinese = _like_pattern(chinese)
+        prefix_chinese = pattern_chinese
+    else:
+        pattern_chinese = _like_pattern(f"*{chinese}*")  # contains
+        prefix_chinese = _like_pattern(f"{chinese}*")    # starts with
 
     # English: match anywhere in the definitions unless a "*" is given.
     english = query if "*" in query else f"*{query}*"
@@ -1110,8 +1344,8 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
     if is_chinese:
         order_parts.append("(simplified = ?) DESC")  # exact Chinese word
         order_params.append(literal)
-        order_parts.append("(simplified LIKE ? ESCAPE '\\') DESC")  # word column
-        order_params.append(pattern_chinese)
+        order_parts.append("(simplified LIKE ? ESCAPE '\\') DESC")  # starts with
+        order_params.append(prefix_chinese)
     order_parts.append("(english_normalized LIKE ? ESCAPE '\\') DESC")
     order_params.append(_like_pattern(f"{query}*"))
     if "*" not in query:
@@ -1137,4 +1371,8 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
     finally:
         connection.close()  # always close, even if the query raised
 
-    return _decorate([dict(row) for row in rows])
+    entries = [dict(row) for row in rows]
+    # Also surface headwords that only the secondary sources or the frequency
+    # list have, so a word CEDICT lacks is still findable.
+    entries.extend(_source_only_entries(query, limit=10))
+    return _decorate(entries)

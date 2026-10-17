@@ -361,9 +361,10 @@ button {
 }
 
 /* One dictionary result row. Slightly indented on the left to leave a little
-   room for furigana wider than the word to spill. */
+   room for furigana wider than the word to spill. Extra padding on top gives the
+   headword (and its furigana reading) some breathing room. */
 .entry {
-    padding: .75rem 0 .75rem 0.5rem;
+    padding: 1.25rem 0 .75rem 0.5rem;
 }
 
 /* A divider between adjacent results, but not below the last one. */
@@ -774,4 +775,44 @@ ul.tagline {
         max-height: 70vh;
         overflow-y: auto;
     }
+
+    /* On phones the dictionary names read as plain headings, not links. */
+    .def-source-name {
+        pointer-events: none;
+        cursor: default;
+    }
+}
+
+/* Pager for "*" (all-headwords) searches. */
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .75rem;
+    margin-top: 1.5rem;
+    font-size: .9rem;
+    color: var(--muted);
+}
+
+.pagination[hidden] {
+    display: none;
+}
+
+.pagination button {
+    padding: .35rem .8rem;
+    font-size: .85rem;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: .35rem;
+    cursor: pointer;
+}
+
+.pagination button:not(:disabled):hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.pagination button:disabled {
+    opacity: .4;
+    cursor: default;
 }

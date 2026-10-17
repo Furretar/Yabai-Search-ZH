@@ -52,6 +52,8 @@
                         Zhuyin</label>
                     <label title="Use Taiwanese Mandarin Pronunciation."><input type="checkbox" id="taiwan-toggle">
                         Taiwan</label>
+                    <label title="Show the dictionary picker."><input type="checkbox" id="custom-dicts-toggle">
+                        Custom dictionaries</label>
                 </div>
             </div>
         </div>
@@ -95,8 +97,12 @@
     <div id="parsed"></div>
     <!-- Reminder shown for latin (pinyin) searches. -->
     <p id="hint" class="muted" hidden></p>
+    <!-- Top pager for "*" searches; replaces the results count when paging. -->
+    <nav id="pagination-top" class="pagination" hidden></nav>
     <!-- Where app.js renders the search results. -->
     <div id="results"></div>
+    <!-- Pager for "*" (all-headwords) searches; hidden otherwise. -->
+    <nav id="pagination" class="pagination" hidden></nav>
     <!-- Footer with the About link. -->
     <footer>
         <a href="/about">About</a>

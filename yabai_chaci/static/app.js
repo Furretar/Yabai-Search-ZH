@@ -6,15 +6,20 @@ const form = document.getElementById("search-form");
 const input = document.getElementById("q");
 const clearButton = document.getElementById("clear-button");
 const results = document.getElementById("results");
+const pagination = document.getElementById("pagination");
+const paginationTop = document.getElementById("pagination-top");
 const parsed = document.getElementById("parsed");
 const hint = document.getElementById("hint");
 const scriptToggle = document.getElementById("script-toggle");
 const toneToggle = document.getElementById("tone-toggle");
 const phoneticToggle = document.getElementById("phonetic-toggle");
 const taiwanToggle = document.getElementById("taiwan-toggle");
+const customDictsToggle = document.getElementById("custom-dicts-toggle");
 // Dictionaries panel: group switches (English/Mainland/Taiwan) and per-dict.
 const dictGroupToggles = [...document.querySelectorAll(".dict-group")];
 const dictToggles = [...document.querySelectorAll(".dict-toggle")];
+// The whole "Dictionaries" disclosure, shown only when "Custom dictionaries" is on.
+const dictPanel = document.querySelector(".options.dictionaries");
 
 // Search-language dropdown (left of the search box): EN / ZH / TW.
 const langSelect = document.querySelector(".lang-select");
@@ -25,13 +30,14 @@ const langDefaults = JSON.parse(langSelect.dataset.defaults || "{}");
 
 // Display options. script: "simplified" | "traditional"; toneColoring: on/off;
 // phonetic: "pinyin" | "zhuyin"; taiwan: use the Taiwan reading when listed;
-// dicts: the selected dictionaries (bulk of the Dictionaries panel);
+// customDicts: show the Dictionaries picker; dicts: the selected dictionaries;
 // lang: the selected search language (EN / ZH / TW).
 const state = {
     script: "simplified",
-    toneColoring: false,
+    toneColoring: true,
     phonetic: "pinyin",
     taiwan: false,
+    customDicts: false,
     dicts: new Set(), // selected dictionary anchors
     lang: "EN",
 };
@@ -396,6 +402,10 @@ function clearResults() {
     currentTokens = [];
     results.replaceChildren();
     parsed.replaceChildren();
+    pagination.replaceChildren();
+    pagination.hidden = true;
+    paginationTop.replaceChildren();
+    paginationTop.hidden = true;
     hint.hidden = true;
 }
 
@@ -508,6 +518,35 @@ function entryDicts(entry) {
     return enabled;
 }
 
+// Source priority when "Custom dictionaries" is off: English first (CC-CEDICT
+// before Wiktionary), then Mainland, then Taiwan. Each headword shows only the
+// highest-priority source that has a definition for it.
+const LANG_PRIORITY = { english: 0, mainland: 1, taiwan: 2 };
+const SOURCE_PRIORITY = ["cedict", "wiktionary", "moe"];
+
+function prioritySource(entry) {
+    let best = null;
+    let bestRank = Infinity;
+    for (const source of entry.definitions || []) {
+        const rank =
+            (LANG_PRIORITY[source.lang] ?? 9) * 100 +
+            (SOURCE_PRIORITY.indexOf(source.anchor) + 1 || 99);
+        if (rank < bestRank) {
+            bestRank = rank;
+            best = source;
+        }
+    }
+    return best;
+}
+
+// Which dictionaries to render for a result. With custom dictionaries on this is
+// the per-entry selection; with it off it is just the single top-priority source.
+function visibleDicts(entry) {
+    if (state.customDicts) return entryDicts(entry);
+    const source = prioritySource(entry);
+    return source ? new Set([source.anchor]) : new Set();
+}
+
 // Remember where the chips are, so they can be animated after a re-order.
 function chipPositions(row) {
     const positions = new Map();
@@ -573,11 +612,12 @@ function fillEntryRow(row, entry) {
         row.append(freq);
     }
 
-    const enabled = entryDicts(entry);
+    const enabled = visibleDicts(entry);
     const definitions = entry.definitions || [];
 
     // Source chips are toggles: the ones on come first (and are lit yellow).
-    if (definitions.length) {
+    // They only appear when "Custom dictionaries" is on.
+    if (definitions.length && state.customDicts) {
         const box = document.createElement("div");
         box.className = "sources";
         const ordered = [...definitions].sort(
@@ -635,6 +675,10 @@ function fillEntryRow(row, entry) {
 // for it; a word found only in unselected dictionaries lives in the "Matches in
 // other dictionaries" section instead.
 function hasSelectedDefs(entry) {
+    if (!state.customDicts) {
+        // Priority mode: whatever source has a definition is shown.
+        return (entry.definitions || []).length > 0 || (entry.forms || []).length > 0;
+    }
     if ((entry.definitions || []).some((s) => state.dicts.has(s.anchor))) return true;
     // A "see X" variant has no senses - only "other forms" (CC-CEDICT) - but it
     // should still show when CC-CEDICT is on.
@@ -683,14 +727,62 @@ function redraw() {
 }
 
 // Query the API and hand the results to render().
-async function search(query) {
-    const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}`;
+async function search(query, offset = 0) {
+    const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}`;
     const response = await fetch(url);
     const data = await response.json();
     entryDictState.clear(); // a fresh search starts from the global selection
     render(data.results, query);
     renderFuzzy(data.fuzzy);
+    renderPagination(query, data);
     updateHint(query, data.pinyin_match, data.english_match);
+}
+
+// Show prev/next paging above and below a "*" (all-headwords) search. When there
+// is more than one page, the top pager replaces the "N RESULTS" count.
+function renderPagination(query, data) {
+    const total = data.total;
+    const size = data.page_size || 100;
+    const pages = total == null ? 0 : Math.max(1, Math.ceil(total / size));
+    const paging = total != null && pages > 1;
+
+    const count = results.querySelector(".results-count");
+    if (count) count.hidden = paging;
+
+    for (const nav of [paginationTop, pagination]) {
+        nav.replaceChildren();
+        nav.hidden = !paging;
+    }
+    if (!paging) return;
+
+    const page = Math.floor((data.offset || 0) / size) + 1;
+    const info = `Page ${page} of ${pages} (${total.toLocaleString()} results)`;
+    for (const nav of [paginationTop, pagination]) {
+        nav.append(...pagerButtons(query, data, page, pages, info));
+    }
+}
+
+// The Previous / info / Next row shared by the top and bottom pagers.
+function pagerButtons(query, data, page, pages, info) {
+    const size = data.page_size || 100;
+
+    const prev = document.createElement("button");
+    prev.type = "button";
+    prev.textContent = "Previous";
+    prev.disabled = page <= 1;
+    prev.addEventListener("click", () => search(query, (data.offset || 0) - size));
+
+    const label = document.createElement("span");
+    label.className = "page-info";
+    label.textContent = info;
+
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = "Next";
+    next.disabled = page >= pages;
+    next.addEventListener("click", () => search(query, (data.offset || 0) + size));
+
+    return [prev, label, next];
 }
 
 // Render the segmented input as clickable words (clicking one searches it).
@@ -746,11 +838,13 @@ async function annotate(text) {
         body: JSON.stringify({ text }),
     });
     const data = await response.json();
-    const words = data.tokens.filter((token) => token.entries.length);
     clearResults();
-    if (words.length > 1) renderParsed(data.tokens);
-    // Search the first matched word, or fall back to the raw text (pinyin/English).
-    search(words.length ? words[0].text : text);
+    // Show the parsed words for any multi-word input, even when the words only
+    // exist outside CEDICT (e.g. 一償宿願 from MOE) and so have no entries.
+    if (data.tokens.length > 1) renderParsed(data.tokens);
+    // Search the first parsed word: the full input is a whole sentence and would
+    // match nothing. Clicking a parsed word searches that word.
+    search(data.tokens.length ? data.tokens[0].text : text);
 }
 
 // Put the current query in the browser tab title (like Jisho), or the site name
@@ -815,9 +909,11 @@ function loadPrefs() {
     try {
         const script = localStorage.getItem("yabai-chaci-script");
         if (script === "traditional" || script === "simplified") state.script = script;
-        state.toneColoring = localStorage.getItem("yabai-chaci-tone") === "true";
+        // Tone coloring is on by default; only an explicit "false" disables it.
+        state.toneColoring = localStorage.getItem("yabai-chaci-tone") !== "false";
         state.phonetic = localStorage.getItem("yabai-chaci-phonetic") === "zhuyin" ? "zhuyin" : "pinyin";
         state.taiwan = localStorage.getItem("yabai-chaci-taiwan") === "true";
+        state.customDicts = localStorage.getItem("yabai-chaci-custom-dicts") === "true";
         state.lang = localStorage.getItem("yabai-chaci-lang") || "EN";
         const stored = JSON.parse(localStorage.getItem("yabai-chaci-dicts") || "null");
         // On a fresh start use the language's defaults (EN -> cedict only).
@@ -832,8 +928,10 @@ function loadPrefs() {
     toneToggle.checked = state.toneColoring;
     phoneticToggle.checked = state.phonetic === "zhuyin";
     taiwanToggle.checked = state.taiwan;
+    customDictsToggle.checked = state.customDicts;
     for (const input of dictToggles) input.checked = state.dicts.has(input.dataset.anchor);
     syncGroups();
+    syncDictPanel();
     applyLang(state.lang);
 }
 
@@ -844,6 +942,7 @@ function savePrefs() {
         localStorage.setItem("yabai-chaci-tone", String(state.toneColoring));
         localStorage.setItem("yabai-chaci-phonetic", state.phonetic);
         localStorage.setItem("yabai-chaci-taiwan", String(state.taiwan));
+        localStorage.setItem("yabai-chaci-custom-dicts", String(state.customDicts));
         localStorage.setItem("yabai-chaci-dicts", JSON.stringify([...state.dicts]));
         localStorage.setItem("yabai-chaci-lang", state.lang);
     } catch (e) {
@@ -875,6 +974,18 @@ taiwanToggle.addEventListener("change", () => {
     if (query) search(query);
     else redraw();
 });
+customDictsToggle.addEventListener("change", () => {
+    state.customDicts = customDictsToggle.checked;
+    savePrefs();
+    syncDictPanel();
+    // Re-render so the per-entry dictionary chips appear/disappear too.
+    redraw();
+});
+
+// Show the Dictionaries disclosure only when "Custom dictionaries" is on.
+function syncDictPanel() {
+    dictPanel.hidden = !state.customDicts;
+}
 
 // Dictionaries panel: a group switch toggles its whole column, and each
 // per-dictionary switch selects one dictionary.

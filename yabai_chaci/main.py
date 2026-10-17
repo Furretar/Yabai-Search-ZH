@@ -151,31 +151,47 @@ def _record_search(query: str, duration_ms: float, count: int, statements: list[
 
 
 @app.get("/api/search")
-def api_search(q: str = "", limit: int = Query(50, ge=1, le=200), taiwan: bool = False):
+def api_search(
+    q: str = "",
+    limit: int = Query(50, ge=1, le=200),
+    taiwan: bool = False,
+    offset: int = Query(0, ge=0),
+):
     """JSON search endpoint. `q` is the term; `limit` is clamped to 1..200.
 
     `taiwan` lets a pinyin search also match Taiwan (MOE) readings.
     `pinyin_match` is true when the query was an exact Chinese reading - in which
     case `results` holds only those readings, no English-definition matches.
+    A "*" query lists every headword from every source, `ALL_PAGE_SIZE` per page;
+    `offset` selects the page and the response's `total` is the full count.
     """
     db.start_log()  # capture the SQL this search runs (for data/search.log)
     started = time.perf_counter()
+    total = None
     try:
-        results = _expand_variants(db.search(q, limit, taiwan))
-        # If a tonal reading matched nothing, offer a tone-insensitive "fuzzy" search.
-        fuzzy = []
-        if not results:
-            variant = db.tonal_variant(q)
-            if variant:
-                fuzzy = db.search(variant, limit, taiwan)
-        key = to_toneless(q)
-        pinyin_match = bool(key) and any(
-            to_toneless(entry["pinyin"]) == key for entry in results
-        )
-        # Offer the English search only when it would actually find something.
-        english_match = False
-        if pinyin_match:
-            english_match = bool(db.search(f'"{q.strip()}"', limit=1))
+        if not q.strip().strip("*"):
+            # "*": every headword across all sources, 100 per page.
+            heads, total = db.all_headwords(offset, db.ALL_PAGE_SIZE)
+            results = db.entries_for_headwords(heads)
+            fuzzy = []
+            pinyin_match = False
+            english_match = False
+        else:
+            results = _expand_variants(db.search(q, limit, taiwan))
+            # If a tonal reading matched nothing, offer a tone-insensitive "fuzzy" search.
+            fuzzy = []
+            if not results:
+                variant = db.tonal_variant(q)
+                if variant:
+                    fuzzy = db.search(variant, limit, taiwan)
+            key = to_toneless(q)
+            pinyin_match = bool(key) and any(
+                to_toneless(entry["pinyin"]) == key for entry in results
+            )
+            # Offer the English search only when it would actually find something.
+            english_match = False
+            if pinyin_match:
+                english_match = bool(db.search(f'"{q.strip()}"', limit=1))
     finally:
         statements = db.end_log()
     _record_search(q, (time.perf_counter() - started) * 1000, len(results), statements)
@@ -185,6 +201,9 @@ def api_search(q: str = "", limit: int = Query(50, ge=1, le=200), taiwan: bool =
         "english_match": english_match,
         "results": results,
         "fuzzy": fuzzy,
+        "total": total,
+        "offset": offset,
+        "page_size": db.ALL_PAGE_SIZE,
     }
 
 
@@ -212,7 +231,11 @@ def api_annotate(request: AnnotateRequest):
         trad, simp = traditional[pos:end], simplified[pos:end]
         pos = end
         entries = db.lookup(word) if word.strip() else []
-        if not entries and len(word) > 1:
+        if not entries and word.strip():
+            # Not in CEDICT: use another dictionary's entry (e.g. MOE) so the
+            # parsed word still gets a reading and is clickable.
+            entries = db.source_entries(word)
+        if not entries and len(word) > 1 and not segment.is_headword(word):
             for i, char in enumerate(word):
                 char_entries = db.lookup(char) if char.strip() else []
                 tokens.append(
