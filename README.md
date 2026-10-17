@@ -1,4 +1,5 @@
-# Yabai-Chaci 牙白查词 / Yabai Search
+# Yabai-Search-ZH
+牙白查词 / Yabai Search
 
 A Chinese dictionary web app with Chinese-English, Chinese-Chinese, and Taiwanese Mandarin support. It is built on many open license dictionaries, such as CC-CEDICT and Wiktionary, with Taiwan
 readings from the MOE 國語辭典簡編本.
@@ -7,19 +8,23 @@ readings from the MOE 國語辭典簡編本.
 
 ### Search functions
 
-#### English phrases
-If you search with the English alphabet, the engine will first try to read it as phonetic pinyin. If the search doesn't match any pinyin readings, it will search for definitions containing the string. You can force an English phrase search with quotes "". Exact matches are shown first, then definitions containing the word, then definitions containing the string anywhere inside.
+#### Search ordering
+Searches have 5 levels of priority. Results within the same level will be sorted by frequency if possible. The search bar will by default attempt to match headwords or readings. Definitions will be searched if there are no matching headwords or reading. Definitions can be searched by using quotes "". The top results will be exact matches for your search query. The 2nd level will be results that start with your search query. The 3rd level will be results that contain your query somewhere inside. The 4th level is all words from Wiktionary with a reading but no definition, and the 5th level is all words with no reading and no definition listed.
 
 #### Pinyin
-When searching with pinyin, you can specify tones with their corresponding numbers or leave it blank (shi2shi4 vs shishi). Searching pinyin will get exact matches at the top, then results starting with the query. All syllable combinations will be matched, for example, dangan will match both dan'gan (单干) and dang'an (档案).
+When searching with pinyin, you can specify tones with their corresponding numbers or leave it blank (shi2shi4 vs shishi). All syllable combinations will be matched, for example, dangan will match both dan'gan (单干) and dang'an (档案). You can also specify tones for specific characters, i.e. shi4shi will return any results for shi4 with any tone shi after it. If there are no results for the specific tone combination, it will fallback to results ignoring your tone numbers. The ignored toneless results will be displayed under a section call "Fuzzy Results."
 
-You can also specify tones for certain characters, i.e. shi4shi will return any results for shi4 with any tone shi after it. Below that will be results starting with the query, then results containing the query anywhere inside. If there are no results for the specific tone combination, it will fallback to results ignoring your tone numbers. The ignored toneless results will be displayed under a section call "Fuzzy Results."
+#### Bopomofo 
+Bopomofo is converted to tonal pinyin first, so it is fully supported.
 
 #### Wildcard
 You can use * in searches as a wildcard, it mixes with tone pinyin queries too. For example, *字 will return all words ending with 字.
 
-#### Bopomofo 
-Bopomofo is converted to tonal pinyin first, so it is fully supported.
+
+
+
+
+
 
 ### Dictionaries and Sources
 
