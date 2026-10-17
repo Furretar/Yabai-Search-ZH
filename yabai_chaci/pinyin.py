@@ -8,6 +8,7 @@ e.g. "han4 yu3" and "nu:3" (u: means ü).
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 # Maps each base vowel to its four tone-marked forms, in tone order 1-4.
 # Neutral tone (5, or no digit) leaves the vowel unmarked, so it isn't listed.
@@ -86,12 +87,14 @@ def _mark_syllable(syllable: str) -> str:
     return body[:idx] + marks[int(tone) - 1] + body[idx + 1 :]
 
 
+@lru_cache(maxsize=100_000)
 def numeric_to_marked(pinyin: str) -> str:
     """'han4 yu3' -> 'hàn yǔ'."""
     # Split on whitespace, mark each syllable, then rejoin with single spaces.
     return " ".join(_mark_syllable(tok) for tok in pinyin.split())
 
 
+@lru_cache(maxsize=200_000)
 def to_numeric(pinyin: str) -> str:
     """'hàn yǔ' -> 'han4 yu3' (the inverse of numeric_to_marked)."""
     out = []
@@ -108,11 +111,54 @@ def to_numeric(pinyin: str) -> str:
     return " ".join(out)
 
 
+_DIGIT_RE = re.compile(r"[1-5]")
+_NON_LETTER_RE = re.compile(r"[^a-zü]")
+
+
+@lru_cache(maxsize=300_000)
 def to_toneless(pinyin: str) -> str:
     """Normalize any pinyin to a search key: 'hàn yǔ' / 'han4 yu3' -> 'hanyu'."""
     text = pinyin.strip().lower()
     text = text.replace("u:", "ü").replace("v", "ü")
-    text = re.sub(r"[1-5]", "", text)
+    text = _DIGIT_RE.sub("", text)
     text = text.translate(_MARK_TO_BASE)
-    text = re.sub(r"[^a-zü]", "", text)
+    text = _NON_LETTER_RE.sub("", text)
     return text
+
+
+def split_syllables(chunk: str, syllables: set[str]) -> list[str]:
+    """Split one chunk into the fewest valid pinyin syllables.
+
+    A small dynamic program: best[i] is the shortest list of syllables covering
+    chunk[:i]. If no full split exists, every character is kept separate. Shared
+    by the app and the Wiktionary importer so both produce identical readings.
+    """
+    length = len(chunk)
+    best: list[list[str] | None] = [None] * (length + 1)
+    best[0] = []
+    for start in range(length):
+        if best[start] is None:
+            continue
+        # The longest pinyin syllable is six letters ("zhuang").
+        for end in range(start + 1, min(start + 6, length) + 1):
+            if to_toneless(chunk[start:end]) not in syllables:
+                continue
+            candidate = best[start] + [chunk[start:end]]
+            if best[end] is None or len(candidate) < len(best[end]):
+                best[end] = candidate
+    return best[length] if best[length] is not None else list(chunk)
+
+
+def split_pinyin(text: str, syllables: set[str]) -> str:
+    """Space out a run-together reading, e.g. 'língcìyuán' -> 'líng cì yuán'.
+
+    Each whitespace/apostrophe-separated chunk is split into the FEWEST valid
+    syllables from `syllables`. Greedy longest matching is not enough:
+    "Sānguózhì" would become "Sāng u ó zhì" instead of "Sān guó zhì". Unknown
+    pieces are kept as they are, so nothing is dropped.
+    """
+    parts: list[str] = []
+    for chunk in re.split(r"[\s'’\-–]+", text.strip()):
+        if chunk:
+            parts.extend(split_syllables(chunk, syllables))
+    return " ".join(parts)

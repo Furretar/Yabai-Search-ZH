@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from yabai_chaci import db, segment
 from yabai_chaci.default_dictionaries import DEFAULTS
+from yabai_chaci.overrides import PREFERRED_READINGS
 from yabai_chaci.pinyin import to_toneless
 
 # Directory of this file (the yabai_chaci package). Used to locate assets
@@ -39,6 +40,12 @@ def asset_version() -> str:
 
 # The application object that uvicorn imports and runs.
 app = FastAPI(title="Yabai-Chaci")
+
+
+@app.on_event("startup")
+def _warm_caches() -> None:
+    """Build the SQL caches now, instead of during the first search."""
+    db.warm_caches()
 
 # Serve files from yabai_chaci/static/ at the URL prefix /static/...
 # (e.g. /static/style.css, /static/app.js). Read-only, served verbatim.
@@ -92,6 +99,21 @@ def _reading_count(entry: dict) -> int:
     return 0
 
 
+def _preferred_bonus(entry: dict) -> int:
+    """A large score bonus when an entry matches a manual preferred reading.
+
+    Lets overrides.py decide which reading represents a headword (e.g. 了 -> le)
+    even when another reading has more definitions.
+    """
+    preferred = (
+        PREFERRED_READINGS.get(entry["traditional"])
+        or PREFERRED_READINGS.get(entry["simplified"])
+    )
+    if preferred and to_toneless(entry.get("pinyin", "")) == to_toneless(preferred):
+        return 1_000_000
+    return 0
+
+
 def _expand_variants(results: list[dict]) -> list[dict]:
     """Collapse results to one entry per headword.
 
@@ -111,7 +133,7 @@ def _expand_variants(results: list[dict]) -> list[dict]:
             # De-duplicate by headword, not reading: the capitalized (surname) and
             # plain versions of a word (e.g. 阮 Ruǎn / ruǎn) collapse to one.
             key = (e["traditional"], e["simplified"])
-            score = _reading_count(e)
+            score = _reading_count(e) + _preferred_bonus(e)
             if key not in best:
                 best[key] = (score, e)
                 order.append(key)
@@ -127,6 +149,8 @@ _recent_searches: "collections.deque[dict]" = collections.deque(maxlen=10)
 
 def _record_search(query: str, duration_ms: float, count: int, statements: list[str]) -> None:
     """Append a search to the rolling log and rewrite the log file."""
+    if not db.SQL_LOG:
+        return  # the log is opt-in (YABAI_SQL_LOG); skipping keeps the path hot
     _recent_searches.append(
         {
             "at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -156,6 +180,7 @@ def api_search(
     limit: int = Query(50, ge=1, le=200),
     taiwan: bool = False,
     offset: int = Query(0, ge=0),
+    part: str = Query("all"),
 ):
     """JSON search endpoint. `q` is the term; `limit` is clamped to 1..200.
 
@@ -164,6 +189,9 @@ def api_search(
     case `results` holds only those readings, no English-definition matches.
     A "*" query lists every headword from every source, `ALL_PAGE_SIZE` per page;
     `offset` selects the page and the response's `total` is the full count.
+
+    `part="primary"` returns only the fast CEDICT tier, so the page can render
+    results progressively; the plain request returns the complete final list.
     """
     db.start_log()  # capture the SQL this search runs (for data/search.log)
     started = time.perf_counter()
@@ -176,22 +204,24 @@ def api_search(
             fuzzy = []
             pinyin_match = False
             english_match = False
+        elif part == "primary":
+            entries, pinyin_match = db.search(q, limit, taiwan, part="primary")
+            results = _expand_variants(entries)
+            fuzzy = []
+            english_match = db.has_english_match(q.strip()) if pinyin_match else False
         else:
-            results = _expand_variants(db.search(q, limit, taiwan))
+            entries, pinyin_match = db.search(q, limit, taiwan)
+            results = _expand_variants(entries)
             # If a tonal reading matched nothing, offer a tone-insensitive "fuzzy" search.
             fuzzy = []
             if not results:
                 variant = db.tonal_variant(q)
                 if variant:
-                    fuzzy = db.search(variant, limit, taiwan)
-            key = to_toneless(q)
-            pinyin_match = bool(key) and any(
-                to_toneless(entry["pinyin"]) == key for entry in results
-            )
+                    fuzzy, _ = db.search(variant, limit, taiwan)
             # Offer the English search only when it would actually find something.
             english_match = False
             if pinyin_match:
-                english_match = bool(db.search(f'"{q.strip()}"', limit=1))
+                english_match = db.has_english_match(q.strip())
     finally:
         statements = db.end_log()
     _record_search(q, (time.perf_counter() - started) * 1000, len(results), statements)
@@ -204,6 +234,7 @@ def api_search(
         "total": total,
         "offset": offset,
         "page_size": db.ALL_PAGE_SIZE,
+        "ms": round((time.perf_counter() - started) * 1000),
     }
 
 
@@ -235,7 +266,12 @@ def api_annotate(request: AnnotateRequest):
             # Not in CEDICT: use another dictionary's entry (e.g. MOE) so the
             # parsed word still gets a reading and is clickable.
             entries = db.source_entries(word)
-        if not entries and len(word) > 1 and not segment.is_headword(word):
+        if (
+            not entries
+            and len(word) > 1
+            and db.has_cjk(word)
+            and not segment.is_headword(word)
+        ):
             for i, char in enumerate(word):
                 char_entries = db.lookup(char) if char.strip() else []
                 tokens.append(

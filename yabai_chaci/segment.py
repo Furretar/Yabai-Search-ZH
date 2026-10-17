@@ -12,6 +12,7 @@ from yabai_chaci.db import (
     MOE_DB_PATH,
     SUBTLEX_DB_PATH,
     WIKTIONARY_DB_PATH,
+    has_cjk,
 )
 
 # The jieba user-dictionary we generate from the dictionary headwords.
@@ -19,6 +20,7 @@ USERDICT_PATH = Path(__file__).resolve().parents[1] / "data" / "cedict_userdict.
 
 _loaded = False
 _headword_cache: set[str] | None = None
+_max_len_cache: int | None = None
 
 # How many jieba tokens to try merging into a single headword.
 _MAX_MERGE_TOKENS = 8
@@ -90,6 +92,14 @@ def _ensure_loaded() -> None:
         _loaded = True
 
 
+def _max_headword_len() -> int:
+    """Length of the longest known headword, cached."""
+    global _max_len_cache
+    if _max_len_cache is None:
+        _max_len_cache = max((len(word) for word in _headwords()), default=1)
+    return _max_len_cache
+
+
 def is_headword(word: str) -> bool:
     """True when `word` is a known multi-character headword in any source.
 
@@ -97,6 +107,58 @@ def is_headword(word: str) -> bool:
     headword but happens to have no CEDICT entry (e.g. 一償宿願 from MOE).
     """
     return len(word) > 1 and word in _headwords()
+
+
+def _join_foreign(tokens: list[str]) -> list[str]:
+    """Join runs of non-Chinese alphanumeric tokens into one word.
+
+    jieba splits Latin text into single characters (e.g. "y", "ī"), which then
+    each became a separate "word" in the parsed input. Whitespace, punctuation
+    and Chinese characters act as separators, so "y", "ī", "一" becomes "yī", "一".
+    """
+    joined: list[str] = []
+    buffer = ""
+    for token in tokens:
+        if token and not has_cjk(token) and all(ch.isalnum() for ch in token):
+            buffer += token
+            continue
+        if buffer:
+            joined.append(buffer)
+            buffer = ""
+        joined.append(token)
+    if buffer:
+        joined.append(buffer)
+    return joined
+
+
+def _split_unknown(tokens: list[str]) -> list[str]:
+    """Split tokens no dictionary lists into known headwords.
+
+    jieba can return a whole run (e.g. 一点钟) even when no source has it, which
+    used to be split into single characters and lost the word 点钟. Taking the
+    longest headword from the right matches how Chinese compounds are built
+    (一点钟 = 一 + 点钟, 不知道 = 不 + 知道).
+    """
+    words = _headwords()
+    max_len = _max_headword_len()
+    out: list[str] = []
+    for token in tokens:
+        if len(token) <= 1 or token in words or not has_cjk(token):
+            out.append(token)
+            continue
+        pieces: list[str] = []
+        end = len(token)
+        while end > 0:
+            # Longest known headword ending at `end` (single characters otherwise).
+            take = 1
+            for size in range(min(max_len, end), 0, -1):
+                if token[end - size : end] in words:
+                    take = size
+                    break
+            pieces.append(token[end - take : end])
+            end -= take
+        out.extend(reversed(pieces))
+    return out
 
 
 def segment(text: str) -> list[str]:
@@ -127,4 +189,4 @@ def segment(text: str) -> list[str]:
         else:
             merged.append(tokens[i])
             i += 1
-    return merged
+    return _split_unknown(_join_foreign(merged))

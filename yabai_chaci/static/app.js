@@ -44,6 +44,10 @@ const state = {
 
 // The most recent results, kept so the toggles can re-render without re-fetching.
 let currentEntries = [];
+// Server-reported durations: the initial batch and the whole query. Both are
+// shown after the result count when the first batch was rendered on its own.
+let lastSearchMs = null;
+let firstSearchMs = null;
 let currentFuzzy = [];
 let currentQuery = "";
 // The parsed words from the last multi-word input, so a display toggle (e.g.
@@ -218,8 +222,8 @@ function gridCell(kind, content, column, tone) {
 // contiguous - used by the double-click handler below.
 // Build the reading text for a group of syllables: one tone-colored span per
 // syllable when coloring is on, otherwise a single plain text node.
-function readingContent(readings, syllables) {
-    if (!state.toneColoring) {
+function readingContent(readings, syllables, colored = state.toneColoring) {
+    if (!colored) {
         return document.createTextNode(readings.join("\u00a0"));
     }
     const fragment = document.createDocumentFragment();
@@ -233,21 +237,133 @@ function readingContent(readings, syllables) {
     return fragment;
 }
 
-function furigana(text, pinyin) {
+// One punctuation/symbol character: these never take a reading.
+const PUNCT_CHAR_RE = /^[\p{P}\p{S}]$/u;
+// A punctuation token in a reading, e.g. the "," in "xīn , Xiāng": not a syllable.
+const PUNCT_TOKEN_RE = /^[\p{P}\p{S}]+$/u;
+
+// Numeral syllables, used to align a leading digit run's tones with its reading.
+const NUMERAL_BASES = new Set([
+    "yi", "er", "san", "si", "wu", "liu", "qi", "ba", "jiu",
+    "shi", "bai", "qian", "wan", "ling", "liang", "yao",
+]);
+
+// The syllable without tone marks or case ("Wàn" -> "wan").
+function syllableBase(syllable) {
+    return syllable
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/\p{M}/gu, "")
+        .replace(/ü/g, "u");
+}
+
+// True when a syllable reads a number. "shi" is ambiguous: 十 (shí, tone 2) is a
+// number, but 式/是 (shì, tone 4) is not.
+function isNumeralSyllable(syllable) {
+    const base = syllableBase(syllable);
+    if (!NUMERAL_BASES.has(base)) return false;
+    if (base === "shi") return toneOf(syllable) === 2;
+    return true;
+}
+
+// Tone per character for a leading digit run, e.g. 10000 -> "yī wàn": "1" takes
+// yī's tone and "0000" takes wàn's. Returns null when it cannot map safely.
+function numberTones(chars, syllables) {
+    if (!/^\d/.test(chars.join(""))) return null;
+
+    const tones = new Array(chars.length).fill(0);
+    let charIndex = 0;
+    let syllableIndex = 0;
+    while (charIndex < chars.length && syllableIndex < syllables.length) {
+        const digits = (chars.slice(charIndex).join("").match(/^\d+/) || [""])[0];
+        if (digits) {
+            // Consume the numeral syllables that read this number.
+            let end = syllableIndex;
+            while (end < syllables.length && isNumeralSyllable(syllables[end])) {
+                end += 1;
+            }
+            const numberSyllables = syllables.slice(syllableIndex, end);
+            if (!numberSyllables.length) break;
+            // Colour digits only when the reading lists them in order (1812 =
+            // yī bā yī èr). A 0 is only coloured when it is read "líng", not
+            // skipped as part of a place unit (2000 = èr qiān).
+            const digitsListed =
+                digits.length === numberSyllables.length &&
+                digits.split("").every(
+                    (digit, i) => digit !== "0" || syllableBase(numberSyllables[i]) === "ling"
+                );
+            if (digitsListed) {
+                digits.split("").forEach((_, i) => {
+                    tones[charIndex + i] = toneOf(numberSyllables[i]);
+                });
+            } else if (digits === "10" && numberSyllables.length === 1) {
+                // 10 read as shí: both digits take that one tone.
+                tones[charIndex] = tones[charIndex + 1] = toneOf(numberSyllables[0]);
+            }
+            charIndex += digits.length;
+            syllableIndex = end;
+        } else {
+            // A single non-digit character (×, 米) takes the next syllable's tone.
+            tones[charIndex] = toneOf(syllables[syllableIndex]);
+            charIndex += 1;
+            syllableIndex += 1;
+        }
+    }
+    return tones.some((tone) => tone) ? tones : null;
+}
+
+// Tone per character for a Latin prefix plus trailing Chinese characters, e.g.
+// ATM机 read "ēi tì ái mu jī". Only the trailing Chinese is coloured.
+function trailingTones(chars, syllables) {
+    let start = chars.length;
+    while (start > 0 && CJK_RE.test(chars[start - 1])) start -= 1;
+    const count = chars.length - start;
+    if (!count || count > syllables.length) return null;
+    if (!/[A-Za-z]/.test(chars.slice(0, start).join(""))) return null;
+    const tones = new Array(chars.length).fill(0);
+    for (let i = 0; i < count; i += 1) {
+        tones[start + i] = toneOf(syllables[syllables.length - count + i]);
+    }
+    return tones;
+}
+
+function furigana(text, pinyin, allowTones = true) {
     const chars = [...text];
-    const syllables = pinyin.split(/\s+/).filter(Boolean);
+    const syllables = pinyin
+        .split(/\s+/)
+        .filter((syllable) => syllable && !PUNCT_TOKEN_RE.test(syllable));
     // The readings in the chosen phonetic system.
     const readings = syllables.map((s) => (state.phonetic === "zhuyin" ? toZhuyin(s) : s));
     const node = document.createElement("span");
     node.className = "furigana";
+    // Some readings (Wu romanizations) are shown, but not tone-coloured: the
+    // colours are Hanyu Pinyin tones, which do not apply to them.
+    const colored = state.toneColoring && allowTones;
 
-    if (chars.length === syllables.length) {
-        const colored = state.toneColoring;
-        chars.forEach((_, i) => {
-            node.append(gridCell("reading", readings[i], String(i + 1), colored ? toneOf(syllables[i]) : 0));
-        });
+    // Match readings to characters, ignoring punctuation. Without this a phrase
+    // like 除了他，谁也没来 (one comma, so one more character than syllable) would
+    // fall back to a single uncolored character row.
+    const spoken = chars.filter((char) => !PUNCT_CHAR_RE.test(char));
+    // Numeric headwords never use the per-character layout: a digit and a
+    // syllable do not line up (1500 = yī qiān wǔ bǎi). The fallback below keeps
+    // most digits white and colours the characters after the number.
+    const leadingDigits = (text.match(/^\d+/) || [""])[0];
+    if (!leadingDigits && spoken.length === syllables.length) {
+        let index = 0;
+        // Readings first, then characters, so a DOM range over one kind stays
+        // contiguous (the double-click handler relies on that).
         chars.forEach((char, i) => {
-            node.append(gridCell("char", char, String(i + 1), colored ? toneOf(syllables[i]) : 0));
+            if (PUNCT_CHAR_RE.test(char)) return;
+            const tone = colored ? toneOf(syllables[index]) : 0;
+            node.append(gridCell("reading", readings[index], String(i + 1), tone));
+            index += 1;
+        });
+        index = 0;
+        chars.forEach((char, i) => {
+            const punctuation = PUNCT_CHAR_RE.test(char);
+            const tone = !punctuation && colored ? toneOf(syllables[index]) : 0;
+            node.append(gridCell("char", char, String(i + 1), tone));
+            if (!punctuation) index += 1;
         });
     } else {
         // Counts differ: put the whole reading above the whole word (still colored).
@@ -255,13 +371,29 @@ function furigana(text, pinyin) {
         reading.className = "reading";
         reading.style.gridRow = "1";
         reading.style.gridColumn = "1 / -1";
-        reading.append(readingContent(readings, syllables));
+        reading.append(readingContent(readings, syllables, colored));
 
         const char = document.createElement("span");
         char.className = "char";
         char.style.gridRow = "2";
         char.style.gridColumn = "1 / -1";
-        char.textContent = text;
+        // Numbers often have more characters than syllables (10000 = yī wàn),
+        // so give each digit the tone of the syllable that reads it.
+        let tones = colored ? numberTones(chars, syllables) : null;
+        if (!tones && colored) tones = trailingTones(chars, syllables);
+        if (tones) {
+            node.classList.add("segmented");
+            chars.forEach((ch, i) => {
+                const cell = document.createElement("span");
+                cell.textContent = ch;
+                // Uncoloured pieces (digits) use the default colour, so their
+                // underline is white/black rather than the link accent.
+                cell.className = tones[i] ? `tone${tones[i]}` : "plain";
+                char.append(cell);
+            });
+        } else {
+            char.textContent = text;
+        }
 
         node.append(reading, char);
     }
@@ -274,6 +406,28 @@ function furigana(text, pinyin) {
 const CROSS_REF = /([^\s|\[\]:/]+)(?:\|([^\s|\[\]:/]+))?\[([^\]]+)\]/g;
 // MOE (and other non-CEDICT) definitions write cross-references as "→word".
 const ARROW_CROSS_REF = /→\s*([\u3400-\u9fff]+)/g;
+// A run of Chinese characters inside a definition, e.g. "alternative form of 日".
+const CJK_RUN_RE = /\p{Script=Han}+/gu;
+
+// Append plain definition text, turning Chinese runs into search links. The
+// longest run stays one link, so a word is not split into separate characters.
+// `linkChinese` is off for Chinese-language sources (MOE), whose prose is not a
+// list of terms to look up.
+function appendLinkedText(fragment, text, linkChinese) {
+    if (!linkChinese) {
+        fragment.append(text);
+        return;
+    }
+    let last = 0;
+    let match;
+    CJK_RUN_RE.lastIndex = 0;
+    while ((match = CJK_RUN_RE.exec(text)) !== null) {
+        if (match.index > last) fragment.append(text.slice(last, match.index));
+        fragment.append(searchLink(match[0]));
+        last = match.index + match[0].length;
+    }
+    if (last < text.length) fragment.append(text.slice(last));
+}
 
 // A clickable link that searches `text`. `node` is the label (e.g. furigana);
 // without it the text itself is the (underlined) label.
@@ -290,34 +444,20 @@ function searchLink(text, node) {
     return link;
 }
 
-// Render a plain (non-CEDICT) definition, turning "→word" cross-references into
-// links that search the referenced word.
-function renderCrossRefs(text) {
-    const fragment = document.createDocumentFragment();
-    let last = 0;
-    let match;
-    ARROW_CROSS_REF.lastIndex = 0;
-    while ((match = ARROW_CROSS_REF.exec(text)) !== null) {
-        if (match.index > last) fragment.append(text.slice(last, match.index));
-        fragment.append("→");
-        fragment.append(searchLink(match[1]));
-        last = match.index + match[0].length;
-    }
-    if (last < text.length) fragment.append(text.slice(last));
-    return fragment;
-}
-
-// Build a definition: plain text, with cross-references rendered as furigana.
-// `taiwanRefs` maps referenced words to their Taiwan reading (used when the
-// Taiwan toggle is on).
-function renderDefinition(text, taiwanRefs) {
-    const fragment = document.createDocumentFragment();
+// Append text with CC-CEDICT style cross-references ("word[pin1 yin1]") as
+// clickable furigana links. Annotated glosses use the same bracket form.
+function appendCrossRefs(fragment, text, taiwanRefs, linkChinese) {
     let last = 0;
     let match;
     CROSS_REF.lastIndex = 0;
     while ((match = CROSS_REF.exec(text)) !== null) {
-        if (match.index > last) fragment.append(text.slice(last, match.index));
-        const word = match[2] || match[1]; // prefer the simplified form
+        if (match.index > last) {
+            appendLinkedText(fragment, text.slice(last, match.index), linkChinese);
+        }
+        const word =
+            state.script === "traditional"
+                ? (match[1] || match[2])
+                : (match[2] || match[1]);
         const reading =
             state.taiwan && taiwanRefs && taiwanRefs[word]
                 ? taiwanRefs[word]
@@ -327,7 +467,25 @@ function renderDefinition(text, taiwanRefs) {
         fragment.append(searchLink(word, furigana(word, reading)));
         last = match.index + match[0].length;
     }
-    if (last < text.length) fragment.append(text.slice(last));
+    if (last < text.length) {
+        appendLinkedText(fragment, text.slice(last), linkChinese);
+    }
+}
+
+// Build a definition: "word[pinyin]" cross-references (CC-CEDICT and annotated
+// glosses) plus "→word" links (MOE/Wiktionary).
+function renderDefinition(text, taiwanRefs, linkChinese) {
+    const fragment = document.createDocumentFragment();
+    let last = 0;
+    let match;
+    ARROW_CROSS_REF.lastIndex = 0;
+    while ((match = ARROW_CROSS_REF.exec(text)) !== null) {
+        appendCrossRefs(fragment, text.slice(last, match.index), taiwanRefs, linkChinese);
+        fragment.append("→");
+        fragment.append(searchLink(match[1]));
+        last = match.index + match[0].length;
+    }
+    appendCrossRefs(fragment, text.slice(last), taiwanRefs, linkChinese);
     return fragment;
 }
 
@@ -438,6 +596,9 @@ function updateHint(query, pinyinMatch, englishMatch) {
 // line (no heading). Shared by result blocks and match boxes.
 function definitionBody(source, taiwanRefs) {
     const body = document.createDocumentFragment();
+    // Only English-language definitions get automatic Chinese links; a Chinese
+    // dictionary's own prose (MOE) is not a list of headwords to look up.
+    const linkChinese = source.lang === "english";
 
     // Senses, grouped by reading. CEDICT polyphonic words get a header per
     // reading; other sources have a single (unlabelled) group.
@@ -451,7 +612,9 @@ function definitionBody(source, taiwanRefs) {
         if (showReadings && group.pinyin) {
             const head = document.createElement("div");
             head.className = "def-reading";
-            head.textContent = group.pinyin;
+            const syllables = group.pinyin.split(/\s+/).filter(Boolean);
+            const readings = syllables.map((s) => (state.phonetic === "zhuyin" ? toZhuyin(s) : s));
+            head.append(readingContent(readings, syllables, state.toneColoring));
             body.append(head);
         }
         group.senses.forEach((text, i) => {
@@ -460,12 +623,7 @@ function definitionBody(source, taiwanRefs) {
             const num = document.createElement("span");
             num.className = "def-source-num";
             num.textContent = `${i + 1}.`;
-            line.append(
-                num,
-                source.anchor === "cedict"
-                    ? renderDefinition(text, taiwanRefs)
-                    : renderCrossRefs(text)
-            );
+            line.append(num, renderDefinition(text, taiwanRefs, linkChinese));
             body.append(line);
         });
     }
@@ -473,28 +631,65 @@ function definitionBody(source, taiwanRefs) {
     // Standardized classifiers, shown in the chosen script (Traditional toggle).
     if (source.classifiers && source.classifiers.length) {
         const useTraditional = state.script === "traditional";
-        const forms = source.classifiers.map((c) =>
-            c.note ? c.note : (useTraditional ? c.traditional : c.simplified) || ""
-        );
         const line = document.createElement("div");
         line.className = "def-source-cls";
         const label = document.createElement("span");
         label.className = "def-source-cls-label";
         label.textContent = "Classifier:";
-        line.append(label, document.createTextNode(" " + forms.join("; ")));
+        line.append(label, document.createTextNode(" "));
+        source.classifiers.forEach((classifier, i) => {
+            if (i > 0) line.append(document.createTextNode("; "));
+            // MOE stores a prose note instead of a single classifier word.
+            if (classifier.note) {
+                line.append(document.createTextNode(classifier.note));
+                return;
+            }
+            const form =
+                (useTraditional ? classifier.traditional : classifier.simplified) || "";
+            if (!form) return;
+            // Read the classifier like any other word: a link, with furigana
+            // and tone colouring when the display toggles are on.
+            const reading =
+                (useTraditional
+                    ? classifier.pinyin_traditional
+                    : classifier.pinyin_simplified) ||
+                (useTraditional
+                    ? classifier.pinyin_simplified
+                    : classifier.pinyin_traditional) ||
+                "";
+            line.append(reading ? searchLink(form, furigana(form, reading)) : searchLink(form));
+        });
         body.append(line);
     }
     return body;
 }
 
-// A labeled block showing one dictionary's definitions for a result. The
-// dictionary name links to its section on the About page.
-function definitionsBlock(source, taiwanRefs) {
+// Search URL for the CC-CEDICT editor; the word is appended URL-encoded.
+const CC_CEDICT_SEARCH =
+    "https://cc-cedict.org/editor/editor.php?handler=QueryDictionary&querydictionary_search=";
+
+// Page URL for an English Wiktionary entry.
+const WIKTIONARY_PAGE = "https://en.wiktionary.org/wiki/";
+
+// A labeled block showing one dictionary's definitions for a result. CC-CEDICT
+// and Wiktionary names open that word in the source; other names link to their
+// section on the About page.
+function definitionsBlock(source, taiwanRefs, word) {
     const block = document.createElement("div");
     block.className = "def-source";
     const name = document.createElement("a");
     name.className = "def-source-name";
-    name.href = `/about#${encodeURIComponent(source.anchor)}`;
+    if (source.anchor === "cedict") {
+        name.href = CC_CEDICT_SEARCH + encodeURIComponent(word);
+        name.target = "_blank";
+        name.rel = "noopener";
+    } else if (source.anchor === "wiktionary") {
+        name.href = WIKTIONARY_PAGE + encodeURIComponent(word);
+        name.target = "_blank";
+        name.rel = "noopener";
+    } else {
+        name.href = `/about#${encodeURIComponent(source.anchor)}`;
+    }
     name.textContent = source.label;
     block.append(name, definitionBody(source, taiwanRefs));
     return block;
@@ -581,6 +776,60 @@ function toggleEntryDict(row, entry, anchor) {
     animateChips(row, before);
 }
 
+// True when any text shown for this entry uses an IDS (⿰) description.
+function hasIdsChars(entry) {
+    if ((entry.simplified || "").includes("⿰") || (entry.traditional || "").includes("⿰")) {
+        return true;
+    }
+    for (const source of entry.definitions || []) {
+        for (const text of source.defs || []) {
+            if (text.includes("⿰")) return true;
+        }
+        for (const group of source.groups || []) {
+            for (const text of group.senses || []) {
+                if (text.includes("⿰")) return true;
+            }
+        }
+    }
+    for (const form of entry.forms || []) {
+        if ((form.traditional || "").includes("⿰")) return true;
+    }
+    return false;
+}
+
+// An IDS headword shown as its Commons image(s), since no font renders it as a
+// Unicode character. The reading still sits above it.
+function idsHeadword(text, reading, images, entry) {
+    const node = document.createElement("span");
+    node.className = "ids-headword";
+    const syllables = (reading || "").split(/\s+/).filter(Boolean);
+    if (syllables.length) {
+        const row = document.createElement("span");
+        row.className = "reading";
+        const readings = syllables.map((s) => (state.phonetic === "zhuyin" ? toZhuyin(s) : s));
+        row.append(
+            readingContent(readings, syllables, state.toneColoring && !entry.pinyin_no_tone),
+        );
+        node.append(row);
+    }
+    const imageRow = document.createElement("span");
+    imageRow.className = "ids-images";
+    images.forEach((url, i) => {
+        const glyph = document.createElement("span");
+        glyph.className = "ids-glyph";
+        if (!entry.pinyin_no_tone && state.toneColoring && syllables.length) {
+            const syllable = syllables[Math.min(i, syllables.length - 1)];
+            glyph.classList.add(`tone${toneOf(syllable)}`);
+        }
+        glyph.style.setProperty("--ids-image", `url("${url}")`);
+        glyph.setAttribute("role", "img");
+        glyph.setAttribute("aria-label", text);
+        imageRow.append(glyph);
+    });
+    node.append(imageRow);
+    return node;
+}
+
 // Build one result row for an entry.
 function entryRow(entry) {
     const row = document.createElement("div");
@@ -594,12 +843,31 @@ function entryRow(entry) {
 function fillEntryRow(row, entry) {
     row.replaceChildren();
     const primary = state.script === "traditional" ? entry.traditional : entry.simplified;
+    // A 5+ character headword no longer fits the steady 10rem headword column;
+    // stack its definitions underneath instead of pushing them to the right.
+    row.classList.toggle("long-headword", [...primary].length >= 5);
     const reading = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
+
+    // The headword, frequency and source chips form one block, so the frequency
+    // stays directly under the headword even when the definitions are long.
+    const head = document.createElement("div");
+    head.className = "entry-head";
 
     const hanzi = document.createElement("span");
     hanzi.className = "hanzi";
-    hanzi.append(furigana(primary, reading));
-    row.append(hanzi);
+    if (entry.ids_images && entry.ids_images.length) {
+        hanzi.append(idsHeadword(primary, reading, entry.ids_images, entry));
+    } else {
+        hanzi.append(furigana(primary, reading, !entry.pinyin_no_tone));
+    }
+    head.append(hanzi);
+    // A dialect reading (Xiang, Wu, Shanghainese) is tagged next to the word.
+    if (entry.pinyin_label) {
+        const label = document.createElement("span");
+        label.className = "dialect-label";
+        label.textContent = entry.pinyin_label;
+        head.append(label);
+    }
 
     // SUBTLEX-CH frequency: a chip-like box under the headword, above the chips.
     if (entry.freq) {
@@ -609,7 +877,7 @@ function fillEntryRow(row, entry) {
         chip.className = "source";
         chip.textContent = `Frequency: #${entry.freq.rank.toLocaleString()}`;
         freq.append(chip);
-        row.append(freq);
+        head.append(freq);
     }
 
     const enabled = visibleDicts(entry);
@@ -632,8 +900,13 @@ function fillEntryRow(row, entry) {
             chip.addEventListener("click", () => toggleEntryDict(row, entry, source.anchor));
             box.append(chip);
         }
-        row.append(box);
+        head.append(box);
     }
+
+    // Definitions and their notes go in their own block, beside the headword on
+    // wide screens and below it on narrow ones.
+    const defsBox = document.createElement("div");
+    defsBox.className = "entry-defs";
 
     // "Taiwan pr." / "also pr." / variant-form notes (all CC-CEDICT data), shown
     // only while CC-CEDICT is on for this row, right after its block.
@@ -653,7 +926,16 @@ function fillEntryRow(row, entry) {
                 if (i) fragment.append("; ");
                 // Shown as-is, without the traditional/simplified toggle.
                 const word = form.traditional;
-                fragment.append(form.pinyin ? furigana(word, form.pinyin) : document.createTextNode(word));
+                if (!word) {
+                    if (form.pinyin) fragment.append(form.pinyin);
+                    return;
+                }
+                // Every form is a search link too, with furigana when known.
+                fragment.append(
+                    form.pinyin
+                        ? searchLink(word, furigana(word, form.pinyin))
+                        : searchLink(word)
+                );
             });
             notes.push(detailRow("Other forms: ", fragment));
         }
@@ -662,13 +944,43 @@ function fillEntryRow(row, entry) {
     let notesPlaced = false;
     for (const source of definitions) {
         if (!enabled.has(source.anchor)) continue;
-        row.append(definitionsBlock(source, entry.taiwan_refs));
+        defsBox.append(definitionsBlock(source, entry.taiwan_refs, primary));
         if (source.anchor === "cedict" && notes.length) {
-            row.append(...notes);
+            defsBox.append(...notes);
             notesPlaced = true;
         }
     }
-    if (notes.length && !notesPlaced) row.append(...notes);
+    if (notes.length && !notesPlaced) defsBox.append(...notes);
+
+    // A result kept only because nothing else matched has no definitions, but it
+    // should still show which dictionary lists it (with the usual source link).
+    if (!definitions.length && entry.sources && entry.sources.length) {
+        for (const source of entry.sources) {
+            defsBox.append(
+                definitionsBlock(
+                    {
+                        anchor: source.anchor,
+                        label: source.label,
+                        groups: [],
+                        defs: [],
+                        classifiers: [],
+                    },
+                    entry.taiwan_refs,
+                    primary,
+                ),
+            );
+        }
+    }
+
+    if (hasIdsChars(entry)) {
+        const note = document.createElement("p");
+        note.className = "ids-note";
+        note.textContent =
+            "This entry contains characters that cannot be rendered with Unicode.";
+        defsBox.append(note);
+    }
+
+    row.append(head, defsBox);
 }
 
 // A result is shown only when one of the selected dictionaries has a definition
@@ -685,24 +997,130 @@ function hasSelectedDefs(entry) {
     return (entry.forms || []).length > 0 && state.dicts.has("cedict");
 }
 
+// The headword a result row shows, in the current script.
+function displayWord(entry) {
+    return state.script === "traditional" ? entry.traditional : entry.simplified;
+}
+
+// A deep-enough copy of an entry, so merging does not mutate the cached API data
+// (render() is re-run from that data whenever a display option changes).
+function cloneEntry(entry) {
+    return {
+        ...entry,
+        sources: [...(entry.sources || [])],
+        forms: [...(entry.forms || [])],
+        definitions: (entry.definitions || []).map((source) => ({
+            ...source,
+            groups: (source.groups || []).map((group) => ({
+                pinyin: group.pinyin,
+                senses: [...(group.senses || [])],
+            })),
+            defs: [...(source.defs || [])],
+            classifiers: (source.classifiers || []).map((c) => ({ ...c })),
+        })),
+    };
+}
+
+// Add one entry's definitions, source chips and forms to another entry.
+function mergeEntry(target, addition) {
+    for (const source of addition.definitions || []) {
+        const block = target.definitions.find((s) => s.anchor === source.anchor);
+        if (!block) {
+            target.definitions.push(source);
+            continue;
+        }
+        for (const group of source.groups || []) {
+            const existing = block.groups.find((g) => g.pinyin === group.pinyin);
+            if (!existing) {
+                block.groups.push({ pinyin: group.pinyin, senses: [...group.senses] });
+                continue;
+            }
+            for (const sense of group.senses || []) {
+                if (!existing.senses.includes(sense)) existing.senses.push(sense);
+            }
+        }
+        for (const def of source.defs || []) {
+            if (!block.defs.includes(def)) block.defs.push(def);
+        }
+        for (const cls of source.classifiers || []) {
+            const key = JSON.stringify(cls);
+            if (!block.classifiers.some((c) => JSON.stringify(c) === key)) {
+                block.classifiers.push(cls);
+            }
+        }
+    }
+    for (const chip of addition.sources || []) {
+        if (!target.sources.some((s) => s.anchor === chip.anchor)) target.sources.push(chip);
+    }
+    for (const form of addition.forms || []) {
+        if (!target.forms.some((f) => f.traditional === form.traditional)) {
+            target.forms.push(form);
+        }
+    }
+    if (!target.freq && addition.freq) target.freq = addition.freq;
+}
+
+// Collapse results that show the exact same headword into one row (e.g. 了 and
+// 瞭 in simplified view, where both display as 了). Their definitions, readings,
+// chips and other forms are combined.
+function mergeEntries(entries) {
+    const byWord = new Map();
+    for (const entry of entries) {
+        const key = displayWord(entry);
+        if (!byWord.has(key)) byWord.set(key, cloneEntry(entry));
+        else mergeEntry(byWord.get(key), entry);
+    }
+    return [...byWord.values()];
+}
+
 // Build the results list from the array of entries returned by the API.
 function render(entries, query) {
     currentEntries = entries;
     currentQuery = query;
+    const merged = mergeEntries(entries);
+    // IDS headwords (⿰) are set aside and listed near the end, before the
+    // definition-less entries.
+    const hasIdsWord = (entry) =>
+        (entry.simplified || "").includes("⿰") || (entry.traditional || "").includes("⿰");
+    const idsEntries = merged.filter(hasIdsWord);
+    const rest = merged.filter((entry) => !hasIdsWord(entry));
+    // A dialect-only reading (Wu, Xiang, Shanghainese) has no Mandarin pinyin;
+    // list those after the Mandarin results, but before headwords that only
+    // have a reading.
+    const isDialect = (entry) => Boolean(entry.pinyin_label || entry.pinyin_no_tone);
+    const dialectEntries = rest.filter(isDialect);
+    const mandarin = rest.filter((entry) => !isDialect(entry));
+    const withReading = mandarin.filter((entry) => entry.pinyin);
+    const withoutReading = mandarin.filter((entry) => !entry.pinyin);
     results.replaceChildren(); // clear previous results
 
-    // Results with a definition (from a dictionary selected for them) come first;
-    // the rest are shown as a bare headword, at the bottom.
-    const withDefs = entries.filter(hasSelectedDefs);
-    const headwordsOnly = entries.filter((entry) => !hasSelectedDefs(entry));
+    const withDefs = withReading.filter(hasSelectedDefs);
+    const headwordsOnly = withReading.filter((entry) => !hasSelectedDefs(entry));
+    // No reading at all: still put ones with a definition above bare headwords.
+    const withoutReadingWithDefs = withoutReading.filter(hasSelectedDefs);
+    const withoutReadingOnly = withoutReading.filter(
+        (entry) => !hasSelectedDefs(entry),
+    );
 
     const count = document.createElement("p");
     count.className = "results-count";
-    count.textContent = `${entries.length} RESULT${entries.length === 1 ? "" : "S"}`;
+    // "(first batch ms, total ms)" when the first batch was shown, else just
+    // the total (or nothing on a fresh page).
+    const timing =
+        lastSearchMs === null
+            ? ""
+            : firstSearchMs === null
+              ? ` (${lastSearchMs} ms)`
+              : ` (${firstSearchMs} ms, ${lastSearchMs} ms)`;
+    count.textContent = `${merged.length} RESULT${merged.length === 1 ? "" : "S"}${timing}`;
     results.append(count);
 
     for (const entry of withDefs) results.append(entryRow(entry));
+    for (const entry of withoutReadingWithDefs) results.append(entryRow(entry));
+    for (const entry of idsEntries) results.append(entryRow(entry));
+    for (const entry of dialectEntries) results.append(entryRow(entry));
     for (const entry of headwordsOnly) results.append(entryRow(entry));
+    for (const entry of withoutReadingOnly) results.append(entryRow(entry));
 }
 
 // Append the tone-insensitive "Fuzzy match" section under a separator.
@@ -727,15 +1145,73 @@ function redraw() {
 }
 
 // Query the API and hand the results to render().
-async function search(query, offset = 0) {
+// A monotonically increasing id per search, so a late response from an old
+// query is ignored once the user has typed a new one.
+let searchSeq = 0;
+
+async function search(query, offset = 0, scrollTop = false) {
     const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}`;
-    const response = await fetch(url);
-    const data = await response.json();
+    const startedAt = performance.now();
+    const seq = ++searchSeq;
+    // The footer (About link) is pinned to the bottom; hide it while results
+    // are pending so it cannot flash/jump as the results area refills.
+    document.body.classList.add("searching");
+    // Phase 1: the fast CEDICT tier. It is rendered immediately only when it
+    // already has at least five results; otherwise we wait for the full list.
+    const firstResponse = await fetch(url + "&part=primary", { cache: "no-store" });
+    const first = await firstResponse.json();
+    if (seq !== searchSeq) return 0;
     entryDictState.clear(); // a fresh search starts from the global selection
-    render(data.results, query);
-    renderFuzzy(data.fuzzy);
-    renderPagination(query, data);
-    updateHint(query, data.pinyin_match, data.english_match);
+    const firstMs = typeof first.ms === "number" ? first.ms : null;
+    const showFirst = first.total == null && first.results.length >= 5;
+    if (showFirst) {
+        currentEntries = first.results;
+        currentQuery = query;
+        lastSearchMs = firstMs;
+        firstSearchMs = null;
+        render(first.results, query);
+        renderFuzzy([]);
+        updateHint(query, first.pinyin_match, first.english_match);
+    }
+    // Keep the page number in the URL (without clobbering the query), so a
+    // reload or a shared link returns to the same page.
+    const size = first.page_size || RESULTS_PAGE_SIZE;
+    const page = Math.floor(offset / size) + 1;
+    const current = new URL(location.href);
+    if (page > 1) current.searchParams.set("page", String(page));
+    else current.searchParams.delete("page");
+    current.searchParams.delete("offset"); // older links used a raw offset
+    history.replaceState({ ...(history.state || {}), page }, "", current);
+    // Paging always starts at the top of the new page.
+    if (scrollTop) window.scrollTo({ top: 0 });
+    // A "*" page comes complete in one response (its `total` is set).
+    if (first.total == null) {
+        // Phase 2: the complete final list, slow source tiers included.
+        const fullResponse = await fetch(url, { cache: "no-store" });
+        const full = await fullResponse.json();
+        if (seq !== searchSeq) return 0;
+        currentEntries = full.results;
+        currentQuery = query;
+        // Keep the first batch's timing next to the total when it was shown.
+        firstSearchMs = showFirst ? firstMs : null;
+        lastSearchMs = Math.round(performance.now() - startedAt);
+        render(full.results, query);
+        renderFuzzy(full.fuzzy);
+        renderPagination(query, full);
+        updateHint(query, full.pinyin_match, full.english_match);
+        document.body.classList.remove("searching");
+        return full.results.length;
+    }
+    currentEntries = first.results;
+    currentQuery = query;
+    firstSearchMs = null;
+    lastSearchMs = firstMs;
+    render(first.results, query);
+    renderFuzzy(first.fuzzy);
+    renderPagination(query, first);
+    updateHint(query, first.pinyin_match, first.english_match);
+    document.body.classList.remove("searching");
+    return first.results.length;
 }
 
 // Show prev/next paging above and below a "*" (all-headwords) search. When there
@@ -770,7 +1246,7 @@ function pagerButtons(query, data, page, pages, info) {
     prev.type = "button";
     prev.textContent = "Previous";
     prev.disabled = page <= 1;
-    prev.addEventListener("click", () => search(query, (data.offset || 0) - size));
+    prev.addEventListener("click", () => search(query, (data.offset || 0) - size, true));
 
     const label = document.createElement("span");
     label.className = "page-info";
@@ -780,15 +1256,16 @@ function pagerButtons(query, data, page, pages, info) {
     next.type = "button";
     next.textContent = "Next";
     next.disabled = page >= pages;
-    next.addEventListener("click", () => search(query, (data.offset || 0) + size));
+    next.addEventListener("click", () => search(query, (data.offset || 0) + size, true));
 
     return [prev, label, next];
 }
 
 // Render the segmented input as clickable words (clicking one searches it).
 // Found words are annotated with furigana; whitespace is left plain.
-// A punctuation-only token (e.g. ，。、！) matches this.
-const PUNCT_RE = /^[\p{P}\p{S}]+$/u;
+// True when the text contains a Chinese character. Latin (pinyin, digits) and
+// punctuation stay out of the furigana grid.
+const CJK_RE = /\p{Script=Han}/u;
 
 // The token's text in the chosen script, from the backend's whole-sentence
 // OpenCC conversion (so it is context-aware, e.g. 一只 -> 一隻); falls back to
@@ -803,37 +1280,123 @@ function renderParsed(tokens) {
     for (const token of tokens) {
         const node = document.createElement("span");
         node.className = "parsed-word";
+        let dialect = "";
         if (!token.text.trim()) {
             node.classList.add("space"); // whitespace: no underline
             node.textContent = token.text;
         } else if (token.entries.length) {
             const entry = token.entries[0];
+            dialect = entry.pinyin_label || "";
             const text = scriptText(token);
             const reading = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
-            node.append(furigana(text, reading));
+            if (entry.ids_images && entry.ids_images.length) {
+                node.append(idsHeadword(text, reading, entry.ids_images, entry));
+            } else {
+                node.append(furigana(text, reading, !entry.pinyin_no_tone));
+            }
             node.classList.add("clickable");
             node.addEventListener("click", () => {
                 setTitle(text);
                 search(text);
             });
         } else {
-            // Unmatched word or punctuation: render it in the furigana grid with an
-            // empty reading, so it lines up with the matched words. It gets no
-            // separating padding (unlike matched words).
-            node.append(furigana(scriptText(token), ""));
-            node.classList.add("unmatched");
-            // Punctuation is not underlined.
-            if (PUNCT_RE.test(token.text)) node.classList.add("punct");
+            const text = scriptText(token);
+            if (CJK_RE.test(text)) {
+                // Unmatched Chinese: keep it in the furigana grid with an empty
+                // reading, so it lines up with the matched words. It gets no
+                // separating padding (unlike matched words).
+                node.append(furigana(text, ""));
+                node.classList.add("unmatched");
+            } else {
+                // Latin (pinyin, digits) and punctuation: plain text, with no
+                // empty reading row above every character.
+                node.textContent = text;
+                node.classList.add("plain");
+            }
         }
         parsed.append(node);
+        if (dialect) {
+            const label = document.createElement("span");
+            label.className = "dialect-label";
+            label.textContent = dialect;
+            parsed.append(label);
+        }
     }
 }
+
+// --- scroll position across reloads ---------------------------------------
+// Results arrive from fetch(), so the browser's own scroll restoration happens
+// before they are in the DOM and lands at the top. Save the position ourselves
+// and restore it once the results are rendered.
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+const SCROLL_KEY = "yabai-chaci-scroll";
+
+function saveScroll() {
+    try {
+        sessionStorage.setItem(
+            SCROLL_KEY,
+            JSON.stringify({ url: location.href, y: window.scrollY }),
+        );
+    } catch (error) {
+        // Storage disabled (private mode): just skip saving.
+    }
+}
+
+function restoreScroll() {
+    let saved = null;
+    try {
+        saved = JSON.parse(sessionStorage.getItem(SCROLL_KEY) || "null");
+    } catch (error) {
+        return;
+    }
+    // The results (or the home view) are in the DOM now; release the space that
+    // prepareInitialScroll reserved.
+    if (initialScrollPending) {
+        document.body.style.minHeight = "";
+        initialScrollPending = false;
+    }
+    // Only restore for the same URL, so a new search starts at the top.
+    if (saved && saved.url === location.href) window.scrollTo(0, saved.y);
+}
+
+// True while a refresh has reserved page space to restore the scroll position
+// before the asynchronous results arrive.
+let initialScrollPending = false;
+
+// On a refresh the results are fetched a moment later, so the page is initially
+// too short to scroll down. Reserve the missing height and jump to the saved
+// position now (before the first paint), so the page does not visibly scroll
+// once the results appear.
+function prepareInitialScroll() {
+    let saved = null;
+    try {
+        saved = JSON.parse(sessionStorage.getItem(SCROLL_KEY) || "null");
+    } catch (error) {
+        return;
+    }
+    if (!saved || saved.url !== location.href || !saved.y) return;
+    document.body.style.minHeight = `${saved.y + window.innerHeight}px`;
+    initialScrollPending = true;
+    window.scrollTo(0, saved.y);
+}
+
+let scrollSaveTimer = 0;
+window.addEventListener(
+    "scroll",
+    () => {
+        clearTimeout(scrollSaveTimer);
+        scrollSaveTimer = setTimeout(saveScroll, 150);
+    },
+    { passive: true },
+);
+window.addEventListener("beforeunload", saveScroll);
 
 // Segment the input. Multi-word text shows clickable words; a single word is
 // looked up directly.
 async function annotate(text) {
     const response = await fetch("/api/annotate", {
         method: "POST",
+        cache: "no-store",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
     });
@@ -842,9 +1405,15 @@ async function annotate(text) {
     // Show the parsed words for any multi-word input, even when the words only
     // exist outside CEDICT (e.g. 一償宿願 from MOE) and so have no entries.
     if (data.tokens.length > 1) renderParsed(data.tokens);
-    // Search the first parsed word: the full input is a whole sentence and would
-    // match nothing. Clicking a parsed word searches that word.
-    search(data.tokens.length ? data.tokens[0].text : text);
+    // Search what was typed first: a direct query (including a wildcard like
+    // 一償*) must be searched as-is. Only when the whole input finds nothing (a
+    // pasted sentence) fall back to the first parsed word.
+    const found = await search(text);
+    if (!found && data.tokens.length && data.tokens[0].text !== text) {
+        await search(data.tokens[0].text);
+    }
+    // Restore the saved position only now that the results are in the DOM.
+    restoreScroll();
 }
 
 // Put the current query in the browser tab title (like Jisho), or the site name
@@ -865,6 +1434,16 @@ function queryFromUrl() {
     return new URLSearchParams(location.search).get("q") || "";
 }
 
+// Results per page (matches db.ALL_PAGE_SIZE) for turning ?page=N into an
+// offset before the first request.
+const RESULTS_PAGE_SIZE = 100;
+
+// The results page from ?page=..., or 1 when it is absent/invalid.
+function pageFromUrl() {
+    const value = Number(new URLSearchParams(location.search).get("page") || 1);
+    return Number.isFinite(value) && value > 1 ? Math.floor(value) : 1;
+}
+
 // Run a search and put the query in the URL, so a reload keeps the results.
 function performSearch(query) {
     // A "#anchor" query jumps to that section of the About page (e.g. #cedict).
@@ -882,16 +1461,22 @@ function performSearch(query) {
 // Restore the view (results or home) from whatever is in the URL now.
 function restoreFromUrl() {
     const query = queryFromUrl();
+    const page = pageFromUrl();
     if (query) {
         input.value = query;
         setTitle(query);
         showTagline(false);
-        annotate(query);
+        // A paged "*" result: go straight to the requested page. Restore the
+        // saved scroll once the page's results are in the DOM (browser scroll
+        // anchoring can otherwise land near the bottom).
+        if (page > 1) search(query, (page - 1) * RESULTS_PAGE_SIZE).finally(restoreScroll);
+        else annotate(query);
     } else {
         input.value = "";
         setTitle("");
         clearResults();
         showTagline(true);
+        restoreScroll();
     }
 }
 
@@ -969,10 +1554,11 @@ phoneticToggle.addEventListener("change", () => {
 taiwanToggle.addEventListener("change", () => {
     state.taiwan = taiwanToggle.checked;
     savePrefs();
-    // Re-run the search: Taiwan mode also matches Taiwan readings.
-    const query = input.value.trim();
-    if (query) search(query);
-    else redraw();
+    // Re-render immediately so the reading flips without clearing the page
+    // (which is what made it flash). Then re-run the same search so Taiwan-only
+    // reading matches update too; "*" listing is independent of Taiwan.
+    redraw();
+    if (currentQuery && currentQuery.trim() !== "*") search(currentQuery);
 });
 customDictsToggle.addEventListener("change", () => {
     state.customDicts = customDictsToggle.checked;
@@ -1123,32 +1709,125 @@ document.getElementById("home-link").addEventListener("click", (event) => {
     goHome();
 });
 
-// Double-click a character to select the whole word, or a reading to select the
-// whole reading line.
-results.addEventListener("dblclick", (event) => {
-    const kind = event.target.classList.contains("char")
-        ? "char"
-        : event.target.classList.contains("reading")
-            ? "reading"
-            : null;
-    if (!kind) return;
+// Copy text for a selection inside one furigana group, Jisho-style: the whole
+// reading, a space, then the word (e.g. "diàn nǎo 电脑"). Selecting just the
+// reading or just the word copies only that. Returns null when the selection is
+// not inside a single furigana group, so normal copying is untouched.
+function furiganaCopyText(range) {
+    const start = range.startContainer.nodeType === 1
+        ? range.startContainer
+        : range.startContainer.parentElement;
+    const end = range.endContainer.nodeType === 1
+        ? range.endContainer
+        : range.endContainer.parentElement;
+    const group = start ? start.closest(".furigana") : null;
+    if (!group || !end || end.closest(".furigana") !== group) return null;
 
-    const furigana = event.target.closest(".furigana");
-    const parts = furigana ? furigana.querySelectorAll(`.${kind}`) : [];
-    if (!parts.length) return;
+    const selected = (selector) =>
+        [...group.querySelectorAll(selector)]
+            .filter((node) => range.intersectsNode(node))
+            .map((node) => node.textContent);
+    const readings = selected(".reading");
+    const chars = selected(".char");
+    if (!readings.length && !chars.length) return null;
+    // The grid cells copy with newlines between them; join them into one line.
+    if (readings.length && chars.length) {
+        return `${readings.join(" ")} ${chars.join("")}`;
+    }
+    return readings.length ? readings.join(" ") : chars.join("");
+}
 
-    const range = document.createRange();
-    range.setStartBefore(parts[0]);
-    range.setEndAfter(parts[parts.length - 1]);
+document.addEventListener("copy", (event) => {
     const selection = window.getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
+    if (!selection || selection.rangeCount === 0) return;
+    const text = furiganaCopyText(selection.getRangeAt(0));
+    if (text === null) return;
+    event.clipboardData.setData("text/plain", text);
     event.preventDefault();
 });
+
+// Slim pull-down handle for the search panel. It appears once the panel is
+// scrolled out of view; clicking it pulls the whole panel (options and
+// dictionaries included) down from the top, and clicking again closes it.
+const searchPanel = document.querySelector(".search-panel");
+const pullArrow = document.getElementById("pull-arrow");
+
+// The panel's expanded state survives a refresh (sessionStorage is scoped to the
+// tab, so a fresh tab still starts with the panel in the page).
+const PULL_KEY = "yabai-chaci-pulled";
+
+function savePulled(open) {
+    try {
+        sessionStorage.setItem(PULL_KEY, String(open));
+    } catch (error) {
+        // Storage disabled (private mode): just skip saving.
+    }
+}
+
+function positionPullArrow() {
+    if (!searchPanel || !pullArrow) return;
+    const rect = searchPanel.getBoundingClientRect();
+    // Keep the handle's left edge on the search box's left edge, so it always
+    // lines up with the bottom-left corner it attaches to when pulled.
+    pullArrow.style.left = `${rect.left}px`;
+    pullArrow.style.top = searchPanel.classList.contains("pulled")
+        ? `${rect.bottom}px`
+        : "0";
+}
+
+function updatePullArrow() {
+    if (!searchPanel || !pullArrow) return;
+    pullArrow.hidden =
+        !searchPanel.classList.contains("pulled") &&
+        searchPanel.getBoundingClientRect().bottom >= 0;
+    positionPullArrow();
+}
+
+function setPulled(open) {
+    if (!searchPanel) return;
+    if (open && !searchPanel.classList.contains("pulled")) {
+        // Sticky (see CSS): the panel keeps its place at the top of the page and
+        // follows the viewport once it would scroll out of view.
+        searchPanel.classList.add("pulled");
+        pullArrow.setAttribute("aria-expanded", "true");
+        pullArrow.hidden = false;
+        savePulled(true);
+        input.focus({ preventScroll: true });
+    } else if (!open && searchPanel.classList.contains("pulled")) {
+        searchPanel.classList.remove("pulled");
+        pullArrow.setAttribute("aria-expanded", "false");
+        savePulled(false);
+    }
+    updatePullArrow();
+}
+
+pullArrow.addEventListener("click", () => {
+    setPulled(!searchPanel.classList.contains("pulled"));
+});
+if ("ResizeObserver" in window) {
+    new ResizeObserver(() => {
+        if (searchPanel.classList.contains("pulled")) positionPullArrow();
+    }).observe(searchPanel);
+}
+window.addEventListener("scroll", updatePullArrow, { passive: true });
+window.addEventListener("resize", updatePullArrow);
+updatePullArrow();
 
 // Re-render when the user navigates with the browser's back/forward buttons.
 window.addEventListener("popstate", restoreFromUrl);
 
 // On first load: apply saved preferences, then restore a search from the URL.
 loadPrefs();
+// Reserve space so restoring the scroll position does not visibly jump once the
+// results render.
+prepareInitialScroll();
+// Re-open the panel if it was expanded when the page was last left.
+try {
+    if (sessionStorage.getItem(PULL_KEY) === "true") setPulled(true);
+} catch (error) {
+    // Storage disabled - start with the panel in the page.
+}
+// Focus the search box (what the old `autofocus` attribute did), but without
+// scrolling: on a refresh that would jump a restored page back to the top.
+input.focus({ preventScroll: true });
 restoreFromUrl();

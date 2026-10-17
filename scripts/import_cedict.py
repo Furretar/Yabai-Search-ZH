@@ -72,6 +72,15 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
     tokenize='unicode61'
 );
 
+-- Pronunciation-note prefixes ("pr. [x]"), extracted at import so pinyin
+-- searches can match alternate readings without scanning every definition.
+DROP TABLE IF EXISTS alt_prons;
+CREATE TABLE alt_prons (
+    entry_id INTEGER NOT NULL,
+    text     TEXT NOT NULL
+);
+CREATE INDEX idx_alt_prons_entry ON alt_prons(entry_id);
+
 -- Standardized senses and classifiers. Every source database has tables with
 -- these exact shapes, so the app reads definitions and classifiers the same way
 -- regardless of the dictionary. `senses` holds the definition split into
@@ -250,17 +259,31 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
         "INSERT INTO forms (variant_trad, variant_simp, main_trad, main_simp, pinyin) "
         "VALUES (?,?,?,?,?)"
     )
+    insert_alt = "INSERT INTO alt_prons (entry_id, text) VALUES (?,?)"
     rows: list[tuple] = []  # buffer of entry rows waiting to be written
     sense_rows: list[tuple] = []  # (word, position, text)
     cls_rows: list[tuple] = []  # (word, traditional, simplified, codes, note)
     form_rows: list[tuple] = []  # (word, traditional, simplified, pinyin)
+    alt_rows: list[tuple] = []  # (entry_id, "pr. [content")
     kept = 0  # entries accepted so far
     skipped = 0  # lines that didn't match the expected format
     started = time.time()
 
+    # A pronunciation note, e.g. "also pr. [shui2]" or "Taiwan pr. [xi1]". The
+    # bracket content is stored lowercased with its "pr. [" prefix, matching the
+    # app's "pr. [<query>" search pattern (SQLite LIKE is ASCII-case-insensitive).
+    _PRON_RE = re.compile(r"pr\. \[([^\]]*)\]", re.IGNORECASE)
+
     def flush() -> None:
         """Write every buffered batch and clear the buffers."""
         connection.executemany(insert, rows)
+        # The batch's entry ids are consecutive: derive them from the last id.
+        last_id = connection.execute("SELECT last_insert_rowid()").fetchone()[0]
+        first_id = last_id - len(rows) + 1
+        for offset, row in enumerate(rows):
+            for match in _PRON_RE.finditer(row[6]):
+                alt_rows.append((first_id + offset, "pr. [" + match.group(1).lower()))
+        connection.executemany(insert_alt, alt_rows)
         connection.executemany(insert_sense, sense_rows)
         connection.executemany(insert_classifier, cls_rows)
         connection.executemany(insert_form, form_rows)
@@ -268,6 +291,7 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
         sense_rows.clear()
         cls_rows.clear()
         form_rows.clear()
+        alt_rows.clear()
 
     with open_source(source) as handle:
         for line in handle:
@@ -312,6 +336,29 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
         "INSERT INTO entries_fts(rowid, english_normalized) "
         "SELECT id, english_normalized FROM entries"
     )
+    # Fill freq_rank from SUBTLEX once, so searches order by frequency without a
+    # correlated subquery per row. The meta flag tells the app the column is
+    # usable; without it the app falls back to the live subquery.
+    subtlex = ROOT / "data" / "subtlex.sqlite"
+    if subtlex.exists():
+        source = sqlite3.connect(subtlex)
+        try:
+            mapping = dict(source.execute("SELECT word, rank FROM freq").fetchall())
+        finally:
+            source.close()
+        connection.executemany(
+            "UPDATE entries SET freq_rank = ? WHERE id = ?",
+            [
+                (mapping.get(simplified), entry_id)
+                for entry_id, simplified in connection.execute(
+                    "SELECT id, simplified FROM entries"
+                )
+            ],
+        )
+        connection.execute("INSERT INTO meta (key, value) VALUES ('freq_rank', '1')")
+        print(f"filled freq_rank from {subtlex}")
+    else:
+        print("note: subtlex.sqlite not found; freq_rank left empty")
     connection.commit()
     count = connection.execute("SELECT count(*) FROM entries").fetchone()[0]
     # VACUUM repacks the file compactly and reclaims unused space.

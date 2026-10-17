@@ -34,7 +34,7 @@
                     <li role="option" data-value="TW" aria-selected="false">TW - Taiwan</li>
                 </ul>
             </div>
-            <input type="search" id="q" name="q" placeholder="Seach with English, Chinese, or Pinyin" autofocus>
+            <input type="search" id="q" name="q" placeholder="Seach with English, Chinese, or Pinyin">
             <!-- Clear the box and bring the mobile keyboard back (wired in app.js). -->
             <button type="button" id="clear-button" class="clear-button" aria-label="Clear search"
                 title="Clear">✕</button>
@@ -82,6 +82,11 @@
             </div>
         </div>
     </div>
+    <!-- Slim pull-down handle: appears once the main search panel is scrolled
+       out of view; clicking it pulls the whole panel (with its options and
+       dictionaries) down from the top. -->
+    <button type="button" id="pull-arrow" class="pull-arrow" aria-label="Open search"
+        aria-expanded="false" hidden></button>
     <!-- Centered description shown under the search bar. -->
     <p class="tagline">A Chinese-English dictionary. View all sources in the
         <a href="/about">About Page</a>.</p>

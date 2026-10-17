@@ -143,6 +143,57 @@ button {
     border-color: var(--accent);
 }
 
+/* Slim pull-down handle at the top of the screen. It appears once the main
+   search panel is scrolled out of view; clicking it pulls the whole panel down
+   as a fixed, fully opaque overlay. */
+.pull-arrow {
+    position: fixed;
+    top: 0;
+    left: .75rem;
+    width: 3.5rem;
+    height: 1.6rem;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 .5rem .5rem;
+    background: var(--bg); /* fully opaque */
+    color: var(--muted);
+    font-size: .8rem;
+    line-height: 1.3rem;
+    cursor: pointer;
+    z-index: 32;
+    transition: color .15s ease, border-color .15s ease;
+}
+
+.pull-arrow::before {
+    content: "▾";
+}
+
+.pull-arrow:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.pull-arrow[aria-expanded="true"]::before {
+    content: "▴";
+}
+
+.pull-arrow[hidden] {
+    display: none;
+}
+
+/* The expanded search panel. Sticky, not fixed: it stays in its normal place at
+   the top of the page, then follows the viewport once scrolled past it. */
+.search-panel.pulled {
+    position: sticky;
+    top: .8rem;
+    max-height: calc(100vh - 1.6rem);
+    overflow-y: auto;
+    z-index: 31;
+    background: var(--bg); /* fully opaque */
+    box-shadow: 0 .5rem 1.5rem color-mix(in srgb, currentColor 20%, transparent);
+}
+
 /* The search row sits inset and flush inside the panel. */
 .search-panel form {
     padding: .35rem;
@@ -372,6 +423,123 @@ button {
     border-top: 1px solid var(--entry-divider);
 }
 
+/* Wide screens: give the headword its own column on the left, with the
+   definitions (and their notes) in the right column. Narrow screens keep the
+   word above the definitions. */
+@media (min-width: 900px) {
+    .entry {
+        display: grid;
+        /* Start the definitions at a steady ~4 headword characters from the
+           left, so every row lines up. A headword wider than that widens its
+           own column instead of spilling over the definitions. */
+        grid-template-columns: minmax(10rem, max-content) minmax(0, 1fr);
+        column-gap: 1rem;
+        align-items: start;
+    }
+    /* The headword block (word + frequency + chips) and the definitions are the
+       two grid items, so the headword block stays together at the top. */
+    .entry > .entry-head {
+        grid-column: 1;
+        grid-row: 1;
+    }
+    .entry > .entry-defs {
+        grid-column: 2;
+        grid-row: 1;
+    }
+    .entry-head .sources {
+        /* Chips wrap instead of stretching the headword column. */
+        max-width: 10rem;
+    }
+    /* A long headword would widen column 1 and push its definitions far to the
+       right. Stack them under the word instead, keeping the same left offset as
+       the normal second column (10rem headword column + 1rem gap). */
+    .entry.long-headword {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .entry.long-headword > .entry-head {
+        grid-column: 1;
+        grid-row: 1;
+    }
+    .entry.long-headword > .entry-defs {
+        grid-column: 1;
+        grid-row: 2;
+        margin-left: calc(10rem + 1rem);
+    }
+}
+
+/* Dialect tag under a headword whose only reading is, say, Xiang. */
+.dialect-label {
+    display: block;
+    margin-top: .1rem;
+    /* Twice the old .55em, and on its own line so it is easy to read. */
+    font-size: 1.1em;
+    line-height: 1.2;
+    color: var(--muted);
+    letter-spacing: .03em;
+}
+
+/* Note under an entry that uses IDS (⿰) descriptions fonts may not render. */
+.ids-note {
+    margin-top: .5rem;
+    font-size: .8rem;
+    color: var(--muted);
+    font-style: italic;
+}
+
+/* IDS headwords with no Unicode glyph: show the scraped Commons image(s). */
+.ids-headword {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    vertical-align: bottom;
+    line-height: 1.1;
+}
+
+.ids-headword .reading {
+    /* Same size as a normal headword's furigana reading. */
+    font-size: var(--furigana-reading);
+    line-height: 1;
+    color: var(--reading);
+    white-space: nowrap;
+}
+
+.ids-images {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+}
+
+/* The glyph is a mask filled with the current colour, so it can be tone-coloured
+   (and works on both light and dark pages). */
+.ids-glyph {
+    display: inline-block;
+    width: 0.8em;
+    height: 1em;
+    background-color: currentColor;
+    -webkit-mask: var(--ids-image) no-repeat center / contain;
+    mask: var(--ids-image) no-repeat center / contain;
+}
+
+.ids-headword .tone1 {
+    color: var(--tone1);
+}
+
+.ids-headword .tone2 {
+    color: var(--tone2);
+}
+
+.ids-headword .tone3 {
+    color: var(--tone3);
+}
+
+.ids-headword .tone4 {
+    color: var(--tone4);
+}
+
+.ids-headword .tone5 {
+    color: var(--tone5);
+}
+
 /* The Chinese characters in a result. */
 .hanzi {
     font-size: var(--headword-size);
@@ -517,14 +685,38 @@ button {
 /* A reading header inside a dictionary's definitions (CEDICT polyphonic words). */
 .def-reading {
     margin-top: .3rem;
+    font-size: var(--definition-size);
     font-weight: 600;
     color: var(--control);
+}
+
+/* Tone colouring for the reading headers (when the option is on). */
+.def-reading .tone1 {
+    color: var(--tone1);
+}
+
+.def-reading .tone2 {
+    color: var(--tone2);
+}
+
+.def-reading .tone3 {
+    color: var(--tone3);
+}
+
+.def-reading .tone4 {
+    color: var(--tone4);
+}
+
+.def-reading .tone5 {
+    color: var(--tone5);
 }
 
 .def-source-cls {
     margin-top: 0; /* flush list of Also pronounced lines */
     margin-left: 1rem; /* indent them under the definitions */
-    font-size: .85rem;
+    /* Same size as the definition text, but muted (classifier, also-pronounced,
+       other-form lines). */
+    font-size: var(--definition-size);
     line-height: 1.25;
     color: var(--muted);
 }
@@ -546,7 +738,7 @@ button {
 }
 
 .def-source-cls .furigana .reading {
-    font-size: var(--furigana-detail-reading);
+    font-size: var(--furigana-def);
 }
 
 /* A cross-referenced word inside a definition ("see also 洪秀全"): a clickable,
@@ -667,6 +859,17 @@ footer {
     border-top: 1px solid var(--entry-divider);
     font-size: .9rem;
     text-align: center;
+    /* The slide away/back while searching is an obvious movement, not a flash. */
+    transition: transform 0.15s ease;
+}
+
+/* While a search is in flight, slide the footer just below the bottom of the
+   screen (keeping its layout space, so nothing reflows). It cannot flicker as
+   results come and go, and its return is a single visible movement. */
+body.searching footer {
+    /* Its own height plus a margin, so it ends just below the bottom of the
+       screen no matter how short the page is. */
+    transform: translateY(calc(100% + 6rem));
 }
 
 /* The "Search Functions" bullet list. */
@@ -714,6 +917,13 @@ ul.tagline {
     padding: 0;
 }
 
+/* Latin text (pinyin, digits) and punctuation that is not a dictionary word:
+   plain and not underlined, with no empty furigana row above it. */
+.parsed-word.plain {
+    padding: 0;
+    text-decoration: none;
+}
+
 /* Whitespace between words is not underlined. */
 .parsed-word.space {
     text-decoration: none;
@@ -734,6 +944,26 @@ ul.tagline {
     /* Drop the underline just below the characters. */
     padding-bottom: .06em;
     border-bottom: 1px solid;
+}
+
+/* Segmented character rows (numbers) underline each piece in its own colour,
+   instead of one container-wide line. */
+.parsed-word:has(.furigana.segmented),
+.def-link:has(.furigana.segmented) {
+    text-decoration: none;
+}
+.parsed-word:has(.furigana.segmented) .furigana,
+.def-link:has(.furigana.segmented) .furigana {
+    border-bottom: none;
+}
+.parsed-word .furigana.segmented .char > span,
+.def-link .furigana.segmented .char > span {
+    text-decoration: underline;
+    text-underline-offset: .12em;
+}
+/* Digits/other uncoloured pieces: default text colour (white in dark mode). */
+.furigana .plain {
+    color: CanvasText;
 }
 
 /* Keep the character row tight, so the reading sits close above the characters
@@ -789,7 +1019,9 @@ ul.tagline {
     align-items: center;
     justify-content: center;
     gap: .75rem;
-    margin-top: 1.5rem;
+    /* Breathing room above and below, so the buttons do not touch the result
+       list or the footer's separator line. */
+    margin: 1.5rem 0;
     font-size: .9rem;
     color: var(--muted);
 }

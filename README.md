@@ -42,6 +42,70 @@ CEDICT has separate entries for proper nouns and normal words. For example, the 
 Backend is FastAPI + SQLite (FTS5),
 the frontend is a Jinja2 template plus plain JavaScript.
 
+## Performance
+
+Searches are read-only and every database is rebuilt by an importer, so the
+expensive work happens once at import time instead of on every query.
+
+### Import-time precomputation
+
+- **Wiktionary readings** - each reading stores its spaced form
+  (`pinyin_spaced`), numeric form (`pinyin_numeric`), simplified headword
+  (`simplified`), and whether CEDICT already covers it (`is_cedict`). The
+  deduplicated Mandarin readings CEDICT does not cover live in
+  `readings_extra`, so pinyin searches never touch the full readings table.
+- **CEDICT alternate pronunciations** - the `pr. [...]` notes are extracted
+  into `alt_prons(entry_id, text)`; pinyin searches match that small table
+  instead of scanning every definition.
+- **Frequency ranks** - `entries.freq_rank` is filled from SUBTLEX-CH at import,
+  replacing a correlated subquery in every `ORDER BY`.
+- **Definition trigram indexes** - `senses_fts` (MOE) and `wiktionary_fts`
+  (Wiktionary) use FTS5's trigram tokenizer, which lets `LIKE '%...%'` use an
+  index for queries of three or more characters.
+- **Han grams** - `definition_grams.sqlite` stores every Han unigram and bigram
+  seen in a definition. If a gram of the query is missing, the substring cannot
+  occur, so the definition scan is skipped.
+- **English words** - `english_words.sqlite` stores every whole word found in a
+  definition; the "search the English word" hint is shown only for those words.
+
+### Query-time work
+
+- Plain pinyin lookups are ranked and limited in SQL; only the page's candidates
+  reach Python. Tonal lookups fetch prefix matches first and only scan the
+  "contains" rows when the page is not full yet.
+- Connections are pooled read-only connections (`mode=ro`, mmap, page cache) and
+  are reused for the life of the process. A restart is required after
+  re-importing a database.
+- Stable caches (CEDICT headwords and syllables, the MOE maps, the all-headwords
+  list, the IDS scan, the OpenCC converters) are built at startup.
+- Pure helpers (`to_simplified`, `to_traditional`, `to_toneless`, `lookup`, ...)
+  are memoized. The SQL debug log is opt-in with `YABAI_SQL_LOG=1`.
+
+### Progressive results
+
+The first batch is rendered as soon as the fast CEDICT tier returns, provided it
+has at least five results. The complete list replaces it when the slower source
+tier arrives. The result count keeps both times, for example
+`36 RESULTS (32 ms, 1788 ms)`.
+
+### Data files and rebuild order
+
+Generated files under `data/` (all gitignored): `cedict.sqlite`, `moe.sqlite`,
+`wiktionary.sqlite`, `subtlex.sqlite`, `english_words.sqlite`, and
+`definition_grams.sqlite`. Rebuild in this order:
+
+```sh
+uv run python -m scripts.import_subtlex     # first: CEDICT copies its ranks
+uv run python -m scripts.import_cedict
+uv run python -m scripts.import_moe
+uv run python -m scripts.import_wiktionary  # needs cedict.sqlite
+uv run python -m scripts.import_english_words
+uv run python -m scripts.import_definition_grams
+```
+
+The Wiktionary importer fails loudly if CEDICT is missing, because its
+precomputed coverage flags and syllable split depend on it.
+
 ## How to run
 nix develop -c uv run uvicorn yabai_chaci.main:app --reload --host 0.0.0.0 --port 8000
 

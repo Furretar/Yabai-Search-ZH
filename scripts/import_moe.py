@@ -62,6 +62,12 @@ CREATE TABLE senses (
 );
 CREATE INDEX idx_senses_word ON senses(word);
 
+-- Trigram full-text index over the sense text. FTS5's trigram tokenizer makes
+-- LIKE '%…%' use the index for queries of three or more characters, so quoted
+-- definition searches do not scan the whole table.
+DROP TABLE IF EXISTS senses_fts;
+CREATE VIRTUAL TABLE senses_fts USING fts5(word, text, tokenize='trigram');
+
 -- Examples ("[例]…") split out of the senses, kept separate for now.
 CREATE TABLE examples (
     word     TEXT NOT NULL,
@@ -223,6 +229,9 @@ def build(zip_path: Path, db_path: Path) -> None:
         "INSERT INTO classifiers (word, traditional, simplified, codes, note) "
         "VALUES (?,?,?,?,?)",
         cls_rows,
+    )
+    connection.execute(
+        "INSERT INTO senses_fts (word, text) SELECT word, text FROM senses"
     )
     connection.commit()
     connection.execute("VACUUM")
