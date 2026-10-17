@@ -40,9 +40,8 @@ Backend is FastAPI + SQLite (FTS5),
 the frontend is a Jinja2 template plus plain JavaScript.
 
 ## How to run
-uv sync
+nix develop -c uv run uvicorn yabai_chaci.main:app --reload --host 0.0.0.0 --port 8000
 
-uv run uvicorn yabai_chaci.main:app --reload
 
 Serve at <http://127.0.0.1:8000>.
 
