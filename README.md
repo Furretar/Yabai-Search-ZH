@@ -41,9 +41,9 @@ the frontend is a Jinja2 template plus plain JavaScript.
 
 ## How to run
 uv sync
-uv run python -m scripts.import_cedict     # builds data/cedict.sqlite (add --force to re-download)
-uv run python -m scripts.import_moe        # builds data/moe.sqlite (Taiwan readings)
+
 uv run uvicorn yabai_chaci.main:app --reload
+
 Serve at <http://127.0.0.1:8000>.
 
 
