@@ -44,8 +44,9 @@ app = FastAPI(title="Yabai-Chaci")
 
 @app.on_event("startup")
 def _warm_caches() -> None:
-    """Build the SQL caches now, instead of during the first search."""
+    """Build the SQL and segmenter caches now, not during the first search."""
     db.warm_caches()
+    segment.warm()
 
 # Serve files from yabai_chaci/static/ at the URL prefix /static/...
 # (e.g. /static/style.css, /static/app.js). Read-only, served verbatim.
@@ -142,15 +143,26 @@ def _expand_variants(results: list[dict]) -> list[dict]:
     return [best[key][1] for key in order]
 
 
-# Debug log: the last 10 searches, with the SQL each one ran (see db.start_log).
+# Debug log: the last 10 searches, with each SQL statement's timing (see
+# db.start_log). The per-request instrumentation is on by default.
 _SEARCH_LOG_PATH = BASE.parent / "data" / "search.log"
 _recent_searches: "collections.deque[dict]" = collections.deque(maxlen=10)
 
 
-def _record_search(query: str, duration_ms: float, count: int, statements: list[str]) -> None:
-    """Append a search to the rolling log and rewrite the log file."""
+def _record_search(
+    query: str,
+    duration_ms: float,
+    count: int,
+    statements: list[str],
+    part: str = "all",
+) -> None:
+    """Append a complete search to the rolling log and rewrite the log file."""
     if not db.SQL_LOG:
-        return  # the log is opt-in (YABAI_SQL_LOG); skipping keeps the path hot
+        return  # disabled with YABAI_SQL_LOG=0
+    if part == "primary":
+        # The preliminary CEDICT request is repeated by the complete request;
+        # logging only the complete one keeps one entry per user search.
+        return
     _recent_searches.append(
         {
             "at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -224,7 +236,7 @@ def api_search(
                 english_match = db.has_english_match(q.strip())
     finally:
         statements = db.end_log()
-    _record_search(q, (time.perf_counter() - started) * 1000, len(results), statements)
+    _record_search(q, (time.perf_counter() - started) * 1000, len(results), statements, part)
     return {
         "query": q,
         "pinyin_match": pinyin_match,

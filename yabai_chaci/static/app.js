@@ -1156,14 +1156,14 @@ async function search(query, offset = 0, scrollTop = false) {
     // The footer (About link) is pinned to the bottom; hide it while results
     // are pending so it cannot flash/jump as the results area refills.
     document.body.classList.add("searching");
-    // Phase 1: the fast CEDICT tier. It is rendered immediately only when it
-    // already has at least five results; otherwise we wait for the full list.
+    // Phase 1: the fast CEDICT tier. It is rendered immediately as soon as it
+    // has any results; otherwise we wait for the full list.
     const firstResponse = await fetch(url + "&part=primary", { cache: "no-store" });
     const first = await firstResponse.json();
     if (seq !== searchSeq) return 0;
     entryDictState.clear(); // a fresh search starts from the global selection
     const firstMs = typeof first.ms === "number" ? first.ms : null;
-    const showFirst = first.total == null && first.results.length >= 5;
+    const showFirst = first.total == null && first.results.length >= 1;
     if (showFirst) {
         currentEntries = first.results;
         currentQuery = query;
@@ -1223,7 +1223,9 @@ function renderPagination(query, data) {
     const paging = total != null && pages > 1;
 
     const count = results.querySelector(".results-count");
-    if (count) count.hidden = paging;
+    // Keep the result count (and its timing) visible on paged `*` results;
+    // the pager is shown above/below it rather than replacing it.
+    if (count) count.hidden = false;
 
     for (const nav of [paginationTop, pagination]) {
         nav.replaceChildren();

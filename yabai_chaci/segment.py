@@ -100,6 +100,18 @@ def _max_headword_len() -> int:
     return _max_len_cache
 
 
+def warm() -> None:
+    """Load jieba and the headword list before the first annotate request.
+
+    jieba builds its prefix dictionary on first use, which takes over a second.
+    The parsed-input header is rendered by /api/annotate, so doing this at
+    startup keeps the first search from paying it.
+    """
+    _ensure_loaded()
+    _headwords()
+    _max_headword_len()
+
+
 def is_headword(word: str) -> bool:
     """True when `word` is a known multi-character headword in any source.
 

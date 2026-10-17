@@ -65,6 +65,10 @@ expensive work happens once at import time instead of on every query.
 - **Han grams** - `definition_grams.sqlite` stores every Han unigram and bigram
   seen in a definition. If a gram of the query is missing, the substring cannot
   occur, so the definition scan is skipped.
+- **Gram inverted index** - `gram_words.sqlite` maps each Han unigram/bigram to
+  the words whose headword, gloss or sense contains it. A 1-2 character CJK
+  query becomes one lookup plus a LIKE check on those candidates, instead of
+  scanning the tables.
 - **English words** - `english_words.sqlite` stores every whole word found in a
   definition; the "search the English word" hint is shown only for those words.
 
@@ -79,12 +83,15 @@ expensive work happens once at import time instead of on every query.
 - Stable caches (CEDICT headwords and syllables, the MOE maps, the all-headwords
   list, the IDS scan, the OpenCC converters) are built at startup.
 - Pure helpers (`to_simplified`, `to_traditional`, `to_toneless`, `lookup`, ...)
-  are memoized. The SQL debug log is opt-in with `YABAI_SQL_LOG=1`.
+  are memoized. The segmenter (jieba) and the gram list are loaded at startup.
+- Every search records each SQL statement's duration and row count in
+  `data/search.log`, which keeps the last 10 complete searches. It is on by
+  default; set `YABAI_SQL_LOG=0` to disable it.
 
 ### Progressive results
 
 The first batch is rendered as soon as the fast CEDICT tier returns, provided it
-has at least five results. The complete list replaces it when the slower source
+has at least one result. The complete list replaces it when the slower source
 tier arrives. The result count keeps both times, for example
 `36 RESULTS (32 ms, 1788 ms)`.
 
@@ -92,7 +99,7 @@ tier arrives. The result count keeps both times, for example
 
 Generated files under `data/` (all gitignored): `cedict.sqlite`, `moe.sqlite`,
 `wiktionary.sqlite`, `subtlex.sqlite`, `english_words.sqlite`, and
-`definition_grams.sqlite`. Rebuild in this order:
+`definition_grams.sqlite`, and `gram_words.sqlite`. Rebuild in this order:
 
 ```sh
 uv run python -m scripts.import_subtlex     # first: CEDICT copies its ranks
@@ -101,6 +108,7 @@ uv run python -m scripts.import_moe
 uv run python -m scripts.import_wiktionary  # needs cedict.sqlite
 uv run python -m scripts.import_english_words
 uv run python -m scripts.import_definition_grams
+uv run python -m scripts.import_gram_words
 ```
 
 The Wiktionary importer fails loudly if CEDICT is missing, because its

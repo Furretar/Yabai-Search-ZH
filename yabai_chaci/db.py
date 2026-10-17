@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import sqlite3
+import time
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -71,33 +72,85 @@ DEFINITION_GRAMS_DB_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "definition_grams.sqlite"
 )
 
+# Path to the Han unigram/bigram inverted index (scripts/import_gram_words.py):
+# turns 1-2 character CJK queries into one lookup instead of a table scan.
+GRAM_WORDS_DB_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "gram_words.sqlite"
+)
+
 # --- debug log -------------------------------------------------------------
-# While `start_log()` is active, every SQL statement run on a connection is
-# captured (SQLite's trace callback) so the app can log the last few searches.
-# Only enabled with YABAI_SQL_LOG set: the callback costs real time, because
-# SQLite expands every bound parameter (e.g. 100-word IN lists) for it.
-_ACTIVE_LOG: list[str] | None = None
-SQL_LOG = bool(os.environ.get("YABAI_SQL_LOG"))
+# Every search records the SQL statements it runs and how long each took, so
+# data/search.log (the last three searches) explains slow queries. On by
+# default; set YABAI_SQL_LOG=0 to turn the instrumentation off.
+SQL_LOG = os.environ.get("YABAI_SQL_LOG", "1") != "0"
+
+# Per-thread, so concurrent requests cannot mix their statements.
+_log_state = threading.local()
 
 
 def start_log() -> None:
-    """Begin capturing the SQL statements executed from now on."""
-    global _ACTIVE_LOG
-    _ACTIVE_LOG = [] if SQL_LOG else None
+    """Begin capturing this thread's SQL statements with timings."""
+    _log_state.statements = [] if SQL_LOG else None
 
 
 def end_log() -> list[str]:
-    """Stop capturing and return the captured SQL statements."""
-    global _ACTIVE_LOG
-    statements = _ACTIVE_LOG or []
-    _ACTIVE_LOG = None
+    """Stop capturing and return the captured, timed statements."""
+    statements = getattr(_log_state, "statements", None) or []
+    _log_state.statements = None
     return statements
 
 
-def _trace(statement: str) -> None:
-    """SQLite trace callback: record each statement while logging is active."""
-    if _ACTIVE_LOG is not None:
-        _ACTIVE_LOG.append(statement)
+def _log_sql(sql: str, started: float, rows: int | None) -> None:
+    """Append one timed statement to this thread's log (if logging is on)."""
+    statements = getattr(_log_state, "statements", None)
+    if statements is None:
+        return
+    duration = (time.perf_counter() - started) * 1000
+    count = "?" if rows is None else str(rows)
+    statements.append(f"{duration:8.2f} ms rows={count} | {' '.join(sql.split())}")
+
+
+class _TimedCursor(sqlite3.Cursor):
+    """A cursor that records each statement's duration and row count."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._sql = ""
+        self._started = 0.0
+        self._logged = True
+
+    def execute(self, sql, parameters=()):
+        self._sql = sql
+        self._started = time.perf_counter()
+        self._logged = False
+        return super().execute(sql, parameters)
+
+    def _emit(self, rows):
+        if not self._logged:
+            self._logged = True
+            _log_sql(self._sql, self._started, rows)
+
+    def fetchall(self):
+        rows = super().fetchall()
+        self._emit(len(rows))
+        return rows
+
+    def fetchone(self):
+        row = super().fetchone()
+        self._emit(0 if row is None else 1)
+        return row
+
+    def __iter__(self):
+        count = 0
+        try:
+            while True:
+                row = super().fetchone()
+                if row is None:
+                    break
+                count += 1
+                yield row
+        finally:
+            self._emit(count)
 
 
 # One pooled connection per database path, kept for the process lifetime:
@@ -108,6 +161,24 @@ def _trace(statement: str) -> None:
 class _PooledConnection(sqlite3.Connection):
     def close(self) -> None:
         pass
+
+    if SQL_LOG:
+        # Route every statement through the timed cursor so the per-query log
+        # records durations. With logging off the base methods are used.
+        def cursor(self, factory=_TimedCursor):
+            return super().cursor(factory=factory)
+
+        def execute(self, sql, parameters=()):
+            return self.cursor().execute(sql, parameters)
+
+        def executemany(self, sql, seq_of_parameters):
+            cursor = self.cursor()
+            cursor._sql = sql
+            cursor._started = time.perf_counter()
+            cursor._logged = False
+            cursor.executemany(sql, seq_of_parameters)
+            cursor._emit(None)
+            return cursor
 
 
 _connection_pool: dict[str, sqlite3.Connection] = {}
@@ -132,8 +203,6 @@ def _connect(database) -> sqlite3.Connection:
             connection.execute("PRAGMA mmap_size=268435456")
             connection.execute("PRAGMA cache_size=-16384")
             connection.execute("PRAGMA temp_store=MEMORY")
-            if SQL_LOG:
-                connection.set_trace_callback(_trace)
             _connection_pool[key] = connection
     return connection
 
@@ -217,6 +286,11 @@ _SOURCE_QUERIES = [
         "like_sql": "SELECT DISTINCT word FROM wiktionary "
                     "WHERE word LIKE ? ESCAPE '\\' AND gloss IS NOT NULL "
                     "ORDER BY word",
+        # The same headword search through the trigram index, for queries of
+        # three or more characters (the index covers the word column too).
+        "like_sql_fts": "SELECT DISTINCT word FROM wiktionary_fts "
+                        "WHERE word LIKE ? AND gloss IS NOT NULL "
+                        "ORDER BY word",
         "all_sql": "SELECT DISTINCT word FROM wiktionary WHERE word <> ''",
         "repeat": 1,
         "pinyin_sql": "SELECT pinyin FROM readings WHERE word = ? "
@@ -1525,10 +1599,13 @@ def _source_only_entries(
     forms = _script_forms(text)
     placeholders = ",".join("?" * len(forms))
     params = tuple(forms)
-    # LIKE patterns, one per script variant, for a normal (non-exact) search.
-    patterns = [
-        _like_pattern(form if "*" in text else f"*{form}*") for form in forms
+    # (form, LIKE pattern) pairs, one per script variant, for a normal
+    # (non-exact) search.
+    pairs = [
+        (form, _like_pattern(form if "*" in text else f"*{form}*"))
+        for form in forms
     ]
+    patterns = [pattern for _form, pattern in pairs]
 
     # Words CEDICT already covers are handled by the normal search.
     known = _cedict_heads()
@@ -1583,8 +1660,29 @@ def _source_only_entries(
                 # Match the query like the CEDICT search does (see patterns above).
                 rows = []
                 seen_rows: set[str] = set()
-                for pattern in patterns:
-                    for (head,) in database.execute(source["like_sql"], (pattern,)):
+                use_fts = source.get("like_sql_fts") is not None and _has_wiktionary_fts()
+                head_source = {"wiktionary": "wikt_head", "moe": "moe_head"}.get(
+                    source["anchor"], ""
+                )
+                for form, pattern in pairs:
+                    candidates = (
+                        _gram_candidates(head_source, form) if head_source else None
+                    )
+                    if candidates is not None:
+                        # Exact for 1-2 Han-character headwords, already sorted
+                        # by word like the LIKE query's ORDER BY.
+                        for head in candidates:
+                            if head not in seen_rows:
+                                seen_rows.add(head)
+                                rows.append((head,))
+                        continue
+                    if use_fts and len(form) >= 3 and _simple_form(form):
+                        sql = source["like_sql_fts"]
+                        query_pattern = f"%{form}%"
+                    else:
+                        sql = source["like_sql"]
+                        query_pattern = pattern
+                    for (head,) in database.execute(sql, (query_pattern,)):
                         if head not in seen_rows:
                             seen_rows.add(head)
                             rows.append((head,))
@@ -1828,11 +1926,20 @@ def _source_gloss_entries(query: str, limit: int = 20) -> list[dict]:
     pattern = _like_pattern(text if "*" in text else f"*{text}*")
     connection = _connect(WIKTIONARY_DB_PATH)
     try:
-        rows = connection.execute(
-            "SELECT DISTINCT word FROM wiktionary "
-            "WHERE gloss IS NOT NULL AND gloss LIKE ? ESCAPE '\\' LIMIT ?",
-            (pattern, limit * 3),
-        ).fetchall()
+        # A three-or-more character query uses the trigram index (which covers
+        # the gloss column) and keeps the table's rowid order for the LIMIT.
+        if "*" not in text and len(text) >= 3 and _has_wiktionary_fts():
+            rows = connection.execute(
+                "SELECT word FROM wiktionary_fts WHERE gloss LIKE ? "
+                "ORDER BY rowid LIMIT ?",
+                (f"%{text}%", limit * 3),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT DISTINCT word FROM wiktionary "
+                "WHERE gloss IS NOT NULL AND gloss LIKE ? ESCAPE '\\' LIMIT ?",
+                (pattern, limit * 3),
+            ).fetchall()
     finally:
         connection.close()
     known = _cedict_heads()
@@ -1915,6 +2022,39 @@ def _definition_possible(form: str) -> bool:
     return True
 
 
+_GRAM_CANDIDATE_CAP = 4000
+
+
+def _gram_candidates(source: str, form: str) -> list[str] | None:
+    """Words containing a 1-2 Han-character `form`, or None to fall back.
+
+    The inverted index turns a 1-2 character query into one lookup. None means
+    the index is unavailable, the form is not a pure Han 1-2 character string,
+    or there are too many candidates for a SQL IN list; the caller then uses the
+    normal scan. An empty list means the form occurs nowhere.
+    """
+    if not (
+        GRAM_WORDS_DB_PATH.exists()
+        and 1 <= len(form) <= 2
+        and all(_is_han(char) for char in form)
+    ):
+        return None
+    connection = _connect(GRAM_WORDS_DB_PATH)
+    try:
+        rows = connection.execute(
+            "SELECT word FROM gram_words WHERE source = ? AND gram = ? "
+            "ORDER BY word LIMIT ?",
+            (source, form, _GRAM_CANDIDATE_CAP + 1),
+        ).fetchall()
+    finally:
+        connection.close()
+    if not rows:
+        return []
+    if len(rows) > _GRAM_CANDIDATE_CAP:
+        return None
+    return [row[0] for row in rows]
+
+
 _moe_fts_cache: bool | None = None
 
 
@@ -1995,7 +2135,18 @@ def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
         try:
             use_fts = _has_moe_fts()
             for form, pattern in pairs:
-                if use_fts and len(form) >= 3 and _simple_form(form):
+                candidates = _gram_candidates("moe_sense", form)
+                if candidates is not None:
+                    if not candidates:
+                        continue
+                    holes = ",".join("?" * len(candidates))
+                    sql = (
+                        f"SELECT word FROM senses WHERE word IN ({holes}) "
+                        "AND text LIKE ? ESCAPE '\\' GROUP BY word "
+                        "ORDER BY word LIMIT ?"
+                    )
+                    params = (*candidates, pattern, limit)
+                elif use_fts and len(form) >= 3 and _simple_form(form):
                     # The trigram index makes LIKE use the index; no ESCAPE.
                     sql = (
                         "SELECT DISTINCT word FROM senses_fts "
@@ -2017,7 +2168,18 @@ def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
         try:
             use_fts = _has_wiktionary_fts()
             for form, pattern in pairs:
-                if use_fts and len(form) >= 3 and _simple_form(form):
+                candidates = _gram_candidates("wikt_gloss", form)
+                if candidates is not None:
+                    if not candidates:
+                        continue
+                    holes = ",".join("?" * len(candidates))
+                    sql = (
+                        f"SELECT word FROM wiktionary WHERE word IN ({holes}) "
+                        "AND gloss IS NOT NULL AND gloss LIKE ? ESCAPE '\\' "
+                        "GROUP BY word ORDER BY word LIMIT ?"
+                    )
+                    params = (*candidates, pattern, limit)
+                elif use_fts and len(form) >= 3 and _simple_form(form):
                     sql = (
                         "SELECT DISTINCT word FROM wiktionary_fts "
                         "WHERE gloss LIKE ? LIMIT ?"
@@ -2841,3 +3003,4 @@ def warm_caches() -> None:
     _ids_entries()
     _all_headwords_list()
     _zhuyin_map()
+    _definition_grams()
