@@ -35,7 +35,10 @@
                 </ul>
             </div>
             <input type="search" id="q" name="q" placeholder="Seach with English, Chinese, or Pinyin" autofocus>
-            <button type="submit">Search</button>
+            <!-- Clear the box and bring the mobile keyboard back (wired in app.js). -->
+            <button type="button" id="clear-button" class="clear-button" aria-label="Clear search"
+                title="Clear">✕</button>
+            <button type="submit" class="search-button">Search</button>
         </form>
         <!-- Collapsed by default; the button toggles the panel (animated in CSS). -->
         <div class="options">

@@ -72,6 +72,9 @@
 @media (prefers-color-scheme: dark) {
     :root {
         --bg: #201c23;
+        /* A lighter search-panel surface so the search bar stands out from the
+           page background. */
+        --panel-bg: color-mix(in srgb, currentColor 15%, transparent);
         --panel-border: #4a4a4a;
         --border: #4a4a4a;
         --options-divider: #3a3a3a;

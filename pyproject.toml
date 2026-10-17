@@ -11,6 +11,7 @@ dependencies = [                  # runtime dependencies
     "uvicorn>=0.34",              # ASGI server that serves the app
     "jinja2>=3.1",                # HTML templating
     "jieba>=0.42",                # Chinese word segmentation
+    "opencc>=1.4.2",
 ]
 
 # Dev-only dependencies (installed in dev checkouts, left out of production).

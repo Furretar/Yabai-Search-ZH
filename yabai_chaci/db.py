@@ -7,8 +7,34 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
+from opencc import OpenCC
+
 from yabai_chaci.overrides import HIDE_FORMS, TAIWAN_READINGS
 from yabai_chaci.pinyin import numeric_to_marked, to_numeric, to_toneless
+
+# --- Simplified <-> Traditional conversion (OpenCC) -------------------------
+# OpenCC converts with word/phrase dictionaries, so it handles the one-to-many
+# cases a per-character map cannot get right (头发 -> 頭髮, 干净 -> 乾淨, 皇后
+# stays 皇后). Building a converter is cheap but not free, so cache one per
+# config name.
+_OPENCC: dict[str, OpenCC] = {}
+
+
+def _opencc(config: str) -> OpenCC:
+    """Return a cached OpenCC converter for a config name (e.g. 's2t')."""
+    if config not in _OPENCC:
+        _OPENCC[config] = OpenCC(config)
+    return _OPENCC[config]
+
+
+def to_traditional(text: str) -> str:
+    """Convert Chinese text to traditional characters (simplified -> traditional)."""
+    return _opencc("s2t").convert(text) if text else text
+
+
+def to_simplified(text: str) -> str:
+    """Convert Chinese text to simplified characters (traditional -> simplified)."""
+    return _opencc("t2s").convert(text) if text else text
 
 # Path to the generated CEDICT database: <project root>/data/cedict.sqlite.
 DB_PATH = Path(__file__).resolve().parents[1] / "data" / "cedict.sqlite"
@@ -208,20 +234,12 @@ def dictionaries() -> list[dict]:
 
 
 def _script_forms(word: str) -> list[str]:
-    """`word` plus its traditional and simplified variants.
+    """`word` plus its traditional and simplified variants (via OpenCC).
 
     Lets a traditional query (e.g. 馬) find a simplified entry (马) and vice
-    versa. The character maps are derived from CEDICT's single-character entries.
+    versa.
     """
-    simplify = _simplify_map()
-    to_traditional = {simp: trad for trad, simp in simplify.items()}
-    return sorted(
-        {
-            word,
-            "".join(simplify.get(char, char) for char in word),  # -> simplified
-            "".join(to_traditional.get(char, char) for char in word),  # -> traditional
-        }
-    )
+    return sorted({word, to_simplified(word), to_traditional(word)})
 
 
 def dictionary_matches(word: str) -> list[dict]:
@@ -237,8 +255,6 @@ def dictionary_matches(word: str) -> list[dict]:
         return []
     forms = _script_forms(word)
     placeholders = ",".join("?" * len(forms))
-    simplify = _simplify_map()
-    to_traditional = {simp: trad for trad, simp in simplify.items()}
     matches = []
     for source in _SOURCE_QUERIES:
         if not source["database"].exists():
@@ -281,18 +297,14 @@ def dictionary_matches(word: str) -> list[dict]:
                 "label": source["label"],
                 "anchor": source["anchor"],
                 "lang": source["lang"],
-                "traditional": "".join(to_traditional.get(char, char) for char in head),
-                "simplified": "".join(simplify.get(char, char) for char in head),
+                "traditional": to_traditional(head),
+                "simplified": to_simplified(head),
                 "pinyin": pinyin,
                 "senses": senses[:_MAX_DEFS],
                 "classifiers": classifiers[:_MAX_DEFS],
             }
         )
     return matches
-
-# Cache of the traditional -> simplified character map, built once from the
-# dictionary's single-character entries. None until built.
-_simplify_cache: dict[str, str] | None = None
 
 # Cache of MOE single-character readings: {character: [pinyin, ...]}.
 _moe_char_cache: dict[str, list[str]] | None = None
@@ -327,28 +339,6 @@ def connect() -> sqlite3.Connection:
     return connection
 
 
-def _simplify_map() -> dict[str, str]:
-    """Return the traditional -> simplified character map, derived from the data.
-
-    We use CEDICT's own single-character entries (where the traditional and
-    simplified forms are exactly one character each) to learn the mapping. The
-    result is cached after the first call.
-    """
-    global _simplify_cache
-    if _simplify_cache is None:
-        connection = connect()
-        try:
-            rows = connection.execute(
-                "SELECT traditional, simplified FROM entries "
-                "WHERE length(traditional) = 1 AND length(simplified) = 1 "
-                "AND traditional <> simplified"
-            ).fetchall()
-        finally:
-            connection.close()
-        _simplify_cache = {row["traditional"]: row["simplified"] for row in rows}
-    return _simplify_cache
-
-
 def _reading_counts() -> dict[str, int]:
     """Return {traditional: number of distinct CEDICT readings}, cached.
 
@@ -367,11 +357,6 @@ def _reading_counts() -> dict[str, int]:
             connection.close()
         _reading_count_cache = {row["traditional"]: row["n"] for row in rows}
     return _reading_count_cache
-
-
-def _convert(text: str, mapping: dict[str, str]) -> str:
-    """Rewrite each character using `mapping`, leaving unknown characters as-is."""
-    return "".join(mapping.get(char, char) for char in text)
 
 
 def _like_pattern(text: str) -> str:
@@ -830,12 +815,20 @@ def _decorate(entries: list[dict]) -> list[dict]:
 
 
 def lookup(word: str) -> list[dict]:
-    """Return entries whose simplified or traditional form is exactly `word`."""
+    """Return entries whose simplified or traditional form is exactly `word`.
+
+    Entries are ordered so the reading with the most senses (normally the most
+    common one) comes first - e.g. 都[dōu] before 都[dū] and 都[Dū] - because the
+    parsed input shows the first entry's reading.
+    """
     connection = connect()
     try:
         rows = connection.execute(
             "SELECT simplified, traditional, pinyin, english, english_normalized "
-            "FROM entries WHERE simplified = ? OR traditional = ? ORDER BY id",
+            "FROM entries WHERE simplified = ? OR traditional = ? "
+            "ORDER BY (SELECT COUNT(*) FROM senses s "
+            "          WHERE s.word = entries.traditional AND s.reading = entries.pinyin) DESC, "
+            "entries.id",
             (word, word),
         ).fetchall()
     finally:
@@ -1090,7 +1083,7 @@ def search(query: str, limit: int = 50, taiwan: bool = False) -> list[dict]:
             return _decorate(entries[:limit])
 
     # Chinese: convert to simplified, and treat a plain query as a prefix search.
-    chinese = _convert(query, _simplify_map())
+    chinese = to_simplified(query)
     if "*" not in chinese:
         chinese += "*"
     pattern_chinese = _like_pattern(chinese)

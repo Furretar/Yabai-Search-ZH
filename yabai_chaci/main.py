@@ -196,16 +196,35 @@ class AnnotateRequest(BaseModel):
 def api_annotate(request: AnnotateRequest):
     """Segment pasted Chinese text and attach dictionary matches to each word.
 
-    A segmented word that has no dictionary entry is split into single
-    characters so something still matches (e.g. 这是 -> 这 + 是).
+    The whole sentence is converted to traditional and simplified up front, so
+    each word carries both forms for the front-end script toggle. Converting the
+    full sentence (not each word) lets OpenCC use the phrase context, e.g.
+    "一只" -> "一隻". A segmented word with no dictionary entry is split into
+    single characters so something still matches (e.g. 这是 -> 这 + 是).
     """
+    text = request.text
+    traditional = db.to_traditional(text)
+    simplified = db.to_simplified(text)
     tokens = []
-    for word in segment.segment(request.text):
+    pos = 0
+    for word in segment.segment(text):
+        end = pos + len(word)
+        trad, simp = traditional[pos:end], simplified[pos:end]
+        pos = end
         entries = db.lookup(word) if word.strip() else []
         if not entries and len(word) > 1:
-            for char in word:
+            for i, char in enumerate(word):
                 char_entries = db.lookup(char) if char.strip() else []
-                tokens.append({"text": char, "entries": char_entries})
+                tokens.append(
+                    {
+                        "text": char,
+                        "traditional": trad[i : i + 1],
+                        "simplified": simp[i : i + 1],
+                        "entries": char_entries,
+                    }
+                )
         else:
-            tokens.append({"text": word, "entries": entries})
+            tokens.append(
+                {"text": word, "traditional": trad, "simplified": simp, "entries": entries}
+            )
     return {"tokens": tokens}

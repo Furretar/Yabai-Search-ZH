@@ -23,6 +23,10 @@
           sqlite # CLI for inspecting the database by hand
         ];
 
+        # The opencc Python wheel links against libstdc++, which NixOS keeps off
+        # the default library path, so expose the C++ runtime to it here.
+        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
+
         # Printed each time the shell starts, as a reminder of the commands.
         shellHook = ''
           echo "Yabai-Chaci dev shell"

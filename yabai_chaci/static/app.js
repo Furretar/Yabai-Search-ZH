@@ -4,6 +4,7 @@
 // Grab the elements we need from index.html (by their id attributes).
 const form = document.getElementById("search-form");
 const input = document.getElementById("q");
+const clearButton = document.getElementById("clear-button");
 const results = document.getElementById("results");
 const parsed = document.getElementById("parsed");
 const hint = document.getElementById("hint");
@@ -39,6 +40,9 @@ const state = {
 let currentEntries = [];
 let currentFuzzy = [];
 let currentQuery = "";
+// The parsed words from the last multi-word input, so a display toggle (e.g.
+// Zhuyin) can re-render them without re-annotating.
+let currentTokens = [];
 
 // Tone-marked forms for each base vowel (index 0 = tone 1 ... 3 = tone 4).
 const TONE_MARKS = {
@@ -389,6 +393,7 @@ function detailRow(label, node) {
 // Clear the results area (used by the home view; shows no "No results." message).
 function clearResults() {
     currentEntries = [];
+    currentTokens = [];
     results.replaceChildren();
     parsed.replaceChildren();
     hint.hidden = true;
@@ -669,6 +674,9 @@ function renderFuzzy(entries) {
 
 // Re-draw the current results (and any fuzzy section) after a display toggle.
 function redraw() {
+    // Re-render the parsed words too, so a phonetic/script/tone change applies to
+    // them (they are otherwise only drawn once, in annotate()).
+    if (currentTokens.length) renderParsed(currentTokens);
     if (!currentEntries.length && !currentFuzzy.length) return;
     render(currentEntries, currentQuery);
     renderFuzzy(currentFuzzy);
@@ -687,7 +695,18 @@ async function search(query) {
 
 // Render the segmented input as clickable words (clicking one searches it).
 // Found words are annotated with furigana; whitespace is left plain.
+// A punctuation-only token (e.g. ，。、！) matches this.
+const PUNCT_RE = /^[\p{P}\p{S}]+$/u;
+
+// The token's text in the chosen script, from the backend's whole-sentence
+// OpenCC conversion (so it is context-aware, e.g. 一只 -> 一隻); falls back to
+// the original text if the conversion is missing.
+function scriptText(token) {
+    return (state.script === "traditional" ? token.traditional : token.simplified) || token.text;
+}
+
 function renderParsed(tokens) {
+    currentTokens = tokens;
     parsed.replaceChildren();
     for (const token of tokens) {
         const node = document.createElement("span");
@@ -697,12 +716,22 @@ function renderParsed(tokens) {
             node.textContent = token.text;
         } else if (token.entries.length) {
             const entry = token.entries[0];
+            const text = scriptText(token);
             const reading = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
-            node.append(furigana(token.text, reading));
+            node.append(furigana(text, reading));
             node.classList.add("clickable");
-            node.addEventListener("click", () => search(token.text));
+            node.addEventListener("click", () => {
+                setTitle(text);
+                search(text);
+            });
         } else {
-            node.textContent = token.text;
+            // Unmatched word or punctuation: render it in the furigana grid with an
+            // empty reading, so it lines up with the matched words. It gets no
+            // separating padding (unlike matched words).
+            node.append(furigana(scriptText(token), ""));
+            node.classList.add("unmatched");
+            // Punctuation is not underlined.
+            if (PUNCT_RE.test(token.text)) node.classList.add("punct");
         }
         parsed.append(node);
     }
@@ -722,6 +751,12 @@ async function annotate(text) {
     if (words.length > 1) renderParsed(data.tokens);
     // Search the first matched word, or fall back to the raw text (pinyin/English).
     search(words.length ? words[0].text : text);
+}
+
+// Put the current query in the browser tab title (like Jisho), or the site name
+// when there is no query.
+function setTitle(query) {
+    document.title = query ? `${query} - Yabai-Chaci` : "Yabai-Chaci";
 }
 
 // Show or hide the home-page tagline ("search functions" description).
@@ -744,6 +779,7 @@ function performSearch(query) {
         return;
     }
     input.value = query;
+    setTitle(query);
     showTagline(false);
     history.pushState({ q: query }, "", `?q=${encodeURIComponent(query)}`);
     annotate(query);
@@ -754,10 +790,12 @@ function restoreFromUrl() {
     const query = queryFromUrl();
     if (query) {
         input.value = query;
+        setTitle(query);
         showTagline(false);
         annotate(query);
     } else {
         input.value = "";
+        setTitle("");
         clearResults();
         showTagline(true);
     }
@@ -766,6 +804,7 @@ function restoreFromUrl() {
 // Return to the home view: no query, no results, tagline shown, URL reset.
 function goHome() {
     input.value = "";
+    setTitle("");
     clearResults();
     showTagline(true);
     history.pushState({}, "", location.pathname);
@@ -958,6 +997,13 @@ form.addEventListener("submit", (event) => {
     event.preventDefault(); // don't reload the page
     const query = input.value.trim();
     if (query) performSearch(query);
+});
+
+// The clear (✕) button empties the box, returns to the home view, and re-focuses
+// the input - which reopens the keyboard on mobile.
+clearButton.addEventListener("click", () => {
+    goHome();
+    input.focus();
 });
 
 // Clicking the title returns to the home view.
