@@ -26,6 +26,12 @@ Bopomofo is converted to tonal pinyin first, so it is fully supported.
 #### Taiwan (MOE) readings
 Taiwanese Mandarin is mostly the same as Mainland Mandarin, with a handful of different pronunciations for words and characters, and slightly different word usage. 
 
+The Taiwanese Ministry of Education publishes dictionaries of Taiwanese Mandarin. 2 of these are used as sources for Yabai Search, the concise version 國語辭典簡編本, and the comprehensive version 重編國語辭典修訂本.
+
+When the Taiwanese pronunciation toggle is turned on, matched readings from the Taiwanese dictionaries are shown instead.
+
+There are many characters in Taiwanese Mandarin that are always pronounced a certain way. There is not a detailed list of these, so all single character words
+
 - words in `_TAIWAN_EXCEPTIONS` get **none** (currently `啊`);
 - a **monophonic** word (exactly one CEDICT reading) may take its whole-word
   MOE reading, even when it differs entirely (垃圾 → `lè sè`);
