@@ -24,8 +24,6 @@ You can use * in searches as a wildcard, it mixes with tone pinyin queries too. 
 
 
 
-
-
 ### Dictionaries and Sources
 
 #### Taiwan (MOE) readings
@@ -33,7 +31,7 @@ Taiwanese Mandarin is mostly the same as Mainland Mandarin, with a handful of di
 
 The Taiwanese Ministry of Education publishes dictionaries of Taiwanese Mandarin. 2 of these are used as sources for Yabai Search, the concise version 國語辭典簡編本, and the comprehensive version 重編國語辭典修訂本.
 
-When the Taiwanese pronunciation toggle is turned on, matched readings from the Taiwanese dictionaries are shown instead.
+When the Taiwanese pronunciation toggle is turned on, matched readings from the Taiwanese dictionaries are shown instead. If there are no matches in Taiwanese Dictionaries but CEDICT lists a Taiwanese Pronunciation, the CEDICT Taiwanese pronunciation is used.
 
 There are many characters in Taiwanese Mandarin that are always pronounced a certain way. There is not a detailed list of these, so all single character words with only 1 listed reading have their readings mapped onto all characters that only have 1 listed reading in the Chinese-English dictionaries. This method has quite high accuracy, but the rest of the false positives and false negatives will need to be manually fixed over time. 
 
