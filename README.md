@@ -30,7 +30,7 @@ The Taiwanese Ministry of Education publishes dictionaries of Taiwanese Mandarin
 
 When the Taiwanese pronunciation toggle is turned on, matched readings from the Taiwanese dictionaries are shown instead.
 
-There are many characters in Taiwanese Mandarin that are always pronounced a certain way. There is not a detailed list of these, so all single character words
+There are many characters in Taiwanese Mandarin that are always pronounced a certain way. There is not a detailed list of these, so all single character words with only 1 listed reading have their readings mapped onto all characters that only have 1 listed reading in the Chinese-English dictionaries. This method has quite high accuracy, but the rest of the false positives and false negatives will need to be manually fixed over time. 
 
 - words in `_TAIWAN_EXCEPTIONS` get **none** (currently `啊`);
 - a **monophonic** word (exactly one CEDICT reading) may take its whole-word
