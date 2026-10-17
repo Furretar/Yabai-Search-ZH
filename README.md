@@ -32,17 +32,9 @@ When the Taiwanese pronunciation toggle is turned on, matched readings from the 
 
 There are many characters in Taiwanese Mandarin that are always pronounced a certain way. There is not a detailed list of these, so all single character words with only 1 listed reading have their readings mapped onto all characters that only have 1 listed reading in the Chinese-English dictionaries. This method has quite high accuracy, but the rest of the false positives and false negatives will need to be manually fixed over time. 
 
-- words in `_TAIWAN_EXCEPTIONS` get **none** (currently `啊`);
-- a **monophonic** word (exactly one CEDICT reading) may take its whole-word
-  MOE reading, even when it differs entirely (垃圾 → `lè sè`);
-- a **polyphonic** word keeps its own reading - the MOE reading is keyed by word,
-  not by sense, so using it wholesale would collapse 啊’s five readings into one
-  or turn 呵[ā] into hē;
-- otherwise, per-character derivation, and only for characters that are
-  themselves monophonic in CEDICT and unambiguous in MOE.
+#### English
+CEDICT has separate entries for proper nouns and normal words. For example, the word/name 阮. Since search entries are based on headwords, these are collapsed into 1 entry.
 
-Readings are attached to each entry (`pinyin_taiwan`) and to the words
-referenced inside definitions (`taiwan_refs`), which render as furigana too.
 ## Tech Stack
 Backend is FastAPI + SQLite (FTS5),
 the frontend is a Jinja2 template plus plain JavaScript.
