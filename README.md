@@ -7,7 +7,7 @@ readings from the MOE 國語辭典簡編本.
 ## How does it work
 
 ### Language Codes
-You can choose a language code from the drop-down menu on the left of the search bar. After selecting a language, results with definitions in the selected language will be shown first. Matching results in other languages will be shown in a section called "Other Dictionaries" below the main results. 
+You can choose a language code from the drop-down menu on the left of the search bar. After selecting a language, results with definitions in the selected language will be shown first. Matching results in other languages will be shown in a section called "Other Dictionaries" below the main results. Searching with Taiwanese enabled will match to Taiwanese readings instead of of Mainland readings.
 
 ### Search functions
 
