@@ -1,60 +1,30 @@
 # Yabai-Chaci 牙白查词 / Yabai Search
 
-A Chinese–English dictionary web app built on CC-CEDICT, with Taiwan
-readings from the MOE 國語辭典簡編本. Backend is FastAPI + SQLite (FTS5);
-the frontend is a Jinja2 template plus plain JavaScript.
+A Chinese dictionary web app with Chinese-English, Chinese-Chinese, and Taiwanese Mandarin support. It is built on many open license dictionaries, such as CC-CEDICT and Wiktionary, with Taiwan
+readings from the MOE 國語辭典簡編本.
 
+## How does it work
 
-uv sync
-uv run python -m scripts.import_cedict     # builds data/cedict.sqlite (add --force to re-download)
-uv run python -m scripts.import_moe        # builds data/moe.sqlite (Taiwan readings)
-uv run uvicorn yabai_chaci.main:app --reload
-Serve at <http://127.0.0.1:8000>.
+### Search functions
 
+#### English phrases
+If you search with the English alphabet, the engine will first try to read it as phonetic pinyin. If the search doesn't match any pinyin readings, it will search for definitions containing the string. You can force an English phrase search with quotes "". Exact matches are shown first, then definitions containing the word, then definitions containing the string anywhere inside.
 
-db columnsa re `simplified`, `traditional`, `pinyin` (tone-marked),
-`english`, `english_normalized`, `pinyin_taiwan`, `taiwan_refs` when Taiwan readings were attached.
+#### Pinyin
+When searching with pinyin, you can specify tones with their corresponding numbers or leave it blank (shi2shi4 vs shishi). Searching pinyin will get exact matches at the top, then results starting with the query. All syllable combinations will be matched, for example, dangan will match both dan'gan (单干) and dang'an (档案).
 
-## search functions
+You can also specify tones for certain characters, i.e. shi4shi will return any results for shi4 with any tone shi after it. Below that will be results starting with the query, then results containing the query anywhere inside. If there are no results for the specific tone combination, it will fallback to results ignoring your tone numbers. The ignored toneless results will be displayed under a section call "Fuzzy Results."
 
-### english phrase
+#### Wildcard
+You can use * in searches as a wildcard, it mixes with tone pinyin queries too. For example, *字 will return all words ending with 字.
 
-if you search with latin characters then pinyin will be prioritized, but if there's no match, it will search for definitions containing the string. you can force an english word search with quotes "". exact matches are at the top, then definitions containing the word, then definitions containing the string.
+#### Bopomofo 
+Bopomofo is converted to tonal pinyin first, so it is fully supported.
 
-### 2. Bopomofo 
+### Dictionaries and Sources
 
-bopomofo is converted to tonal pinyin first
-
-### 3. pinyin
-
-searching toneless pinyin (no numbers) will get exact matches at the top, then results starting with the query. dangan will match both dan'gan and dang'an.
-
-you can add tone numbers to only get results with matching tones. you can also specify tones for certain characters, i.e. shi4shi will return any results shi4 with any tone shi after it. below that will be results starting with the query, then results containing the query. if there are no results, it will also get results ignoring your tone numbers.
-
-### wildcard
-you can use * in searches as a wildcard, it mixes with tone pinyin queries too.
-
-
-
-
-
-
-## Fuzzy (tone-insensitive) fallback
-
-When a **tonal** or **bopomofo** query returns no results, `/api/search`
-computes `db.tonal_variant(q)` (the toneless letters) and runs a second search
-for the `fuzzy` field. The client shows those under a **Fuzzy match** separator,
-below a *“No results for &lt;query&gt;.”* line.
-
-Fuzzy is computed **only when the main list is empty**. So `su4zhi2` shows
-Fuzzy: 素质, but `*xi1nu*` with Taiwan on shows Fuzzy: 息怒 (its Taiwan reading
-`xí nù` does not match `xi1`), while `*xi1nu*` with Taiwan off is an exact
-Mainland match (息怒) and shows no Fuzzy section.
-
-## Taiwan (MOE) readings
-
-Taiwan readings come from a separate, **unmodified** `data/moe.sqlite`. For a
-word, `_taiwan_reading` decides:
+#### Taiwan (MOE) readings
+Taiwanese Mandarin is mostly the same as Mainland Mandarin, with a handful of different pronunciations for words and characters, and slightly different word usage. 
 
 - words in `_TAIWAN_EXCEPTIONS` get **none** (currently `啊`);
 - a **monophonic** word (exactly one CEDICT reading) may take its whole-word
@@ -67,6 +37,21 @@ word, `_taiwan_reading` decides:
 
 Readings are attached to each entry (`pinyin_taiwan`) and to the words
 referenced inside definitions (`taiwan_refs`), which render as furigana too.
+## Tech Stack
+Backend is FastAPI + SQLite (FTS5),
+the frontend is a Jinja2 template plus plain JavaScript.
+
+## How to run
+uv sync
+uv run python -m scripts.import_cedict     # builds data/cedict.sqlite (add --force to re-download)
+uv run python -m scripts.import_moe        # builds data/moe.sqlite (Taiwan readings)
+uv run uvicorn yabai_chaci.main:app --reload
+Serve at <http://127.0.0.1:8000>.
+
+
+db columnsa re `simplified`, `traditional`, `pinyin` (tone-marked),
+`english`, `english_normalized`, `pinyin_taiwan`, `taiwan_refs` when Taiwan readings were attached.
+
 
 ## Data model
 
