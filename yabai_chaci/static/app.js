@@ -13,8 +13,21 @@ const hint = document.getElementById("hint");
 const scriptToggle = document.getElementById("script-toggle");
 const toneToggle = document.getElementById("tone-toggle");
 const phoneticToggle = document.getElementById("phonetic-toggle");
+// Quick display controls in the Search options panel.
+const quickSquares = [...document.querySelectorAll(".quick-script .quick-square")];
+const quickTone = document.getElementById("quick-tone");
+const quickPinyin = document.querySelector(".quick-pinyin");
+const quickZhuyin = document.querySelector(".quick-zhuyin");
+const quickChina = document.querySelector('[data-region="china"]');
+const quickTaiwanSquare = document.querySelector('[data-region="taiwan"]');
+// Descriptions to the right of the controls.
+const scriptDescription = document.getElementById("script-description");
+const toneDescription = document.getElementById("tone-description");
+const phoneticDescription = document.getElementById("phonetic-description");
+const dialectDescription = document.getElementById("dialect-description");
 const taiwanToggle = document.getElementById("taiwan-toggle");
 const customDictsToggle = document.getElementById("custom-dicts-toggle");
+const customDictsButton = document.getElementById("custom-dicts-button");
 // Dictionaries panel: group switches (English/Mainland/Taiwan) and per-dict.
 const dictGroupToggles = [...document.querySelectorAll(".dict-group")];
 const dictToggles = [...document.querySelectorAll(".dict-toggle")];
@@ -1517,6 +1530,7 @@ function loadPrefs() {
     taiwanToggle.checked = state.taiwan;
     customDictsToggle.checked = state.customDicts;
     for (const input of dictToggles) input.checked = state.dicts.has(input.dataset.anchor);
+    updateQuickToggles();
     syncGroups();
     syncDictPanel();
     applyLang(state.lang);
@@ -1537,25 +1551,123 @@ function savePrefs() {
     }
 }
 
+// The quick controls mirror the display switches. Only the tone square's
+// sample reacts to tone coloring (gold when on, grayed out when off); the other
+// squares always keep their own palette.
+function updateQuickToggles() {
+    if (!quickSquares.length) return;
+    const traditional = state.script === "traditional";
+    for (const square of quickSquares) {
+        const active =
+            square.dataset.script === (traditional ? "traditional" : "simplified");
+        square.setAttribute("aria-pressed", String(active));
+    }
+    // The tone sample follows the script toggle (simplified/traditional) and
+    // turns gray when tone coloring is off.
+    if (quickTone) {
+        const phrase = traditional ? ["花", "紅", "柳", "綠"] : ["花", "红", "柳", "绿"];
+        const chars = quickTone.querySelectorAll(".tone-phrase span");
+        chars.forEach((node, i) => {
+            if (phrase[i]) node.textContent = phrase[i];
+        });
+        quickTone.setAttribute("aria-pressed", String(state.toneColoring));
+    }
+    if (quickPinyin) quickPinyin.setAttribute("aria-pressed", String(state.phonetic === "pinyin"));
+    if (quickZhuyin) quickZhuyin.setAttribute("aria-pressed", String(state.phonetic === "zhuyin"));
+    if (quickChina) quickChina.setAttribute("aria-pressed", String(!state.taiwan));
+    if (quickTaiwanSquare) {
+        quickTaiwanSquare.setAttribute("aria-pressed", String(state.taiwan));
+    }
+    // The active side of each description is gold; the tone row also changes
+    // its wording and colour between Off (white) and On (gold).
+    if (scriptDescription) {
+        for (const word of scriptDescription.querySelectorAll("[data-script]")) {
+            const active = word.dataset.script === (traditional ? "traditional" : "simplified");
+            word.classList.toggle("active", active);
+        }
+    }
+    if (toneDescription) {
+        toneDescription.textContent = state.toneColoring ? "Tone Color On" : "Tone Color Off";
+        toneDescription.classList.toggle("on", state.toneColoring);
+    }
+    if (phoneticDescription) {
+        for (const word of phoneticDescription.querySelectorAll("[data-phonetic]")) {
+            word.classList.toggle("active", word.dataset.phonetic === state.phonetic);
+        }
+    }
+    if (dialectDescription) {
+        for (const word of dialectDescription.querySelectorAll("[data-region]")) {
+            const active = word.dataset.region === (state.taiwan ? "taiwan" : "china");
+            word.classList.toggle("active", active);
+        }
+    }
+}
+
 // Re-render the current results when a display toggle changes.
 scriptToggle.addEventListener("change", () => {
     state.script = scriptToggle.checked ? "traditional" : "simplified";
     savePrefs();
     redraw();
+    updateQuickToggles();
 });
 toneToggle.addEventListener("change", () => {
     state.toneColoring = toneToggle.checked;
     savePrefs();
     redraw();
+    updateQuickToggles();
 });
 phoneticToggle.addEventListener("change", () => {
     state.phonetic = phoneticToggle.checked ? "zhuyin" : "pinyin";
     savePrefs();
     redraw();
+    updateQuickToggles();
+});
+
+// The quick controls flip the matching checkbox and reuse its change handler.
+for (const square of quickSquares) {
+    square.addEventListener("click", () => {
+        const script = square.dataset.script;
+        if (state.script === script) return;
+        scriptToggle.checked = script === "traditional";
+        scriptToggle.dispatchEvent(new Event("change"));
+    });
+}
+// Tone coloring: one square, toggled on click.
+quickTone.addEventListener("click", () => {
+    toneToggle.checked = !toneToggle.checked;
+    toneToggle.dispatchEvent(new Event("change"));
+});
+// Phonetic system: one square per option.
+quickPinyin.addEventListener("click", () => {
+    if (state.phonetic === "pinyin") return;
+    phoneticToggle.checked = false;
+    phoneticToggle.dispatchEvent(new Event("change"));
+});
+quickZhuyin.addEventListener("click", () => {
+    if (state.phonetic === "zhuyin") return;
+    phoneticToggle.checked = true;
+    phoneticToggle.dispatchEvent(new Event("change"));
+});
+// Region: only flip the setting; do not redraw or re-run the search, so the
+// visible results and their timing text stay exactly as they are.
+quickChina.addEventListener("click", () => {
+    if (!state.taiwan) return;
+    taiwanToggle.checked = false;
+    state.taiwan = false;
+    savePrefs();
+    updateQuickToggles();
+});
+quickTaiwanSquare.addEventListener("click", () => {
+    if (state.taiwan) return;
+    taiwanToggle.checked = true;
+    state.taiwan = true;
+    savePrefs();
+    updateQuickToggles();
 });
 taiwanToggle.addEventListener("change", () => {
     state.taiwan = taiwanToggle.checked;
     savePrefs();
+    updateQuickToggles();
     // Re-render immediately so the reading flips without clearing the page
     // (which is what made it flash). Then re-run the same search so Taiwan-only
     // reading matches update too; "*" listing is independent of Taiwan.
@@ -1569,10 +1681,20 @@ customDictsToggle.addEventListener("change", () => {
     // Re-render so the per-entry dictionary chips appear/disappear too.
     redraw();
 });
+// The button flips the hidden switch and reuses its change handler.
+if (customDictsButton) {
+    customDictsButton.addEventListener("click", () => {
+        customDictsToggle.checked = !customDictsToggle.checked;
+        customDictsToggle.dispatchEvent(new Event("change"));
+    });
+}
 
 // Show the Dictionaries disclosure only when "Custom dictionaries" is on.
 function syncDictPanel() {
     dictPanel.hidden = !state.customDicts;
+    if (customDictsButton) {
+        customDictsButton.setAttribute("aria-pressed", String(state.customDicts));
+    }
 }
 
 // Dictionaries panel: a group switch toggles its whole column, and each

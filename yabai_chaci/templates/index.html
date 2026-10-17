@@ -42,26 +42,68 @@
         </form>
         <!-- Collapsed by default; the button toggles the panel (animated in CSS). -->
         <div class="options">
-            <button type="button" class="options-toggle" aria-expanded="false" aria-controls="search-options">Search
-                options</button>
             <div id="search-options" class="options-collapse">
-                <div class="toggles">
-                    <label><input type="checkbox" id="script-toggle"> Traditional</label>
-                    <label><input type="checkbox" id="tone-toggle"> Tone coloring</label>
-                    <label title="Use Zhuyin/Bopomofo/ㄅㄆㄇㄈ annotation."><input type="checkbox" id="phonetic-toggle">
-                        Zhuyin</label>
-                    <label title="Use Taiwanese Mandarin Pronunciation."><input type="checkbox" id="taiwan-toggle">
-                        Taiwan</label>
-                    <label title="Show the dictionary picker."><input type="checkbox" id="custom-dicts-toggle">
-                        Custom dictionaries</label>
+                <!-- The four quick controls, each row with a description on the right. -->
+                <div class="option-rows">
+                    <div class="option-row">
+                        <div class="quick-pair quick-script" role="group" aria-label="Script">
+                            <button type="button" class="quick-square" data-script="simplified"
+                                title="Simplified" aria-label="Simplified" aria-pressed="true">汉</button>
+                            <button type="button" class="quick-square" data-script="traditional"
+                                title="Traditional" aria-label="Traditional" aria-pressed="false">漢</button>
+                        </div>
+                        <span class="option-description" id="script-description"><span
+                                data-script="simplified">Simplified</span>/<span
+                                data-script="traditional">Traditional</span></span>
+                    </div>
+                    <div class="option-row">
+                        <button type="button" id="quick-tone" class="quick-toggle" aria-pressed="true"
+                            title="Tone coloring" aria-label="Tone coloring"><span
+                                class="tone-phrase"><span class="tone-1">花</span><span
+                                    class="tone-2">红</span><span class="tone-3">柳</span><span
+                                    class="tone-4">绿</span></span></button>
+                        <span class="option-description" id="tone-description">Tone Color On</span>
+                    </div>
+                    <div class="option-row">
+                        <div class="quick-pair" role="group" aria-label="Phonetic system">
+                            <button type="button" class="quick-square quick-pinyin" data-phonetic="pinyin"
+                                title="Pinyin" aria-label="Pinyin" aria-pressed="true">hàn</button>
+                            <button type="button" class="quick-square quick-zhuyin" data-phonetic="zhuyin"
+                                title="Zhuyin" aria-label="Zhuyin" aria-pressed="false">ㄏㄢˋ</button>
+                        </div>
+                        <span class="option-description" id="phonetic-description"><span
+                                data-phonetic="pinyin">Pinyin</span>/<span
+                                data-phonetic="zhuyin">Zhuyin (Bopomofo)</span></span>
+                    </div>
+                    <div class="option-row">
+                        <div class="quick-pair" role="group" aria-label="Region">
+                            <button type="button" class="quick-square" data-region="china"
+                                title="China" aria-label="China" aria-pressed="true">🇨🇳</button>
+                            <button type="button" class="quick-square" data-region="taiwan"
+                                title="Taiwan" aria-label="Taiwan" aria-pressed="false">🇹🇼</button>
+                        </div>
+                        <span class="option-description" id="dialect-description"><span
+                                data-region="china">Mainland</span>/<span
+                                data-region="taiwan">Taiwanese</span> Dialect</span>
+                    </div>
+                    <!-- Same dark-chip design as the tone control above. -->
+                    <button type="button" id="custom-dicts-button" class="quick-toggle custom-dicts-button"
+                        aria-pressed="false" title="Show the dictionary picker.">Custom Dictionaries</button>
                 </div>
+                <!-- Hidden switches hold the state; the controls above flip them. -->
+                <input type="checkbox" id="script-toggle" hidden>
+                <input type="checkbox" id="tone-toggle" hidden>
+                <input type="checkbox" id="phonetic-toggle" hidden>
+                <input type="checkbox" id="taiwan-toggle" hidden>
+                <input type="checkbox" id="custom-dicts-toggle" hidden>
             </div>
+            <!-- Sits at the bottom of the panel, so it moves down when expanded. -->
+            <button type="button" class="options-toggle search-options-toggle" aria-expanded="false"
+                aria-controls="search-options">Search options</button>
         </div>
         <!-- Dictionaries: pick which dictionaries to use, grouped by language.
            Unselected ones are used as backup (see app.js). -->
         <div class="options dictionaries">
-            <button type="button" class="options-toggle" aria-expanded="false"
-                aria-controls="dictionary-options">Dictionaries</button>
             <div id="dictionary-options" class="options-collapse">
                 <div class="dict-body">
                     <div class="dict-columns">
@@ -80,6 +122,9 @@
                     </div>
                 </div>
             </div>
+            <!-- Sits at the bottom of the panel, so it moves down when expanded. -->
+            <button type="button" class="options-toggle dictionaries-toggle" aria-expanded="false"
+                aria-controls="dictionary-options">Dictionaries</button>
         </div>
     </div>
     <!-- Slim pull-down handle: appears once the main search panel is scrolled
@@ -108,9 +153,9 @@
     <div id="results"></div>
     <!-- Pager for "*" (all-headwords) searches; hidden otherwise. -->
     <nav id="pagination" class="pagination" hidden></nav>
-    <!-- Footer with the About link. -->
+    <!-- Footer: About page and the quick-toggle design comparison. -->
     <footer>
-        <a href="/about">About</a>
+        <a href="/about">About</a> &middot; <a href="/static/quick-toggle-designs.html">Toggle designs</a>
     </footer>
     <!-- Front-end script served from the /static mount (static/app.js). -->
     <script src="/static/app.js?v={{ asset_version }}"></script>

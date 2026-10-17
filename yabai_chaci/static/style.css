@@ -97,8 +97,10 @@ button {
     flex: none;
 }
 
-/* Search button: gray by default, yellow on hover. */
+/* Search button: gray by default, yellow on hover. Transparent so it sits on
+   the dark search-panel surface instead of the browser's default button grey. */
 .search-button {
+    background: transparent;
     color: var(--muted);
     border-color: var(--border);
     cursor: pointer;
@@ -127,9 +129,11 @@ button {
 }
 
 /* One surface behind the search bar and its options, so the expanded options
-   read as a dropdown connected to the search bar. */
+   read as a dropdown connected to the search bar. The surface is a shade
+   darker than the quick-button background. */
 .search-panel {
-    background: var(--panel-bg);
+    background: #121016;
+    color: #d2ccd8;
     border: 1px solid var(--panel-border);
     border-radius: .5rem;
     margin-bottom: 1.5rem;
@@ -189,6 +193,10 @@ button {
     top: .8rem;
     max-height: calc(100vh - 1.6rem);
     overflow-y: auto;
+    /* The pull-down handle attaches at the bottom-left; a square corner there
+       lets its left border continue the panel outline instead of looking cut
+       off under the rounded corner. */
+    border-bottom-left-radius: 0;
     z-index: 31;
     background: var(--bg); /* fully opaque */
     box-shadow: 0 .5rem 1.5rem color-mix(in srgb, currentColor 20%, transparent);
@@ -203,6 +211,12 @@ button {
 .search-panel input {
     border: none;
     background: transparent;
+    /* Form controls do not inherit text colour by default. */
+    color: inherit;
+}
+
+.search-panel input::placeholder {
+    color: color-mix(in srgb, currentColor 55%, transparent);
 }
 
 /* Search-language dropdown, to the left of the input. The button shows the
@@ -245,6 +259,15 @@ button {
     font-size: .7em;
 }
 
+.lang-button:hover {
+    color: var(--accent);
+}
+
+/* Keep the yellow while the language menu is open, until it is closed. */
+.lang-button[aria-expanded="true"] {
+    color: var(--accent);
+}
+
 .lang-menu {
     position: absolute;
     top: 100%;
@@ -254,10 +277,11 @@ button {
     padding: .25rem 0;
     list-style: none;
     min-width: 11rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
+    /* The menu drops out of the dark panel, so it uses the same surface. */
+    background: #121016;
+    border: 1px solid #4a4452;
     border-radius: .35rem;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
 }
 
 .lang-menu li {
@@ -269,7 +293,7 @@ button {
 }
 
 .lang-menu li:hover {
-    background: var(--panel-bg);
+    background: #2a2630;
 }
 
 .lang-menu li[aria-selected="true"] {
@@ -299,6 +323,17 @@ button {
 /* Collapsible "Search options" disclosure, under the search row on the panel. */
 .options {
     border-top: 1px solid var(--options-divider);
+}
+
+/* Both disclosure rows are centered. */
+.options-toggle.search-options-toggle,
+.options-toggle.dictionaries-toggle {
+    text-align: center;
+}
+
+/* Both disclosure labels turn yellow on hover. */
+.options-toggle:hover {
+    color: var(--accent);
 }
 
 /* The toggle is a text control, not a button - reset the generic button look.
@@ -359,6 +394,173 @@ button {
 .options.open .toggles {
     opacity: 1;
     transition-delay: 90ms;
+}
+
+/* The four quick controls, stacked with a description on the right. */
+.option-rows {
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+    /* Space above the first control row. */
+    padding: .5rem .75rem .75rem;
+    opacity: 0;
+    transition: opacity 100ms ease;
+}
+
+.options.open .option-rows {
+    opacity: 1;
+    transition-delay: 90ms;
+}
+
+.option-row {
+    display: grid;
+    /* The control column is as wide as a two-square pair, so every description
+       starts at the same left edge. */
+    grid-template-columns: calc(6.14rem + 3px) 1fr;
+    align-items: center;
+    gap: .75rem;
+}
+
+.option-description {
+    /* One point smaller than the previous .95rem. */
+    font-size: calc(.95rem - 1pt);
+    color: var(--control);
+}
+
+/* The active side of a description (and the tone row's On state) is gold. */
+.option-description .active {
+    color: var(--accent);
+}
+
+#tone-description {
+    color: var(--control);
+}
+
+#tone-description.on {
+    color: var(--accent);
+}
+
+/* The quick controls keep their previous dark-chip design. Each individual
+   square is as wide as the EN/ZH/TW language button (3.07rem). */
+.quick-pair {
+    display: inline-flex;
+    align-items: stretch;
+    overflow: hidden;
+    border: 1px solid #4a4452;
+    border-radius: .35rem;
+}
+
+.quick-pair .quick-square {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 3.07rem;
+    padding: .25rem .35rem;
+    border: none;
+    /* Off: dark gray with light text. */
+    background: #17141a;
+    color: #d2ccd8;
+    font: inherit;
+    font-size: 1.1rem;
+    font-weight: 900;
+    /* Noto CJK ships a true Black weight, which system-ui does not. */
+    font-family: "Noto Sans CJK SC", system-ui, sans-serif;
+    line-height: 1.1;
+    cursor: pointer;
+}
+
+.quick-pair .quick-square + .quick-square {
+    border-left: 1px solid #4a4452;
+}
+
+/* The enabled option is the gold accent square with dark bold text. */
+.quick-pair .quick-square[aria-pressed="true"] {
+    background: var(--accent);
+    color: #1b1b1b;
+}
+
+/* The phonetic pair sits one weight lighter than the other controls. */
+.quick-pair .quick-pinyin,
+.quick-pair .quick-zhuyin {
+    font-weight: 700;
+}
+
+/* Han, pinyin and Bopomofo samples are 20% smaller than the flag emoji. */
+.quick-script .quick-square,
+.quick-pair .quick-pinyin,
+.quick-pair .quick-zhuyin {
+    font-size: .88rem;
+}
+
+/* The Custom dictionaries label is yellow when on and gray when off. */
+.custom-dicts-button {
+    color: var(--accent);
+}
+
+.custom-dicts-button[aria-pressed="false"] {
+    color: #8a8490;
+}
+
+/* The tone control is a single dark chip matching the rows. */
+.quick-toggle {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    /* Fills the control column, so its right edge lines up with the pairs. */
+    width: 100%;
+    padding: .2rem .35rem;
+    /* Off: the same outline as the rest of the buttons. */
+    border: 1px solid #4a4452;
+    border-radius: .35rem;
+    background: #17141a;
+    font: inherit;
+    font-size: 1.1rem;
+    font-weight: 900;
+    /* Noto CJK ships a true Black weight, which system-ui does not. */
+    font-family: "Noto Sans CJK SC", system-ui, sans-serif;
+    line-height: 1.15;
+    cursor: pointer;
+}
+
+/* Off + hover: a light gray outline. */
+.quick-toggle[aria-pressed="false"]:hover {
+    border-color: #cfcfcf;
+}
+
+/* On: a yellow outline at all times, including while hovered. */
+.quick-toggle[aria-pressed="true"] {
+    border-color: var(--accent);
+}
+
+/* The tone sample is a four-character phrase in red, yellow, green, blue. */
+.tone-phrase .tone-1 {
+    color: var(--tone1);
+}
+
+.tone-phrase .tone-2 {
+    color: var(--tone2);
+}
+
+.tone-phrase .tone-3 {
+    color: var(--tone3);
+}
+
+.tone-phrase .tone-4 {
+    color: var(--tone4);
+}
+
+/* Off: the whole sample goes gray. */
+.quick-toggle[aria-pressed="false"] .tone-phrase span {
+    color: #7f7a85;
+}
+
+.quick-pair .quick-square:focus-visible,
+.quick-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
 }
 
 /* Render the checkboxes as slider switches. */
@@ -821,7 +1023,8 @@ button {
     overflow: hidden; /* clip while the panel animates open/closed */
     min-height: 0;
     box-sizing: border-box;
-    padding: 0 .75rem .75rem;
+    /* Top padding gives the English column title some breathing room. */
+    padding: .5rem .75rem .75rem;
     opacity: 0; /* hidden while collapsed, like the Search options switches */
     transition: opacity 100ms ease;
 }
@@ -838,6 +1041,12 @@ button {
     font-size: .9rem; /* same context as .toggles, so the switches match in size */
 }
 
+/* Gray separators between the English, Mainland and Taiwan columns. */
+.dict-column + .dict-column {
+    border-left: 1px solid var(--options-divider);
+    padding-left: 1rem;
+}
+
 .dict-column-head {
     font-weight: 600;
     color: var(--control);
@@ -850,6 +1059,11 @@ button {
     margin-top: .5rem;
     font-size: .9rem;
     color: var(--control);
+}
+
+/* Enabled dictionary labels (and their group titles) turn gold. */
+.dict-column label:has(input:checked) {
+    color: var(--accent);
 }
 
 /* Page footer (e.g. the About link), pinned to the bottom and centered. */
@@ -1001,15 +1215,22 @@ ul.tagline {
         gap: 1.5rem;
     }
 
+    /* The columns stack here, so the vertical separators do not apply. */
+    .dict-column + .dict-column {
+        border-left: none;
+        padding-left: 0;
+    }
+
+    /* Instead, underline each language title, separating it from the first
+       dictionary listed underneath. The line only spans the title word. */
+    .dict-column .dict-column-head span {
+        padding-bottom: .2rem;
+        border-bottom: 1px solid var(--options-divider);
+    }
+
     .options.open .options-collapse {
         max-height: 70vh;
         overflow-y: auto;
-    }
-
-    /* On phones the dictionary names read as plain headings, not links. */
-    .def-source-name {
-        pointer-events: none;
-        cursor: default;
     }
 }
 
