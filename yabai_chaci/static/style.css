@@ -19,11 +19,6 @@ body {
     /* Page background; --bg is set per color scheme (falls back to the
        system canvas color when unset). */
     background: var(--bg, Canvas);
-    /* Column layout so the footer can be pushed to the very bottom. */
-    display: flex;
-    flex-direction: column;
-    min-height: calc(100vh - 4rem);
-    /* minus the 2rem top/bottom margins */
 }
 
 /* The site title links back to the home view. */
@@ -38,21 +33,29 @@ a {
     color: var(--accent);
 }
 
-/* Site title with a smaller English subtitle, bottom-aligned to its right. */
+/* Site title with an equally sized English subtitle. */
 h1 {
     display: flex;
     align-items: flex-end;
     gap: .4rem;
+    /* Keep the Chinese title and the English subtitle on one line; app.js
+       scales the whole heading down when they would not fit. */
+    white-space: nowrap;
     font-size: 2.5rem;
     /* Pull the title up: remove the browser's default top margin so only the
        body margin sits above it. */
     margin-top: 0;
+    /* Breathing room between the lowered subtitle and the search box. */
+    margin-bottom: 2.5rem;
 }
 
 .site-subtitle {
-    font-size: .4em;
+    font-size: 1em;
     font-weight: normal;
     color: var(--accent);
+    /* Bottom-aligned by the h1, then dropped so its top lines up with the
+       middle of the Chinese title. */
+    transform: translateY(40%);
 }
 
 /* The search form: input and button side by side. */
@@ -101,6 +104,9 @@ button {
    the dark search-panel surface instead of the browser's default button grey. */
 .search-button {
     background: transparent;
+    /* A little shorter and narrower than the default button. */
+    align-self: center;
+    padding: .2rem .75rem;
     color: var(--muted);
     border-color: var(--border);
     cursor: pointer;
@@ -115,7 +121,7 @@ button {
 /* The clear (✕) button beside the search box: a plain icon, not a boxed button. */
 .clear-button {
     flex: none;
-    padding: .5rem .6rem;
+    padding: .2rem .6rem;
     border: none;
     background: none;
     font-size: 1.1rem;
@@ -202,9 +208,18 @@ button {
     box-shadow: 0 .5rem 1.5rem color-mix(in srgb, currentColor 20%, transparent);
 }
 
+/* While the language menu is open, stop the pulled panel's scroller from
+   clipping the menu; it extends below the short, collapsed panel. */
+.search-panel.pulled:has(.lang-menu:not([hidden])) {
+    overflow: visible;
+    /* Also lift the panel above the pull-out handle, so the menu is not
+       covered by it. */
+    z-index: 33;
+}
+
 /* The search row sits inset and flush inside the panel. */
 .search-panel form {
-    padding: .35rem;
+    padding: .15rem .35rem;
 }
 
 /* Inside the panel the input is borderless - the panel is the border. */
@@ -213,6 +228,9 @@ button {
     background: transparent;
     /* Form controls do not inherit text colour by default. */
     color: inherit;
+    /* Keep the text size; trim the space above and below it. */
+    font-size: inherit;
+    padding: .2rem .5rem;
 }
 
 .search-panel input::placeholder {
@@ -243,7 +261,7 @@ button {
 }
 
 .lang-button {
-    padding: .5rem .6rem;
+    padding: .2rem .6rem;
     border: none;
     background: none;
     font: inherit;
@@ -331,6 +349,17 @@ button {
     text-align: center;
 }
 
+/* The Search options row is more compact than the default disclosure. */
+.options-toggle.search-options-toggle {
+    padding-top: .25rem;
+    padding-bottom: .25rem;
+}
+
+/* While open, tighten the gap above the bottom Search options label. */
+.options.open .search-options-toggle {
+    padding-top: .2rem;
+}
+
 /* Both disclosure labels turn yellow on hover. */
 .options-toggle:hover {
     color: var(--accent);
@@ -401,8 +430,8 @@ button {
     display: flex;
     flex-direction: column;
     gap: .4rem;
-    /* Space above the first control row. */
-    padding: .5rem .75rem .75rem;
+    /* Space above the first control row; tighter below the last one. */
+    padding: .5rem .75rem .2rem;
     opacity: 0;
     transition: opacity 100ms ease;
 }
@@ -456,7 +485,7 @@ button {
     justify-content: center;
     box-sizing: border-box;
     width: 3.07rem;
-    padding: .25rem .35rem;
+    padding: .2rem .35rem;
     border: none;
     /* Off: dark gray with light text. */
     background: #17141a;
@@ -875,9 +904,43 @@ button {
 }
 
 .def-source-line {
+    position: relative;
     margin-top: .15rem;
+    padding-right: 1.5rem;
     font-size: var(--definition-size);
 }
+
+/* Copy icon at the end of a definition, revealed on hover/focus. */
+.def-copy {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.3rem;
+    height: 1.3rem;
+    padding: 0;
+    border: none;
+    border-radius: .25rem;
+    background: none;
+    color: var(--muted);
+    transform: translateY(-50%);
+    opacity: 0;
+    cursor: pointer;
+    transition: opacity .12s ease, color .12s ease;
+}
+
+.def-source-line:hover .def-copy,
+.def-copy:focus-visible {
+    opacity: 1;
+}
+
+.def-copy:hover,
+.def-copy.copied {
+    color: var(--accent);
+}
+
 
 .def-source-num {
     margin-right: .35rem;
@@ -1000,7 +1063,8 @@ button {
 }
 
 /* Tone-insensitive fallback shown under a tonal query that matched nothing. */
-.fuzzy-heading {
+.fuzzy-heading,
+.other-heading {
     margin-top: 1.5rem;
     padding-top: .75rem;
     border-top: 1px solid var(--entry-divider);
@@ -1008,6 +1072,13 @@ button {
     text-transform: uppercase;
     letter-spacing: .05em;
     color: var(--muted);
+}
+
+/* The other-language and fuzzy sections stand out in the accent colour. */
+.other-heading,
+.fuzzy-heading {
+    border-top-color: var(--accent);
+    color: var(--accent);
 }
 
 /* Description shown under the search bar. */
@@ -1066,24 +1137,35 @@ button {
     color: var(--accent);
 }
 
-/* Page footer (e.g. the About link), pinned to the bottom and centered. */
+/* On search pages, keep the content at least one screen tall so the timings
+   and footer sit below the fold. The home page flows normally. */
+body.has-query .page-main {
+    min-height: 100vh;
+}
+
+/* No empty timing line on the home page. */
+body:not(.has-query) .result-timing {
+    display: none;
+}
+
+/* Query timings, centered just above the footer. The line always reserves
+   space, so below-screen content never changes the page height after loading. */
+.result-timing {
+    margin: .5rem 0 0;
+    /* Matches one text line, so the empty and filled states are the same
+       height and nothing shifts after loading. */
+    min-height: 1.5em;
+    text-align: center;
+    font-size: .85rem;
+    color: var(--muted);
+}
+
+/* Page footer (e.g. the About link), centered. */
 footer {
-    margin-top: auto;
     padding-top: 1rem;
     border-top: 1px solid var(--entry-divider);
     font-size: .9rem;
     text-align: center;
-    /* The slide away/back while searching is an obvious movement, not a flash. */
-    transition: transform 0.15s ease;
-}
-
-/* While a search is in flight, slide the footer just below the bottom of the
-   screen (keeping its layout space, so nothing reflows). It cannot flicker as
-   results come and go, and its return is a single visible movement. */
-body.searching footer {
-    /* Its own height plus a margin, so it ends just below the bottom of the
-       screen no matter how short the page is. */
-    transform: translateY(calc(100% + 6rem));
 }
 
 /* The "Search Functions" bullet list. */
@@ -1203,8 +1285,6 @@ ul.tagline {
     body {
         /* Pull the title up (less wasted space above it). */
         margin-top: .75rem;
-        /* Keep the footer pinned for the smaller top margin. */
-        min-height: calc(100vh - 2.75rem);
     }
 
     /* Stack the dictionary groups so long labels fit, then let a tall expanded

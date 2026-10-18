@@ -6,6 +6,7 @@ const form = document.getElementById("search-form");
 const input = document.getElementById("q");
 const clearButton = document.getElementById("clear-button");
 const results = document.getElementById("results");
+const resultTiming = document.getElementById("result-timing");
 const pagination = document.getElementById("pagination");
 const paginationTop = document.getElementById("pagination-top");
 const parsed = document.getElementById("parsed");
@@ -607,7 +608,78 @@ function updateHint(query, pinyinMatch, englishMatch) {
 
 // The body of one dictionary's definitions: numbered senses and the classifier
 // line (no heading). Shared by result blocks and match boxes.
-function definitionBody(source, taiwanRefs) {
+// The copied reading follows the Pinyin/Bopomofo display toggle.
+function copyReading(pinyin) {
+    if (!pinyin || state.phonetic !== "zhuyin") return pinyin || "";
+    return pinyin
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((syllable) => toZhuyin(syllable))
+        .join(" ");
+}
+
+function copyDefinitionButton(reading, word, definition) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "def-copy";
+    button.title = "Copy definition";
+    button.setAttribute("aria-label", "Copy definition");
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("width", "14");
+    svg.setAttribute("height", "14");
+    svg.setAttribute("aria-hidden", "true");
+    const back = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    back.setAttribute("d", "M5.5 2.5h7a1 1 0 0 1 1 1v7");
+    back.setAttribute("fill", "none");
+    back.setAttribute("stroke", "currentColor");
+    back.setAttribute("stroke-width", "1.3");
+    back.setAttribute("stroke-linecap", "round");
+    const front = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    front.setAttribute("x", "2.5");
+    front.setAttribute("y", "4.5");
+    front.setAttribute("width", "7");
+    front.setAttribute("height", "9");
+    front.setAttribute("rx", "1");
+    front.setAttribute("fill", "none");
+    front.setAttribute("stroke", "currentColor");
+    front.setAttribute("stroke-width", "1.3");
+    svg.append(back, front);
+    button.append(svg);
+
+    const text = [reading, word, definition].filter(Boolean).join("\n");
+    button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch (error) {
+            // Fallback for browsers/contexts without the async clipboard API.
+            const area = document.createElement("textarea");
+            area.value = text;
+            area.style.position = "fixed";
+            area.style.opacity = "0";
+            document.body.append(area);
+            area.select();
+            try {
+                document.execCommand("copy");
+            } catch (fallbackError) {
+                // Nothing else we can do.
+            }
+            area.remove();
+        }
+        button.classList.add("copied");
+        button.title = "Copied";
+        setTimeout(() => {
+            button.classList.remove("copied");
+            button.title = "Copy definition";
+        }, 1200);
+    });
+    return button;
+}
+
+function definitionBody(source, taiwanRefs, copy) {
     const body = document.createDocumentFragment();
     // Only English-language definitions get automatic Chinese links; a Chinese
     // dictionary's own prose (MOE) is not a list of headwords to look up.
@@ -637,6 +709,17 @@ function definitionBody(source, taiwanRefs) {
             num.className = "def-source-num";
             num.textContent = `${i + 1}.`;
             line.append(num, renderDefinition(text, taiwanRefs, linkChinese));
+            if (copy && text) {
+                // Prefer the reading attached to this sense group (polyphonic
+                // words), falling back to the entry's main reading.
+                line.append(
+                    copyDefinitionButton(
+                        copyReading(group.pinyin || copy.reading),
+                        copy.word,
+                        text
+                    )
+                );
+            }
             body.append(line);
         });
     }
@@ -687,7 +770,7 @@ const WIKTIONARY_PAGE = "https://en.wiktionary.org/wiki/";
 // A labeled block showing one dictionary's definitions for a result. CC-CEDICT
 // and Wiktionary names open that word in the source; other names link to their
 // section on the About page.
-function definitionsBlock(source, taiwanRefs, word) {
+function definitionsBlock(source, taiwanRefs, word, reading) {
     const block = document.createElement("div");
     block.className = "def-source";
     const name = document.createElement("a");
@@ -704,7 +787,7 @@ function definitionsBlock(source, taiwanRefs, word) {
         name.href = `/about#${encodeURIComponent(source.anchor)}`;
     }
     name.textContent = source.label;
-    block.append(name, definitionBody(source, taiwanRefs));
+    block.append(name, definitionBody(source, taiwanRefs, { reading, word }));
     return block;
 }
 
@@ -731,11 +814,18 @@ function entryDicts(entry) {
 // highest-priority source that has a definition for it.
 const LANG_PRIORITY = { english: 0, mainland: 1, taiwan: 2 };
 const SOURCE_PRIORITY = ["cedict", "wiktionary", "moe"];
+// Language code -> the definition language it selects.
+const LANG_GROUP = { EN: "english", ZH: "mainland", TW: "taiwan" };
 
-function prioritySource(entry) {
+function selectedLangGroup() {
+    return LANG_GROUP[state.lang] || "english";
+}
+
+function prioritySource(entry, group = null) {
     let best = null;
     let bestRank = Infinity;
     for (const source of entry.definitions || []) {
+        if (group && source.lang !== group) continue;
         const rank =
             (LANG_PRIORITY[source.lang] ?? 9) * 100 +
             (SOURCE_PRIORITY.indexOf(source.anchor) + 1 || 99);
@@ -748,10 +838,12 @@ function prioritySource(entry) {
 }
 
 // Which dictionaries to render for a result. With custom dictionaries on this is
-// the per-entry selection; with it off it is just the single top-priority source.
+// the per-entry selection. With it off, the selected language is tried first;
+// entries that only exist in other languages fall back to the global priority
+// and are rendered in the "Other Dictionaries" section.
 function visibleDicts(entry) {
     if (state.customDicts) return entryDicts(entry);
-    const source = prioritySource(entry);
+    const source = prioritySource(entry, selectedLangGroup()) || prioritySource(entry);
     return source ? new Set([source.anchor]) : new Set();
 }
 
@@ -957,7 +1049,7 @@ function fillEntryRow(row, entry) {
     let notesPlaced = false;
     for (const source of definitions) {
         if (!enabled.has(source.anchor)) continue;
-        defsBox.append(definitionsBlock(source, entry.taiwan_refs, primary));
+        defsBox.append(definitionsBlock(source, entry.taiwan_refs, primary, reading));
         if (source.anchor === "cedict" && notes.length) {
             defsBox.append(...notes);
             notesPlaced = true;
@@ -980,6 +1072,7 @@ function fillEntryRow(row, entry) {
                     },
                     entry.taiwan_refs,
                     primary,
+                    reading,
                 ),
             );
         }
@@ -1001,13 +1094,19 @@ function fillEntryRow(row, entry) {
 // other dictionaries" section instead.
 function hasSelectedDefs(entry) {
     if (!state.customDicts) {
-        // Priority mode: whatever source has a definition is shown.
-        return (entry.definitions || []).length > 0 || (entry.forms || []).length > 0;
+        // Priority mode: only definitions in the selected language count.
+        const group = selectedLangGroup();
+        if ((entry.definitions || []).some((s) => s.lang === group)) return true;
+        return group === "english" && (entry.forms || []).length > 0;
     }
     if ((entry.definitions || []).some((s) => state.dicts.has(s.anchor))) return true;
     // A "see X" variant has no senses - only "other forms" (CC-CEDICT) - but it
     // should still show when CC-CEDICT is on.
     return (entry.forms || []).length > 0 && state.dicts.has("cedict");
+}
+
+function hasAnyDefs(entry) {
+    return (entry.definitions || []).length > 0 || (entry.forms || []).length > 0;
 }
 
 // The headword a result row shows, in the current script.
@@ -1033,6 +1132,9 @@ function cloneEntry(entry) {
         })),
     };
 }
+
+// Main-list row count, used when the Fuzzy section adds more rows.
+let mainResultCount = 0;
 
 // Add one entry's definitions, source chips and forms to another entry.
 function mergeEntry(target, addition) {
@@ -1107,39 +1209,75 @@ function render(entries, query) {
     const withoutReading = mandarin.filter((entry) => !entry.pinyin);
     results.replaceChildren(); // clear previous results
 
+    // With custom dictionaries off, results with definitions in the selected
+    // language come first; results that only exist in other languages go to a
+    // separate "Other Dictionaries" section below them.
+    const otherMode = !state.customDicts;
+    const isOther = (entry) =>
+        otherMode && !hasSelectedDefs(entry) && hasAnyDefs(entry);
+    const isBare = (entry) =>
+        otherMode ? !hasAnyDefs(entry) : !hasSelectedDefs(entry);
     const withDefs = withReading.filter(hasSelectedDefs);
-    const headwordsOnly = withReading.filter((entry) => !hasSelectedDefs(entry));
+    const otherReading = withReading.filter(isOther);
+    const headwordsOnly = withReading.filter(isBare);
     // No reading at all: still put ones with a definition above bare headwords.
     const withoutReadingWithDefs = withoutReading.filter(hasSelectedDefs);
-    const withoutReadingOnly = withoutReading.filter(
-        (entry) => !hasSelectedDefs(entry),
-    );
+    const otherNoReading = withoutReading.filter(isOther);
+    const withoutReadingOnly = withoutReading.filter(isBare);
+    const idsMain = idsEntries.filter((entry) => !isOther(entry));
+    const idsOther = idsEntries.filter(isOther);
+    const dialectMain = dialectEntries.filter((entry) => !isOther(entry));
+    const dialectOther = dialectEntries.filter(isOther);
+    const otherEntries = [
+        ...otherReading,
+        ...otherNoReading,
+        ...idsOther,
+        ...dialectOther,
+    ];
 
     const count = document.createElement("p");
     count.className = "results-count";
-    // "(first batch ms, total ms)" when the first batch was shown, else just
-    // the total (or nothing on a fresh page).
-    const timing =
-        lastSearchMs === null
-            ? ""
-            : firstSearchMs === null
-              ? ` (${lastSearchMs} ms)`
-              : ` (${firstSearchMs} ms, ${lastSearchMs} ms)`;
-    count.textContent = `${merged.length} RESULT${merged.length === 1 ? "" : "S"}${timing}`;
+    mainResultCount = merged.length;
+    count.textContent = `${merged.length} RESULT${merged.length === 1 ? "" : "S"}`;
     results.append(count);
+    updateTiming();
 
     for (const entry of withDefs) results.append(entryRow(entry));
     for (const entry of withoutReadingWithDefs) results.append(entryRow(entry));
-    for (const entry of idsEntries) results.append(entryRow(entry));
-    for (const entry of dialectEntries) results.append(entryRow(entry));
+    for (const entry of idsMain) results.append(entryRow(entry));
+    for (const entry of dialectMain) results.append(entryRow(entry));
+    if (otherEntries.length) {
+        const heading = document.createElement("p");
+        heading.className = "other-heading";
+        heading.textContent = "Other Dictionaries";
+        results.append(heading);
+        for (const entry of otherEntries) results.append(entryRow(entry));
+    }
     for (const entry of headwordsOnly) results.append(entryRow(entry));
     for (const entry of withoutReadingOnly) results.append(entryRow(entry));
+}
+
+// Move the query timings to the line above the footer.
+function updateTiming() {
+    if (!resultTiming) return;
+    if (lastSearchMs === null) {
+        resultTiming.textContent = "";
+        return;
+    }
+    const parts = [];
+    if (firstSearchMs !== null) parts.push(`First Result: ${firstSearchMs} ms`);
+    parts.push(`All Results: ${lastSearchMs} ms`);
+    resultTiming.textContent = parts.join(", ");
 }
 
 // Append the tone-insensitive "Fuzzy match" section under a separator.
 function renderFuzzy(entries) {
     currentFuzzy = entries || [];
     if (!currentFuzzy.length) return;
+    // The count covers both the main list and these fuzzy rows.
+    const total = mainResultCount + currentFuzzy.length;
+    const count = results.querySelector(".results-count");
+    if (count) count.textContent = `${total} RESULT${total === 1 ? "" : "S"}`;
     const heading = document.createElement("p");
     heading.className = "fuzzy-heading";
     heading.textContent = "Fuzzy match";
@@ -1162,7 +1300,7 @@ function redraw() {
 // query is ignored once the user has typed a new one.
 let searchSeq = 0;
 
-async function search(query, offset = 0, scrollTop = false) {
+async function search(query, offset = 0, scrollTop = false, recordTiming = true) {
     const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}`;
     const startedAt = performance.now();
     const seq = ++searchSeq;
@@ -1180,8 +1318,10 @@ async function search(query, offset = 0, scrollTop = false) {
     if (showFirst) {
         currentEntries = first.results;
         currentQuery = query;
-        lastSearchMs = firstMs;
-        firstSearchMs = null;
+        if (recordTiming) {
+            lastSearchMs = firstMs;
+            firstSearchMs = null;
+        }
         render(first.results, query);
         renderFuzzy([]);
         updateHint(query, first.pinyin_match, first.english_match);
@@ -1205,9 +1345,11 @@ async function search(query, offset = 0, scrollTop = false) {
         if (seq !== searchSeq) return 0;
         currentEntries = full.results;
         currentQuery = query;
-        // Keep the first batch's timing next to the total when it was shown.
-        firstSearchMs = showFirst ? firstMs : null;
-        lastSearchMs = Math.round(performance.now() - startedAt);
+        if (recordTiming) {
+            // Keep the first batch's timing next to the total when it was shown.
+            firstSearchMs = showFirst ? firstMs : null;
+            lastSearchMs = Math.round(performance.now() - startedAt);
+        }
         render(full.results, query);
         renderFuzzy(full.fuzzy);
         renderPagination(query, full);
@@ -1217,8 +1359,10 @@ async function search(query, offset = 0, scrollTop = false) {
     }
     currentEntries = first.results;
     currentQuery = query;
-    firstSearchMs = null;
-    lastSearchMs = firstMs;
+    if (recordTiming) {
+        firstSearchMs = null;
+        lastSearchMs = firstMs;
+    }
     render(first.results, query);
     renderFuzzy(first.fuzzy);
     renderPagination(query, first);
@@ -1339,31 +1483,48 @@ function renderParsed(tokens) {
     }
 }
 
-// --- scroll position across reloads ---------------------------------------
+// --- scroll position across reloads and back/forward ---------------------
 // Results arrive from fetch(), so the browser's own scroll restoration happens
-// before they are in the DOM and lands at the top. Save the position ourselves
-// and restore it once the results are rendered.
+// before they are in the DOM and lands at the top. Save each URL's position
+// ourselves and restore it once that URL's results are rendered.
 if ("scrollRestoration" in history) history.scrollRestoration = "manual";
 const SCROLL_KEY = "yabai-chaci-scroll";
+const SCROLL_LIMIT = 30;
+
+// Newest last. Keeping entries for other URLs is what makes Back restore the
+// previous page rather than the page that was visited most recently.
+function readScrollEntries() {
+    try {
+        const saved = JSON.parse(sessionStorage.getItem(SCROLL_KEY) || "[]");
+        if (Array.isArray(saved)) return saved.filter((entry) => entry && entry.url);
+        if (saved && saved.url) return [saved]; // old single-entry format
+    } catch (error) {
+        // Storage disabled or corrupt: start fresh.
+    }
+    return [];
+}
+
+function savedScrollY(url) {
+    const entries = readScrollEntries();
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+        if (entries[i].url === url) return entries[i].y;
+    }
+    return null;
+}
 
 function saveScroll() {
     try {
-        sessionStorage.setItem(
-            SCROLL_KEY,
-            JSON.stringify({ url: location.href, y: window.scrollY }),
-        );
+        const entries = readScrollEntries().filter((entry) => entry.url !== location.href);
+        entries.push({ url: location.href, y: window.scrollY });
+        while (entries.length > SCROLL_LIMIT) entries.shift();
+        sessionStorage.setItem(SCROLL_KEY, JSON.stringify(entries));
     } catch (error) {
         // Storage disabled (private mode): just skip saving.
     }
 }
 
 function restoreScroll() {
-    let saved = null;
-    try {
-        saved = JSON.parse(sessionStorage.getItem(SCROLL_KEY) || "null");
-    } catch (error) {
-        return;
-    }
+    const y = savedScrollY(location.href);
     // The results (or the home view) are in the DOM now; release the space that
     // prepareInitialScroll reserved.
     if (initialScrollPending) {
@@ -1371,28 +1532,23 @@ function restoreScroll() {
         initialScrollPending = false;
     }
     // Only restore for the same URL, so a new search starts at the top.
-    if (saved && saved.url === location.href) window.scrollTo(0, saved.y);
+    if (y !== null) window.scrollTo(0, y);
 }
 
 // True while a refresh has reserved page space to restore the scroll position
 // before the asynchronous results arrive.
 let initialScrollPending = false;
 
-// On a refresh the results are fetched a moment later, so the page is initially
-// too short to scroll down. Reserve the missing height and jump to the saved
-// position now (before the first paint), so the page does not visibly scroll
-// once the results appear.
+// On a return to a page the results are fetched a moment later, so the page is
+// initially too short to scroll down. Reserve the missing height and jump to the
+// saved position now (before the first paint), so the page does not visibly
+// scroll once the results appear.
 function prepareInitialScroll() {
-    let saved = null;
-    try {
-        saved = JSON.parse(sessionStorage.getItem(SCROLL_KEY) || "null");
-    } catch (error) {
-        return;
-    }
-    if (!saved || saved.url !== location.href || !saved.y) return;
-    document.body.style.minHeight = `${saved.y + window.innerHeight}px`;
+    const y = savedScrollY(location.href);
+    if (y === null || !y) return;
+    document.body.style.minHeight = `${y + window.innerHeight}px`;
     initialScrollPending = true;
-    window.scrollTo(0, saved.y);
+    window.scrollTo(0, y);
 }
 
 let scrollSaveTimer = 0;
@@ -1404,6 +1560,8 @@ window.addEventListener(
     },
     { passive: true },
 );
+// pagehide fires for normal navigation and for back/forward cache entries.
+window.addEventListener("pagehide", saveScroll);
 window.addEventListener("beforeunload", saveScroll);
 
 // Segment the input. Multi-word text shows clickable words; a single word is
@@ -1435,6 +1593,8 @@ async function annotate(text) {
 // when there is no query.
 function setTitle(query) {
     document.title = query ? `${query} - Yabai-Chaci` : "Yabai-Chaci";
+    // Only search pages reserve a screen for the below-the-fold timings/About.
+    document.body.classList.toggle("has-query", Boolean(query));
 }
 
 // Show or hide the home-page tagline ("search functions" description).
@@ -1449,9 +1609,9 @@ function queryFromUrl() {
     return new URLSearchParams(location.search).get("q") || "";
 }
 
-// Results per page (matches db.ALL_PAGE_SIZE) for turning ?page=N into an
+// Results per page (matches db.ALL_PAGE_SIZE = 50) for turning ?page=N into an
 // offset before the first request.
-const RESULTS_PAGE_SIZE = 100;
+const RESULTS_PAGE_SIZE = 50;
 
 // The results page from ?page=..., or 1 when it is absent/invalid.
 function pageFromUrl() {
@@ -1648,31 +1808,29 @@ quickZhuyin.addEventListener("click", () => {
     phoneticToggle.checked = true;
     phoneticToggle.dispatchEvent(new Event("change"));
 });
-// Region: only flip the setting; do not redraw or re-run the search, so the
-// visible results and their timing text stay exactly as they are.
+// Region: reuse the Taiwan switch's change handler, so the readings update
+// immediately and Taiwan-only reading matches are refreshed.
 quickChina.addEventListener("click", () => {
     if (!state.taiwan) return;
     taiwanToggle.checked = false;
-    state.taiwan = false;
-    savePrefs();
-    updateQuickToggles();
+    taiwanToggle.dispatchEvent(new Event("change"));
 });
 quickTaiwanSquare.addEventListener("click", () => {
     if (state.taiwan) return;
     taiwanToggle.checked = true;
-    state.taiwan = true;
-    savePrefs();
-    updateQuickToggles();
+    taiwanToggle.dispatchEvent(new Event("change"));
 });
 taiwanToggle.addEventListener("change", () => {
     state.taiwan = taiwanToggle.checked;
     savePrefs();
     updateQuickToggles();
-    // Re-render immediately so the reading flips without clearing the page
-    // (which is what made it flash). Then re-run the same search so Taiwan-only
-    // reading matches update too; "*" listing is independent of Taiwan.
+    // Re-render the readings, then re-run the search so Taiwan readings move
+    // entries between the main list and Fuzzy match. Keep the timing line from
+    // the last search-bar search.
     redraw();
-    if (currentQuery && currentQuery.trim() !== "*") search(currentQuery);
+    if (currentQuery && currentQuery.trim() !== "*") {
+        search(currentQuery, 0, false, false);
+    }
 });
 customDictsToggle.addEventListener("change", () => {
     state.customDicts = customDictsToggle.checked;
@@ -1955,3 +2113,24 @@ try {
 // scrolling: on a refresh that would jump a restored page back to the top.
 input.focus({ preventScroll: true });
 restoreFromUrl();
+
+// Keep the two-part title on one line: use the design size (2.5rem) while it
+// fits, otherwise scale the whole heading down to the available width.
+function fitTitle() {
+    const heading = document.querySelector("h1");
+    const link = document.getElementById("home-link");
+    const sub = heading && heading.querySelector(".site-subtitle");
+    if (!heading || !link || !sub) return;
+    // Start from the CSS size, so growing the window can restore it.
+    heading.style.fontSize = "";
+    const style = getComputedStyle(heading);
+    const gap = parseFloat(style.columnGap) || parseFloat(style.gap) || 0;
+    const available = heading.clientWidth;
+    const textWidth = link.scrollWidth + sub.scrollWidth;
+    if (textWidth + gap <= available) return;
+    const size = parseFloat(style.fontSize);
+    const scale = (available - gap - 1) / textWidth;
+    heading.style.fontSize = `${(size * scale).toFixed(2)}px`;
+}
+fitTitle();
+window.addEventListener("resize", fitTitle);

@@ -115,6 +115,13 @@ def _preferred_bonus(entry: dict) -> int:
     return 0
 
 
+def _has_explicit_tones(query: str) -> bool:
+    """True when the query spells out tones (digits or Bopomofo marks)."""
+    return any(char.isdigit() for char in query) or any(
+        0x3100 <= ord(char) <= 0x312F for char in query
+    )
+
+
 def _expand_variants(results: list[dict]) -> list[dict]:
     """Collapse results to one entry per headword.
 
@@ -189,18 +196,19 @@ def _record_search(
 @app.get("/api/search")
 def api_search(
     q: str = "",
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=50),
     taiwan: bool = False,
     offset: int = Query(0, ge=0),
     part: str = Query("all"),
 ):
-    """JSON search endpoint. `q` is the term; `limit` is clamped to 1..200.
+    """JSON search endpoint. `q` is the term; `limit` is clamped to 1..50.
 
     `taiwan` lets a pinyin search also match Taiwan (MOE) readings.
     `pinyin_match` is true when the query was an exact Chinese reading - in which
     case `results` holds only those readings, no English-definition matches.
     A "*" query lists every headword from every source, `ALL_PAGE_SIZE` per page;
-    `offset` selects the page and the response's `total` is the full count.
+    `offset` selects the page and the response's `total` is the full count. Every
+    other search is capped at 50 results.
 
     `part="primary"` returns only the fast CEDICT tier, so the page can render
     results progressively; the plain request returns the complete final list.
@@ -210,7 +218,7 @@ def api_search(
     total = None
     try:
         if not q.strip().strip("*"):
-            # "*": every headword across all sources, 100 per page.
+            # "*": every headword across all sources, 50 per page.
             heads, total = db.all_headwords(offset, db.ALL_PAGE_SIZE)
             results = db.entries_for_headwords(heads)
             fuzzy = []
@@ -224,18 +232,54 @@ def api_search(
         else:
             entries, pinyin_match = db.search(q, limit, taiwan)
             results = _expand_variants(entries)
-            # If a tonal reading matched nothing, offer a tone-insensitive "fuzzy" search.
             fuzzy = []
-            if not results:
-                variant = db.tonal_variant(q)
-                if variant:
-                    fuzzy, _ = db.search(variant, limit, taiwan)
+            variant = db.tonal_variant(q)
+            if variant and not results:
+                # If a tonal reading matched nothing, offer a tone-insensitive
+                # "fuzzy" search.
+                fuzzy, _ = db.search(variant, limit, taiwan)
+            elif variant and _has_explicit_tones(q):
+                # A tonal search that did find results still shows the
+                # tone-insensitive matches under "Fuzzy match".
+                seen = {
+                    (entry.get("traditional"), entry.get("simplified"))
+                    for entry in results
+                }
+                variant_results, _ = db.search(variant, limit, taiwan)
+                fuzzy = [
+                    entry
+                    for entry in _expand_variants(variant_results)
+                    if (entry.get("traditional"), entry.get("simplified")) not in seen
+                ]
+            elif db.has_cjk(q):
+                # Definition-only matches are hidden when the query also matched
+                # headwords; only show the headword matches.
+                literal = db.to_simplified(q.replace("*", "")).strip()
+                if literal:
+                    headword_matches = [
+                        entry
+                        for entry in results
+                        if any(
+                            literal in word
+                            for word in (
+                                entry.get("simplified", ""),
+                                entry.get("traditional", ""),
+                            )
+                            if word
+                        )
+                    ]
+                    if headword_matches:
+                        results = headword_matches
             # Offer the English search only when it would actually find something.
             english_match = False
             if pinyin_match:
                 english_match = db.has_english_match(q.strip())
     finally:
         statements = db.end_log()
+    if total is None:
+        # Normal searches never return more than the 50-result cap.
+        results = results[:limit]
+        fuzzy = fuzzy[:limit]
     _record_search(q, (time.perf_counter() - started) * 1000, len(results), statements, part)
     return {
         "query": q,

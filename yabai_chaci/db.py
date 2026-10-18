@@ -2448,7 +2448,7 @@ def _source_matches(query: str, limit: int = 20) -> list[dict]:
 
 
 # How many results a "list everything" (*) page shows.
-ALL_PAGE_SIZE = 100
+ALL_PAGE_SIZE = 50
 
 # Cache of every distinct simplified headword across all sources, sorted.
 _all_headwords_cache: list[str] | None = None

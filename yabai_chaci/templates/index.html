@@ -15,6 +15,9 @@
 </head>
 
 <body>
+    <!-- Everything above the timings/footer: at least one viewport tall, so the
+       bottom section starts below the screen and is reached by scrolling. -->
+    <main class="page-main">
     <!-- Page title / heading. -->
     <h1>
         <a id="home-link" href="/">牙白查词</a>
@@ -84,7 +87,7 @@
                         </div>
                         <span class="option-description" id="dialect-description"><span
                                 data-region="china">Mainland</span>/<span
-                                data-region="taiwan">Taiwanese</span> Dialect</span>
+                                data-region="taiwan">Taiwan</span> Readings</span>
                     </div>
                     <!-- Same dark-chip design as the tone control above. -->
                     <button type="button" id="custom-dicts-button" class="quick-toggle custom-dicts-button"
@@ -153,10 +156,14 @@
     <div id="results"></div>
     <!-- Pager for "*" (all-headwords) searches; hidden otherwise. -->
     <nav id="pagination" class="pagination" hidden></nav>
-    <!-- Footer: About page and the quick-toggle design comparison. -->
-    <footer>
-        <a href="/about">About</a> &middot; <a href="/static/quick-toggle-designs.html">Toggle designs</a>
-    </footer>
+    </main>
+    <!-- Bottom of the page: search timings just above the About footer. -->
+    <div class="page-bottom">
+        <p id="result-timing" class="result-timing"></p>
+        <footer>
+            <a href="/about">About</a>
+        </footer>
+    </div>
     <!-- Front-end script served from the /static mount (static/app.js). -->
     <script src="/static/app.js?v={{ asset_version }}"></script>
 </body>
