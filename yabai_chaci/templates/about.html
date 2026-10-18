@@ -51,7 +51,15 @@
     </ul>
 
     <h3>Mainland</h3>
-    <p class="muted">No sources yet.</p>
+    <ul class="sources-list">
+        <li id="zhwiktionary">
+            <a href="https://zh.wiktionary.org/" target="_blank" rel="noopener">中文维基词典</a>
+            {% if counts.zhwiktionary %}<span class="count">{{ "{:,}".format(counts.zhwiktionary) }} entries</span>{% endif %}
+            <span class="licence">CC BY-SA 4.0</span>
+            {% if updated.zhwiktionary %}<span class="updated">Updated {{ updated.zhwiktionary }}</span>{% endif %}
+            <div class="source-desc">Chinese-language definitions from the community-built Chinese Wiktionary.</div>
+        </li>
+    </ul>
 
     <h3>Taiwan</h3>
     <ul class="sources-list">
@@ -63,6 +71,17 @@
             {% if updated.moe %}<span class="updated">Updated {{ updated.moe }}</span>{% endif %}
             <div class="source-desc">Taiwan's Ministry of Education concise Mandarin dictionary - Taiwanese
                 pronunciations and monolingual definitions written in Chinese.</div>
+        </li>
+    </ul>
+
+    <h3>Japanese</h3>
+    <ul class="sources-list">
+        <li id="jpwiktionary">
+            <a href="https://ja.wiktionary.org/" target="_blank" rel="noopener">日本語</a>
+            {% if counts.jpwiktionary %}<span class="count">{{ "{:,}".format(counts.jpwiktionary) }} entries</span>{% endif %}
+            <span class="licence">CC BY-SA 4.0</span>
+            {% if updated.jpwiktionary %}<span class="updated">Updated {{ updated.jpwiktionary }}</span>{% endif %}
+            <div class="source-desc">Chinese headwords with Japanese-language definitions from Japanese Wiktionary.</div>
         </li>
     </ul>
 

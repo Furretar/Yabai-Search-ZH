@@ -110,7 +110,11 @@ button {
     color: var(--muted);
     border-color: var(--border);
     cursor: pointer;
-    transition: color 0.15s ease, border-color 0.15s ease;
+    transition:
+        color .15s ease,
+        border-color .15s ease,
+        font-size 180ms ease,
+        padding 180ms ease;
 }
 
 .search-button:hover {
@@ -128,6 +132,7 @@ button {
     line-height: 1;
     color: var(--muted);
     cursor: pointer;
+    transition: font-size 180ms ease;
 }
 
 .clear-button:hover {
@@ -153,26 +158,30 @@ button {
     border-color: var(--accent);
 }
 
-/* Slim pull-down handle at the top of the screen. It appears once the main
-   search panel is scrolled out of view; clicking it pulls the whole panel down
-   as a fixed, fully opaque overlay. */
+/* Pull handle. It hangs from the bottom of the search panel in the middle,
+   follows the panel while scrolling, and sticks to the top center once the
+   panel scrolls out of view. */
 .pull-arrow {
     position: fixed;
     top: 0;
-    left: .75rem;
+    left: 50%;
+    transform: translateX(-50%);
     width: 3.5rem;
-    height: 1.6rem;
+    height: 1.4rem;
     padding: 0;
-    border: 1px solid var(--border);
+    border: 1px solid var(--panel-border);
     border-top: none;
     border-radius: 0 0 .5rem .5rem;
-    background: var(--bg); /* fully opaque */
+    /* Match the search panel, so the tab reads as part of it when attached. */
+    background: #121016;
     color: var(--muted);
     font-size: .8rem;
     line-height: 1.3rem;
     cursor: pointer;
     z-index: 32;
-    transition: color .15s ease, border-color .15s ease;
+    transition:
+        color .15s ease,
+        border-color .15s ease;
 }
 
 .pull-arrow::before {
@@ -180,7 +189,12 @@ button {
 }
 
 .pull-arrow:hover {
+    /* Only the arrow glyph lights up; the outline keeps matching the panel. */
     color: var(--accent);
+}
+
+/* The tab's outline follows the search panel's focus highlight. */
+body:has(.search-panel:focus-within) .pull-arrow {
     border-color: var(--accent);
 }
 
@@ -192,20 +206,144 @@ button {
     display: none;
 }
 
-/* The expanded search panel. Sticky, not fixed: it stays in its normal place at
-   the top of the page, then follows the viewport once scrolled past it. */
+/* While pulled, the panel is fixed to the top of the viewport. Its wrapper
+   (.search-panel-slot) keeps the panel's normal space in the page, so content
+   below never shifts or scrolls when the panel grows. app.js sets that height
+   and the panel's left/width to match the body column. */
 .search-panel.pulled {
-    position: sticky;
-    top: .8rem;
-    max-height: calc(100vh - 1.6rem);
+    position: fixed;
+    top: 0;
+    left: var(--pulled-left, 0);
+    width: var(--pulled-width, 100%);
+    box-sizing: border-box;
+    max-height: 100vh;
     overflow-y: auto;
-    /* The pull-down handle attaches at the bottom-left; a square corner there
-       lets its left border continue the panel outline instead of looking cut
-       off under the rounded corner. */
-    border-bottom-left-radius: 0;
+    /* Flush with the top of the screen: no top border or rounded top corners,
+       so the panel reads as attached to the viewport edge. */
+    border-top: 0;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
     z-index: 31;
-    background: var(--bg); /* fully opaque */
+    background: #121016; /* the panel's dark surface, fully opaque */
     box-shadow: 0 .5rem 1.5rem color-mix(in srgb, currentColor 20%, transparent);
+    /* Growing the panel must not scroll its own content either. */
+    overflow-anchor: none;
+    animation: pull-panel-in 160ms ease-out;
+}
+
+/* Sliding the panel up before returning it to the page flow. Docked panels
+   close in place; a panel stuck to the top edge slides fully away so the tab
+   can stay attached all the way back to the top. */
+.search-panel.pulled.closing {
+    animation: pull-panel-out 140ms ease-in forwards;
+    pointer-events: none;
+}
+
+.search-panel.pulled.closing:not(.docked) {
+    animation-name: pull-panel-out-full;
+    animation-duration: 200ms;
+}
+
+@keyframes pull-panel-in {
+    from {
+        transform: translateY(-100%);
+    }
+
+    to {
+        transform: translateY(0);
+    }
+}
+
+@keyframes pull-panel-out {
+    from {
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    to {
+        opacity: 0;
+        transform: translateY(-.75rem);
+    }
+}
+
+@keyframes pull-panel-out-full {
+    from {
+        transform: translateY(0);
+    }
+
+    to {
+        transform: translateY(-100%);
+    }
+}
+
+/* Docked at its normal place near the top of the page: restore the normal
+   rounded top edge and drop the floating shadow. */
+.search-panel.pulled.docked {
+    border-top: 1px solid var(--panel-border);
+    border-top-left-radius: .5rem;
+    border-top-right-radius: .5rem;
+    box-shadow: none;
+}
+
+/* Let the restored top edge take the focus highlight again. */
+.search-panel.pulled.docked:focus-within {
+    border-top-color: var(--accent);
+}
+
+@keyframes pull-panel-in {
+    from {
+        opacity: 0;
+        transform: translateY(-.75rem);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes pull-panel-out {
+    from {
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    to {
+        opacity: 0;
+        transform: translateY(-.75rem);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+    .search-panel.pulled,
+    .search-panel.pulled.closing {
+        animation: none;
+    }
+}
+
+/* In the popped-out search bar the controls keep their descriptions. Only
+   while the panel is stuck to the top edge is the row slightly tighter; when
+   docked in its normal place it matches the normal panel exactly. */
+.search-panel.pulled:not(.docked) .option-rows {
+    align-items: center;
+    padding-top: .25rem;
+}
+
+/* While the popped-out bar is stuck at the top edge, the descriptions fade
+   and collapse away. They return when it docks in its normal place. */
+.search-panel.pulled:not(.docked) .option-row {
+    gap: 0;
+}
+
+.search-panel.pulled:not(.docked) .option-description {
+    max-height: 0;
+    opacity: 0;
+    visibility: hidden;
+    transition:
+        max-height 180ms ease,
+        opacity 180ms ease,
+        visibility 0s linear 180ms;
 }
 
 /* While the language menu is open, stop the pulled panel's scroller from
@@ -217,9 +355,13 @@ button {
     z-index: 33;
 }
 
-/* The search row sits inset and flush inside the panel. */
+/* The search row sits inset and flush inside the panel. The normal (not
+   popped-out) bar and the docked pop-up both use the taller row. */
 .search-panel form {
+    box-sizing: border-box;
+    min-height: 4.0625rem;
     padding: .15rem .35rem;
+    transition: min-height 180ms ease;
 }
 
 /* Inside the panel the input is borderless - the panel is the border. */
@@ -228,9 +370,53 @@ button {
     background: transparent;
     /* Form controls do not inherit text colour by default. */
     color: inherit;
-    /* Keep the text size; trim the space above and below it. */
+    font-size: 1.25rem;
+    padding: .45rem .6rem;
+    transition: font-size 180ms ease, padding 180ms ease, border-color .3s ease;
+}
+
+/* Larger controls to match the taller search row. */
+.search-panel .lang-button,
+.search-panel .search-button {
+    font-size: 1.05rem;
+    padding-top: .45rem;
+    padding-bottom: .45rem;
+}
+
+.search-panel .clear-button {
+    font-size: 1.35rem;
+}
+
+/* While the popped-out bar is stuck to the top edge, the row returns to the
+   compact size. */
+.search-panel.pulled:not(.docked) form {
+    min-height: 2.2rem;
+}
+
+.search-panel.pulled:not(.docked) input {
     font-size: inherit;
     padding: .2rem .5rem;
+}
+
+.search-panel.pulled:not(.docked) .lang-button,
+.search-panel.pulled:not(.docked) .search-button {
+    font-size: inherit;
+    padding-top: .2rem;
+    padding-bottom: .2rem;
+}
+
+.search-panel.pulled:not(.docked) .clear-button {
+    font-size: 1.1rem;
+}
+
+/* Briefly applied when the panel opens so the row switches straight to the
+   stuck size instead of animating from the normal tall size. */
+.search-panel.no-row-transition form,
+.search-panel.no-row-transition input,
+.search-panel.no-row-transition .lang-button,
+.search-panel.no-row-transition .search-button,
+.search-panel.no-row-transition .clear-button {
+    transition: none;
 }
 
 .search-panel input::placeholder {
@@ -270,6 +456,7 @@ button {
     cursor: pointer;
     /* Keep "EN" and its caret on a single line instead of wrapping. */
     white-space: nowrap;
+    transition: color .15s ease, font-size 180ms ease, padding 180ms ease;
 }
 
 .lang-button::after {
@@ -352,7 +539,7 @@ button {
 /* The Search options row is more compact than the default disclosure. */
 .options-toggle.search-options-toggle {
     padding-top: .25rem;
-    padding-bottom: .25rem;
+    padding-bottom: .35rem;
 }
 
 /* While open, tighten the gap above the bottom Search options label. */
@@ -425,11 +612,14 @@ button {
     transition-delay: 90ms;
 }
 
-/* The four quick controls, stacked with a description on the right. */
+/* The four quick controls, side by side with each description underneath. */
 .option-rows {
     display: flex;
-    flex-direction: column;
-    gap: .4rem;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: .4rem 1rem;
     /* Space above the first control row; tighter below the last one. */
     padding: .5rem .75rem .2rem;
     opacity: 0;
@@ -442,18 +632,59 @@ button {
 }
 
 .option-row {
-    display: grid;
-    /* The control column is as wide as a two-square pair, so every description
-       starts at the same left edge. */
-    grid-template-columns: calc(6.14rem + 3px) 1fr;
+    display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: .75rem;
+    /* Keep each control at its natural width so the descriptions can sit
+       directly under it instead of forcing a shared column width. */
+    flex: 0 0 auto;
+    gap: .25rem;
+    transition: gap 180ms ease;
+}
+
+/* The Custom Dictionaries chip shares the row but has no description, so it
+   keeps its own width and lines up with the buttons. */
+.option-rows > .custom-dicts-button {
+    width: auto;
 }
 
 .option-description {
     /* One point smaller than the previous .95rem. */
     font-size: calc(.95rem - 1pt);
     color: var(--control);
+    text-align: center;
+    /* A larger max-height than the content so it can animate shut. */
+    max-height: 3rem;
+    overflow: hidden;
+    opacity: 1;
+    visibility: visible;
+    transition:
+        max-height 180ms ease,
+        opacity 180ms ease,
+        visibility 0s;
+}
+
+/* Clarifying words such as "(Bopomofo)" and "Readings" sit on their own
+   centered line under the choice above. */
+.option-description .desc-line {
+    display: block;
+}
+
+/* The description words are clickable too: each side picks that option, and
+   the tone label toggles coloring. */
+.option-description [data-script],
+.option-description [data-phonetic],
+.option-description [data-region],
+#tone-description {
+    cursor: pointer;
+    user-select: none;
+}
+
+.option-description [data-script]:hover,
+.option-description [data-phonetic]:hover,
+.option-description [data-region]:hover,
+#tone-description:hover {
+    text-decoration: underline;
 }
 
 /* The active side of a description (and the tone row's On state) is gold. */
@@ -472,11 +703,40 @@ button {
 /* The quick controls keep their previous dark-chip design. Each individual
    square is as wide as the EN/ZH/TW language button (3.07rem). */
 .quick-pair {
+    position: relative;
+    /* Keep the sliding highlight behind the square text. */
+    isolation: isolate;
     display: inline-flex;
     align-items: stretch;
+    box-sizing: border-box;
+    /* Every quick control shares the same height. */
+    height: 1.8rem;
     overflow: hidden;
+    background: #17141a;
     border: 1px solid #4a4452;
     border-radius: .35rem;
+}
+
+/* The gold highlight slides from one square to the other. Its outer edge
+   follows the pair's rounded outline; the edge between the squares stays
+   sharp. */
+.quick-pair::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 3.07rem;
+    background: var(--accent);
+    border-radius: .35rem 0 0 .35rem;
+    transform: translateX(0);
+    transition: transform 180ms ease, border-radius 180ms ease;
+    z-index: -1;
+}
+
+.quick-pair:has(.quick-square:last-child[aria-pressed="true"])::before {
+    border-radius: 0 .35rem .35rem 0;
+    transform: translateX(calc(100% + 1px));
 }
 
 .quick-pair .quick-square {
@@ -487,8 +747,11 @@ button {
     width: 3.07rem;
     padding: .2rem .35rem;
     border: none;
-    /* Off: dark gray with light text. */
-    background: #17141a;
+    /* Square by default; the outer corners are rounded below. This also resets
+       the global button radius so the inner edge stays sharp. */
+    border-radius: 0;
+    /* Transparent so the sliding highlight shows through. */
+    background: transparent;
     color: #d2ccd8;
     font: inherit;
     font-size: 1.1rem;
@@ -497,15 +760,32 @@ button {
     font-family: "Noto Sans CJK SC", system-ui, sans-serif;
     line-height: 1.1;
     cursor: pointer;
+    transition: color 180ms ease;
 }
 
 .quick-pair .quick-square + .quick-square {
     border-left: 1px solid #4a4452;
 }
 
-/* The enabled option is the gold accent square with dark bold text. */
+/* Each square is rounded only on its outer edge; the edge where the two
+   squares meet stays sharp. */
+.quick-pair .quick-square:first-child {
+    border-top-left-radius: .35rem;
+    border-bottom-left-radius: .35rem;
+}
+
+.quick-pair .quick-square:last-child {
+    border-top-right-radius: .35rem;
+    border-bottom-right-radius: .35rem;
+}
+
+/* Hovering only lights up the square's outline, never its background. */
+.quick-pair .quick-square:hover {
+    box-shadow: inset 0 0 0 1px #cfcfcf;
+}
+
+/* The enabled option keeps dark bold text over the sliding gold highlight. */
 .quick-pair .quick-square[aria-pressed="true"] {
-    background: var(--accent);
     color: #1b1b1b;
 }
 
@@ -538,8 +818,9 @@ button {
     align-items: center;
     justify-content: center;
     box-sizing: border-box;
-    /* Fills the control column, so its right edge lines up with the pairs. */
+    /* Fills its row and shares the quick-square height. */
     width: 100%;
+    height: 1.8rem;
     padding: .2rem .35rem;
     /* Off: the same outline as the rest of the buttons. */
     border: 1px solid #4a4452;
@@ -581,9 +862,9 @@ button {
     color: var(--tone4);
 }
 
-/* Off: the whole sample goes gray. */
+/* Off: the whole sample uses the same light gray as the other buttons. */
 .quick-toggle[aria-pressed="false"] .tone-phrase span {
-    color: #7f7a85;
+    color: #d2ccd8;
 }
 
 .quick-pair .quick-square:focus-visible,
@@ -1100,6 +1381,30 @@ button {
     transition: opacity 100ms ease;
 }
 
+/* Explanation hints: wide mode puts it next to the bottom Dictionaries label;
+   compact mode puts it above the language columns. Both are hidden when the
+   panel is closed, and neither is shown in the other layout. */
+.dictionaries-hint,
+.dict-compact-hint {
+    display: none;
+    font-size: .8rem;
+    color: var(--muted);
+}
+
+.dictionaries-hint {
+    margin-left: .75rem;
+}
+
+.dict-compact-hint {
+    margin: 0 0 .75rem;
+}
+
+@media (min-width: 601px) {
+    .options.open.langs-on .dictionaries-hint {
+        display: inline;
+    }
+}
+
 .options.open .dict-body {
     opacity: 1;
     transition-delay: 90ms;
@@ -1112,15 +1417,72 @@ button {
     font-size: .9rem; /* same context as .toggles, so the switches match in size */
 }
 
-/* Gray separators between the English, Mainland and Taiwan columns. */
-.dict-column + .dict-column {
+/* Gray separators between columns that share a row. The 4th group (Japanese)
+   starts the second row, so it must stay flush with the English column. */
+.dict-column:not(:nth-child(3n + 1)) {
     border-left: 1px solid var(--options-divider);
     padding-left: 1rem;
 }
 
+/* The Japanese group sits alone on the grid's second row. Pull it up against
+   the row above, but leave a few pixels of breathing room; while its list is
+   collapsed, drop the body's bottom padding so the panel ends right below its
+   header. */
+@media (min-width: 601px) {
+    .dict-column[data-lang="japanese"] {
+        margin-top: calc(-1rem + 4px);
+    }
+
+    .dict-body:has(.dict-column[data-lang="japanese"]:not(.open)) {
+        padding-bottom: 0;
+    }
+}
+
 .dict-column-head {
+    display: flex;
+    align-items: center;
+    gap: .3rem;
     font-weight: 600;
     color: var(--control);
+}
+
+/* Separator under each language title, above its dictionary list. The equal
+   top/bottom padding keeps the arrow centred on the title text. */
+.dict-column-head .dict-name {
+    display: inline-block;
+    padding-top: .2rem;
+    padding-bottom: .2rem;
+    border-bottom: 1px solid var(--options-divider);
+}
+
+/* Disclosure arrow for a language's dictionary list. */
+.dict-disclosure {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 .15rem;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.dict-caret {
+    display: inline-block;
+    width: 0;
+    height: 0;
+    /* A CSS triangle instead of a font glyph, so it sits exactly in the
+       middle of the line. */
+    border-top: .5em solid transparent;
+    border-bottom: .5em solid transparent;
+    border-left: .65em solid currentColor;
+    transition: transform .15s ease;
+}
+
+.dict-column.open .dict-caret {
+    transform: rotate(90deg);
 }
 
 .dict-items {
@@ -1132,9 +1494,56 @@ button {
     color: var(--control);
 }
 
+/* Collapse a language's dictionary list until at least one of its dictionaries
+   is on. The language header and its switch stay visible; the list animates
+   open and shut. */
+.dict-column .dict-items {
+    max-height: 0;
+    margin-top: 0;
+    overflow: hidden;
+    opacity: 0;
+    visibility: hidden;
+    transition:
+        max-height 200ms ease,
+        margin-top 200ms ease,
+        opacity 150ms ease,
+        visibility 0s linear 200ms;
+}
+
+.dict-column.open .dict-items {
+    max-height: 20rem;
+    margin-top: .5rem;
+    /* A divider under the last dictionary in the open language. */
+    padding-bottom: .5rem;
+    border-bottom: 1px solid var(--options-divider);
+    opacity: 1;
+    visibility: visible;
+    transition:
+        max-height 200ms ease,
+        margin-top 200ms ease,
+        opacity 150ms ease,
+        visibility 0s;
+}
+
 /* Enabled dictionary labels (and their group titles) turn gold. */
 .dict-column label:has(input:checked) {
     color: var(--accent);
+}
+
+/* Once a specific dictionary in a language is on, its language switch is
+   replaced by the yellow language name. Turn all of that language's
+   dictionaries off to bring the switch back. */
+.dict-column:has(.dict-toggle:checked) .dict-group {
+    display: none;
+}
+
+.dict-column:has(.dict-toggle:checked) .dict-column-head {
+    color: var(--accent);
+}
+
+.dict-column:has(.dict-toggle:checked) .dict-head-label {
+    pointer-events: none;
+    cursor: default;
 }
 
 /* On search pages, keep the content at least one screen tall so the timings
@@ -1182,6 +1591,11 @@ ul.tagline {
     /* Breathing room above and below the parsed words. */
     padding: .4rem 0 .6rem;
     margin-bottom: .5rem;
+}
+
+/* Extra room under the docked pop-up bar before the parsed words. */
+body:has(.search-panel.pulled.docked) #parsed {
+    padding-top: 1.4rem;
 }
 
 /* A little space above the first result row. */
@@ -1296,16 +1710,19 @@ ul.tagline {
     }
 
     /* The columns stack here, so the vertical separators do not apply. */
-    .dict-column + .dict-column {
+    .dict-column:not(:nth-child(3n + 1)) {
         border-left: none;
         padding-left: 0;
     }
 
-    /* Instead, underline each language title, separating it from the first
-       dictionary listed underneath. The line only spans the title word. */
-    .dict-column .dict-column-head span {
-        padding-bottom: .2rem;
-        border-bottom: 1px solid var(--options-divider);
+    /* Compact layout: show the hint above the language columns only while the
+       dictionaries panel is open and a language is switched on. */
+    .options.open.langs-on .dict-compact-hint {
+        display: block;
+    }
+
+    .options.open .dictionaries-hint {
+        display: none;
     }
 
     .options.open .options-collapse {

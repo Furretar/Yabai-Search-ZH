@@ -57,6 +57,18 @@ MOE_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "moe.sqlite"
 # scripts/import_wiktionary.py.
 WIKTIONARY_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "wiktionary.sqlite"
 
+# Path to the Chinese Wiktionary (zh.wiktionary.org) database, built by
+# scripts/import_zhwiktionary.py.
+ZHWIKTIONARY_DB_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "zhwiktionary.sqlite"
+)
+
+# Japanese definitions from the Japanese sections of the same dump, built by
+# scripts/import_jpwiktionary.py.
+JPWIKTIONARY_DB_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "jpwiktionary.sqlite"
+)
+
 # Path to the SUBTLEX-CH word frequencies (Cai & Brysbaert, 2010), built by
 # scripts/import_subtlex.py.
 SUBTLEX_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "subtlex.sqlite"
@@ -225,6 +237,12 @@ _CLASSIFIERS_SQL = (
     "SELECT word, traditional, simplified, codes, note FROM classifiers "
     "WHERE word IN ({ph})"
 )
+# Japanese definitions carry a pinyin reading per sense, so the result can show
+# a reading header (e.g. ㄞ / ㄞˋ) above each group.
+_JP_SENSES_SQL = (
+    "SELECT word, position, text, reading FROM senses WHERE word IN ({ph}) "
+    "ORDER BY position"
+)
 # Variant forms ("see X" entries) - only some sources have a `forms` table. Each
 # row maps a variant to its main form.
 _FORMS_SQL = (
@@ -316,6 +334,43 @@ _SOURCE_QUERIES = [
         "sense_sql": _WIKTIONARY_SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
         "count_sql": "SELECT COUNT(DISTINCT word) FROM wiktionary",
+    },
+    {
+        "label": "中文维基词典",
+        "anchor": "zhwiktionary",
+        "lang": "mainland",
+        "database": ZHWIKTIONARY_DB_PATH,
+        "sql": "SELECT DISTINCT word FROM headwords WHERE word IN ({ph})",
+        "like_sql": "SELECT DISTINCT word FROM headwords "
+                    "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "repeat": 1,
+        "sense_sql": _SENSES_SQL,
+        "cls_sql": _CLASSIFIERS_SQL,
+        "pinyin_sql": "SELECT pinyin FROM headwords "
+                      "WHERE word = ? AND pinyin <> '' LIMIT 1",
+        "pinyin_batch_sql": "SELECT word, pinyin FROM headwords "
+                            "WHERE word IN ({ph}) AND pinyin <> ''",
+        "count_sql": "SELECT COUNT(*) FROM headwords",
+    },
+    {
+        "label": "日本語",
+        "anchor": "jpwiktionary",
+        "lang": "japanese",
+        "database": JPWIKTIONARY_DB_PATH,
+        "sql": "SELECT DISTINCT word FROM headwords WHERE word IN ({ph})",
+        "like_sql": "SELECT DISTINCT word FROM headwords "
+                    "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "repeat": 1,
+        "sense_sql": _JP_SENSES_SQL,
+        "cls_sql": _CLASSIFIERS_SQL,
+        "pinyin_sql": "SELECT pinyin FROM headwords "
+                      "WHERE word = ? AND pinyin <> '' LIMIT 1",
+        "pinyin_batch_sql": "SELECT word, pinyin FROM headwords "
+                            "WHERE word IN ({ph}) AND pinyin <> ''",
+        "split_pinyin": True,
+        "count_sql": "SELECT COUNT(*) FROM headwords",
     },
 ]
 
@@ -957,9 +1012,12 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
         finally:
             connection.close()
 
-    def for_entry(mapping: dict, entry: dict) -> list:
-        """The value for an entry, looked up by traditional then simplified."""
-        return mapping.get(entry["traditional"]) or mapping.get(entry["simplified"]) or []
+    def for_entry(mapping: dict, entry: dict) -> tuple[str | None, list]:
+        """The matched source headword and its value, by traditional then simplified."""
+        for word in (entry["traditional"], entry["simplified"]):
+            if word in mapping:
+                return word, mapping[word]
+        return None, []
 
     # Readings for the classifier characters (furigana above each classifier).
     classifier_readings = _classifier_readings(classifier_forms)
@@ -977,8 +1035,8 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
         defs = []
         for source in _SOURCE_QUERIES:
             anchor = source["anchor"]
-            values = for_entry(senses[anchor], entry)  # list of (reading, text)
-            clss = for_entry(classifiers[anchor], entry)
+            headword, values = for_entry(senses[anchor], entry)
+            _cls_headword, clss = for_entry(classifiers[anchor], entry)
             if values or clss:
                 # Group the senses by reading (CEDICT); other sources carry none.
                 groups: list[dict] = []
@@ -1000,6 +1058,7 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                         "anchor": anchor,
                         "label": source["label"],
                         "lang": source["lang"],
+                        "headword": headword or _cls_headword or entry["simplified"],
                         "groups": groups,
                         "defs": [text for _reading, text in values[:_MAX_DEFS]],
                         "classifiers": clss[:_MAX_DEFS],
@@ -1031,11 +1090,17 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
 # Pinyin tone-marked vowels, used to recognise a reading in a definition. A
 # parenthetical English note ("colloquial") has none, so it is ignored.
 _PINYIN_TONE_MARKS = "āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜĀÁǍÀĒÉĚÈĪÍǏÌŌÓǑÒŪÚǓÙǕǗǙǛ"
+# Han characters including the supplementary ideographic planes (extension B+).
+_HAN_RANGES = (
+    "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+    "\U00020000-\U0002a6df\U0002a700-\U0002ebef"
+    "\U0002f800-\U0002fa1f\U00030000-\U000323af"
+)
 
 # A reading written after a Chinese word, e.g. "alternative form of 零次元
 # (língcìyuán)". Group 1 is the text inside the parentheses.
 _GLOSS_READING_RE = re.compile(
-    r"[\u3400-\u9fff]\s*\(([^()]*[" + _PINYIN_TONE_MARKS + r"][^()]*)\)"
+    r"[" + _HAN_RANGES + r"]\s*\(([^()]*[" + _PINYIN_TONE_MARKS + r"][^()]*)\)"
 )
 
 # What a pinyin reading may contain (letters, tone marks, spaces, apostrophes).
@@ -1098,7 +1163,7 @@ def _gloss_reading(text: str) -> str:
 # A referenced word plus a parenthetical reading, e.g. "十月 (shíyuè)". A word
 # may be written as "traditional／simplified" (e.g. 三國演義／三国演义).
 _GLOSS_WORD_RE = re.compile(
-    r"([0-9\u3400-\u9fff]+)(?:\s*[／/]\s*([0-9\u3400-\u9fff]+))?\s*\(([^()]*)\)"
+    r"([0-9" + _HAN_RANGES + r"]+)(?:\s*[／/]\s*([0-9" + _HAN_RANGES + r"]+))?\s*\(([^()]*)\)"
 )
 
 
@@ -1382,8 +1447,21 @@ def has_cjk(text: str) -> bool:
 
     Used to tell a real Chinese word apart from a latin headword (CEDICT has a
     few latin headwords, e.g. "word" whose "pinyin" is just the letters).
+    Includes the supplementary ideographic planes (extension B+).
     """
-    return any("\u3400" <= char <= "\u9fff" for char in text)
+    for char in text:
+        code = ord(char)
+        if (
+            0x3400 <= code <= 0x4DBF
+            or 0x4E00 <= code <= 0x9FFF
+            or 0xF900 <= code <= 0xFAFF
+            or 0x20000 <= code <= 0x2A6DF
+            or 0x2A700 <= code <= 0x2EBEF
+            or 0x2F800 <= code <= 0x2FA1F
+            or 0x30000 <= code <= 0x323AF
+        ):
+            return True
+    return False
 
 
 def _parse_pinyin_query(query: str) -> tuple[str, dict[int, str], set[int]] | None:
@@ -2077,6 +2155,8 @@ def _has_moe_fts() -> bool:
 
 
 _wiktionary_fts_cache: bool | None = None
+_zhwiktionary_fts_cache: bool | None = None
+_jpwiktionary_fts_cache: bool | None = None
 
 
 def _has_wiktionary_fts() -> bool:
@@ -2095,6 +2175,42 @@ def _has_wiktionary_fts() -> bool:
         finally:
             connection.close()
     return _wiktionary_fts_cache
+
+
+def _has_zhwiktionary_fts() -> bool:
+    """True when the Chinese Wiktionary database has its trigram senses index."""
+    global _zhwiktionary_fts_cache
+    if _zhwiktionary_fts_cache is None:
+        connection = _connect(ZHWIKTIONARY_DB_PATH)
+        try:
+            _zhwiktionary_fts_cache = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='senses_fts'"
+                ).fetchone()
+                is not None
+            )
+        finally:
+            connection.close()
+    return _zhwiktionary_fts_cache
+
+
+def _has_jpwiktionary_fts() -> bool:
+    """True when the Japanese Wiktionary database has its trigram senses index."""
+    global _jpwiktionary_fts_cache
+    if _jpwiktionary_fts_cache is None:
+        connection = _connect(JPWIKTIONARY_DB_PATH)
+        try:
+            _jpwiktionary_fts_cache = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='senses_fts'"
+                ).fetchone()
+                is not None
+            )
+        finally:
+            connection.close()
+    return _jpwiktionary_fts_cache
 
 
 def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
@@ -2190,6 +2306,48 @@ def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
                         "SELECT DISTINCT word FROM wiktionary "
                         "WHERE gloss IS NOT NULL "
                         "AND gloss LIKE ? ESCAPE '\\' LIMIT ?"
+                    )
+                    params = (pattern, limit)
+                for (word,) in connection.execute(sql, params):
+                    add(word)
+        finally:
+            connection.close()
+    if ZHWIKTIONARY_DB_PATH.exists():
+        connection = _connect(ZHWIKTIONARY_DB_PATH)
+        try:
+            use_fts = _has_zhwiktionary_fts()
+            for form, pattern in pairs:
+                if use_fts and len(form) >= 3 and _simple_form(form):
+                    sql = (
+                        "SELECT DISTINCT word FROM senses_fts "
+                        "WHERE text LIKE ? LIMIT ?"
+                    )
+                    params = (f"%{form}%", limit)
+                else:
+                    sql = (
+                        "SELECT DISTINCT word FROM senses "
+                        "WHERE text LIKE ? ESCAPE '\\' LIMIT ?"
+                    )
+                    params = (pattern, limit)
+                for (word,) in connection.execute(sql, params):
+                    add(word)
+        finally:
+            connection.close()
+    if JPWIKTIONARY_DB_PATH.exists():
+        connection = _connect(JPWIKTIONARY_DB_PATH)
+        try:
+            use_fts = _has_jpwiktionary_fts()
+            for form, pattern in pairs:
+                if use_fts and len(form) >= 3 and _simple_form(form):
+                    sql = (
+                        "SELECT DISTINCT word FROM senses_fts "
+                        "WHERE text LIKE ? LIMIT ?"
+                    )
+                    params = (f"%{form}%", limit)
+                else:
+                    sql = (
+                        "SELECT DISTINCT word FROM senses "
+                        "WHERE text LIKE ? ESCAPE '\\' LIMIT ?"
                     )
                     params = (pattern, limit)
                 for (word,) in connection.execute(sql, params):
@@ -2458,7 +2616,7 @@ def _all_headwords_list() -> list[str]:
     """Every distinct simplified headword across all sources, sorted and cached.
 
     Simplified forms are collected (via OpenCC) so traditional/simplified pairs
-    collapse to one entry - otherwise a page of 100 raw headwords would display
+    collapse to one entry - otherwise a page of 50 raw headwords would display
     fewer rows after the pairs are merged.
     """
     global _all_headwords_cache
@@ -2614,6 +2772,86 @@ def source_entries(word: str) -> list[dict]:
     return _decorate(_source_only_entries(word, limit=1, exact=True))
 
 
+def wildcard_search(
+    query: str, limit: int = 50, offset: int = 0
+) -> tuple[list[dict], int, bool]:
+    """Paged results for a "*" pattern query.
+
+    Returns (entries, total, pinyin_match). Chinese patterns match the headword;
+    latin patterns match the pinyin reading, mirroring the normal wildcard
+    search, with the same ordering but an OFFSET for pagination.
+    """
+    text = (query or "").strip()
+    if "*" not in text:
+        return [], 0, False
+    literal = to_simplified(text).replace("*", "")
+    is_chinese = has_cjk(literal)
+    connection = connect()
+    try:
+        freq = _freq_order()
+        freq_clause = (", " + ", ".join(freq)) if freq else ""
+        if is_chinese:
+            chinese = to_simplified(text)
+            pattern = _like_pattern(chinese)
+            where = "simplified LIKE ? ESCAPE '\\'"
+            count_params = (pattern,)
+            order = (
+                "(simplified = ?) DESC, "
+                "(simplified LIKE ? ESCAPE '\\') DESC"
+                f"{freq_clause}, length(simplified), id"
+            )
+            order_params = (literal, _like_pattern(f"{literal}*"))
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM entries WHERE {where}", count_params
+            ).fetchone()[0]
+            rows = connection.execute(
+                "SELECT simplified, traditional, pinyin, english, english_normalized "
+                f"FROM entries WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                (*count_params, *order_params, limit, offset),
+            ).fetchall()
+            pinyin_match = False
+        else:
+            pinyin_key = to_toneless(text)
+            if not pinyin_key:
+                return [], 0, False
+            pattern = _like_pattern(
+                "*".join(to_toneless(part) for part in text.split("*"))
+            )
+            note_pattern = _like_pattern(f"*pr. [{pinyin_key}*")
+            where = f"pinyin_toneless LIKE ? ESCAPE '\\' OR {_note_or()}"
+            count_params = (pattern, note_pattern)
+            order = (
+                "(pinyin_toneless = ?) DESC, "
+                "(english_normalized LIKE ? ESCAPE '\\') DESC"
+                f"{freq_clause}, length(simplified), id"
+            )
+            order_params = (pinyin_key, note_pattern)
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM entries WHERE {where}", count_params
+            ).fetchone()[0]
+            rows = connection.execute(
+                "SELECT simplified, traditional, pinyin, english, english_normalized "
+                f"FROM entries WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                (*count_params, *order_params, limit, offset),
+            ).fetchall()
+            pinyin_match = True
+    finally:
+        connection.close()
+
+    entries: list[dict] = []
+    seen: set[tuple] = set()
+    for row in rows:
+        entry = dict(row)
+        if not has_cjk(entry["simplified"]):
+            continue
+        key = (entry["traditional"], entry["pinyin"])
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(entry)
+    return _decorate(entries), total, pinyin_match
+
+
 def search(
     query: str, limit: int = 50, taiwan: bool = False, part: str = "all"
 ) -> tuple[list[dict], bool]:
@@ -2671,6 +2909,11 @@ def search(
             for entry in _source_definition_entries(phrase, limit=limit)
             if entry["simplified"] not in fts_keys
         ]
+        if not fts_unique and not source_rows:
+            # A quoted Chinese headword or pinyin may not occur in any
+            # definition. Fall back to the normal search so quoting does not
+            # hide a word the dictionary knows.
+            return search(phrase, limit, taiwan, part=part)
         decorated = _decorate(fts_unique + source_rows)
         if part == "primary":
             return decorated[: len(fts_unique)], False

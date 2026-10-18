@@ -32,6 +32,8 @@ const customDictsButton = document.getElementById("custom-dicts-button");
 // Dictionaries panel: group switches (English/Mainland/Taiwan) and per-dict.
 const dictGroupToggles = [...document.querySelectorAll(".dict-group")];
 const dictToggles = [...document.querySelectorAll(".dict-toggle")];
+// Anchor -> language group, from the Dictionaries panel markup.
+const anchorLang = new Map(dictToggles.map((toggle) => [toggle.dataset.anchor, groupFor(toggle)]));
 // The whole "Dictionaries" disclosure, shown only when "Custom dictionaries" is on.
 const dictPanel = document.querySelector(".options.dictionaries");
 
@@ -45,7 +47,8 @@ const langDefaults = JSON.parse(langSelect.dataset.defaults || "{}");
 // Display options. script: "simplified" | "traditional"; toneColoring: on/off;
 // phonetic: "pinyin" | "zhuyin"; taiwan: use the Taiwan reading when listed;
 // customDicts: show the Dictionaries picker; dicts: the selected dictionaries;
-// lang: the selected search language (EN / ZH / TW).
+// langs: language groups enabled without a specific dictionary (priority
+// definitions); lang: the selected search language (EN / ZH / TW / JP).
 const state = {
     script: "simplified",
     toneColoring: true,
@@ -53,6 +56,7 @@ const state = {
     taiwan: false,
     customDicts: false,
     dicts: new Set(), // selected dictionary anchors
+    langs: new Set(), // enabled language groups (priority definitions)
     lang: "EN",
 };
 
@@ -419,7 +423,7 @@ function furigana(text, pinyin, allowTones = true) {
 // 3 = numeric pinyin.
 const CROSS_REF = /([^\s|\[\]:/]+)(?:\|([^\s|\[\]:/]+))?\[([^\]]+)\]/g;
 // MOE (and other non-CEDICT) definitions write cross-references as "→word".
-const ARROW_CROSS_REF = /→\s*([\u3400-\u9fff]+)/g;
+const ARROW_CROSS_REF = /→\s*(\p{Script=Han}+)/gu;
 // A run of Chinese characters inside a definition, e.g. "alternative form of 日".
 const CJK_RUN_RE = /\p{Script=Han}+/gu;
 
@@ -783,6 +787,12 @@ function definitionsBlock(source, taiwanRefs, word, reading) {
         name.href = WIKTIONARY_PAGE + encodeURIComponent(word);
         name.target = "_blank";
         name.rel = "noopener";
+    } else if (source.anchor === "jpwiktionary") {
+        name.href =
+            "https://ja.wiktionary.org/wiki/" +
+            encodeURIComponent(source.headword || word);
+        name.target = "_blank";
+        name.rel = "noopener";
     } else {
         name.href = `/about#${encodeURIComponent(source.anchor)}`;
     }
@@ -804,6 +814,16 @@ function entryDicts(entry) {
     let enabled = entryDictState.get(key);
     if (!enabled) {
         enabled = new Set(state.dicts);
+        // A language switched on without a specific dictionary uses the
+        // priority pick within that language (one source per entry).
+        for (const lang of state.langs) {
+            const hasSelection = [...enabled].some(
+                (anchor) => anchorLang.get(anchor) === lang
+            );
+            if (hasSelection) continue;
+            const source = prioritySource(entry, lang);
+            if (source) enabled.add(source.anchor);
+        }
         entryDictState.set(key, enabled);
     }
     return enabled;
@@ -812,10 +832,10 @@ function entryDicts(entry) {
 // Source priority when "Custom dictionaries" is off: English first (CC-CEDICT
 // before Wiktionary), then Mainland, then Taiwan. Each headword shows only the
 // highest-priority source that has a definition for it.
-const LANG_PRIORITY = { english: 0, mainland: 1, taiwan: 2 };
-const SOURCE_PRIORITY = ["cedict", "wiktionary", "moe"];
+const LANG_PRIORITY = { english: 0, mainland: 1, taiwan: 2, japanese: 3 };
+const SOURCE_PRIORITY = ["cedict", "wiktionary", "moe", "zhwiktionary", "jpwiktionary"];
 // Language code -> the definition language it selects.
-const LANG_GROUP = { EN: "english", ZH: "mainland", TW: "taiwan" };
+const LANG_GROUP = { EN: "english", ZH: "mainland", TW: "taiwan", JP: "japanese" };
 
 function selectedLangGroup() {
     return LANG_GROUP[state.lang] || "english";
@@ -986,7 +1006,12 @@ function fillEntryRow(row, entry) {
     }
 
     const enabled = visibleDicts(entry);
-    const definitions = entry.definitions || [];
+    // The selected language's dictionaries always come first in the entry.
+    const langGroup = selectedLangGroup();
+    const definitions = [...(entry.definitions || [])].sort(
+        (a, b) =>
+            (b.lang === langGroup ? 1 : 0) - (a.lang === langGroup ? 1 : 0)
+    );
 
     // Source chips are toggles: the ones on come first (and are lit yellow).
     // They only appear when "Custom dictionaries" is on.
@@ -1099,10 +1124,11 @@ function hasSelectedDefs(entry) {
         if ((entry.definitions || []).some((s) => s.lang === group)) return true;
         return group === "english" && (entry.forms || []).length > 0;
     }
-    if ((entry.definitions || []).some((s) => state.dicts.has(s.anchor))) return true;
+    const enabled = entryDicts(entry);
+    if ((entry.definitions || []).some((s) => enabled.has(s.anchor))) return true;
     // A "see X" variant has no senses - only "other forms" (CC-CEDICT) - but it
     // should still show when CC-CEDICT is on.
-    return (entry.forms || []).length > 0 && state.dicts.has("cedict");
+    return (entry.forms || []).length > 0 && enabled.has("cedict");
 }
 
 function hasAnyDefs(entry) {
@@ -1375,7 +1401,7 @@ async function search(query, offset = 0, scrollTop = false, recordTiming = true)
 // is more than one page, the top pager replaces the "N RESULTS" count.
 function renderPagination(query, data) {
     const total = data.total;
-    const size = data.page_size || 100;
+    const size = data.page_size || RESULTS_PAGE_SIZE;
     const pages = total == null ? 0 : Math.max(1, Math.ceil(total / size));
     const paging = total != null && pages > 1;
 
@@ -1399,7 +1425,7 @@ function renderPagination(query, data) {
 
 // The Previous / info / Next row shared by the top and bottom pagers.
 function pagerButtons(query, data, page, pages, info) {
-    const size = data.page_size || 100;
+    const size = data.page_size || RESULTS_PAGE_SIZE;
 
     const prev = document.createElement("button");
     prev.type = "button";
@@ -1592,7 +1618,7 @@ async function annotate(text) {
 // Put the current query in the browser tab title (like Jisho), or the site name
 // when there is no query.
 function setTitle(query) {
-    document.title = query ? `${query} - Yabai-Chaci` : "Yabai-Chaci";
+    document.title = query ? `${query} - Yabai Search ZH` : "Yabai Search ZH";
     // Only search pages reserve a screen for the below-the-fold timings/About.
     document.body.classList.toggle("has-query", Boolean(query));
 }
@@ -1675,6 +1701,8 @@ function loadPrefs() {
         state.taiwan = localStorage.getItem("yabai-chaci-taiwan") === "true";
         state.customDicts = localStorage.getItem("yabai-chaci-custom-dicts") === "true";
         state.lang = localStorage.getItem("yabai-chaci-lang") || "EN";
+        const storedLangs = JSON.parse(localStorage.getItem("yabai-chaci-langs") || "[]");
+        state.langs = new Set(Array.isArray(storedLangs) ? storedLangs : []);
         const stored = JSON.parse(localStorage.getItem("yabai-chaci-dicts") || "null");
         // On a fresh start use the language's defaults (EN -> cedict only).
         state.dicts =
@@ -1705,6 +1733,7 @@ function savePrefs() {
         localStorage.setItem("yabai-chaci-taiwan", String(state.taiwan));
         localStorage.setItem("yabai-chaci-custom-dicts", String(state.customDicts));
         localStorage.setItem("yabai-chaci-dicts", JSON.stringify([...state.dicts]));
+        localStorage.setItem("yabai-chaci-langs", JSON.stringify([...state.langs]));
         localStorage.setItem("yabai-chaci-lang", state.lang);
     } catch (e) {
         // localStorage unavailable - nothing to save.
@@ -1820,6 +1849,44 @@ quickTaiwanSquare.addEventListener("click", () => {
     taiwanToggle.checked = true;
     taiwanToggle.dispatchEvent(new Event("change"));
 });
+// The description text is clickable too. Clicking a script, phonetic, or region
+// word picks that side; clicking the tone label flips tone coloring.
+if (scriptDescription) {
+    for (const word of scriptDescription.querySelectorAll("[data-script]")) {
+        word.addEventListener("click", () => {
+            const script = word.dataset.script;
+            if (state.script === script) return;
+            scriptToggle.checked = script === "traditional";
+            scriptToggle.dispatchEvent(new Event("change"));
+        });
+    }
+}
+if (toneDescription) {
+    toneDescription.addEventListener("click", () => {
+        toneToggle.checked = !toneToggle.checked;
+        toneToggle.dispatchEvent(new Event("change"));
+    });
+}
+if (phoneticDescription) {
+    for (const word of phoneticDescription.querySelectorAll("[data-phonetic]")) {
+        word.addEventListener("click", () => {
+            const phonetic = word.dataset.phonetic;
+            if (state.phonetic === phonetic) return;
+            phoneticToggle.checked = phonetic === "zhuyin";
+            phoneticToggle.dispatchEvent(new Event("change"));
+        });
+    }
+}
+if (dialectDescription) {
+    for (const word of dialectDescription.querySelectorAll("[data-region]")) {
+        word.addEventListener("click", () => {
+            const taiwan = word.dataset.region === "taiwan";
+            if (state.taiwan === taiwan) return;
+            taiwanToggle.checked = taiwan;
+            taiwanToggle.dispatchEvent(new Event("change"));
+        });
+    }
+}
 taiwanToggle.addEventListener("change", () => {
     state.taiwan = taiwanToggle.checked;
     savePrefs();
@@ -1861,28 +1928,53 @@ function groupFor(toggle) {
     return toggle.closest(".dict-column").dataset.lang;
 }
 
-// Reflect the selected dictionaries on the group switches: a column switch is
-// on as soon as *any* dictionary in that column is selected.
+// Reflect the enabled language groups and selected dictionaries on the
+// switches. A language is on if it is explicitly enabled (priority mode) or
+// if any of its dictionaries is selected.
+// The "automatically choose 1 source" hint applies only while an enabled
+// language has no specific dictionary selected (priority mode). Selecting one
+// of that language's dictionaries replaces the automatic choice.
+function hasAutoLanguage() {
+    for (const lang of state.langs) {
+        const hasSelection = [...state.dicts].some(
+            (anchor) => anchorLang.get(anchor) === lang
+        );
+        if (!hasSelection) return true;
+    }
+    return false;
+}
+
 function syncGroups() {
+    if (dictPanel) dictPanel.classList.toggle("langs-on", hasAutoLanguage());
     for (const group of dictGroupToggles) {
-        const members = dictToggles.filter((t) => groupFor(t) === group.dataset.lang);
+        const lang = group.dataset.lang;
+        const members = dictToggles.filter((t) => groupFor(t) === lang);
         const on = members.filter((t) => state.dicts.has(t.dataset.anchor)).length;
-        group.disabled = members.length === 0; // e.g. Mainland (empty for now)
-        group.checked = on > 0;
-        group.indeterminate = false;
+        const langEnabled = state.langs.has(lang);
+        group.disabled = members.length === 0;
+        group.checked = langEnabled || on > 0;
+        group.indeterminate = !langEnabled && on > 0 && on < members.length;
     }
 }
 
 for (const group of dictGroupToggles) {
     group.addEventListener("change", () => {
-        for (const toggle of dictToggles) {
-            if (groupFor(toggle) !== group.dataset.lang) continue;
-            toggle.checked = group.checked;
-            if (group.checked) state.dicts.add(toggle.dataset.anchor);
-            else state.dicts.delete(toggle.dataset.anchor);
+        const lang = group.dataset.lang;
+        if (group.checked) {
+            // Enable the language without selecting its dictionaries: the
+            // priority pick for that language is used.
+            state.langs.add(lang);
+        } else {
+            state.langs.delete(lang);
+            for (const toggle of dictToggles) {
+                if (groupFor(toggle) !== lang) continue;
+                toggle.checked = false;
+                state.dicts.delete(toggle.dataset.anchor);
+            }
         }
         group.indeterminate = false;
         entryDictState.clear();
+        syncGroups();
         savePrefs();
         redraw();
     });
@@ -1896,6 +1988,47 @@ for (const toggle of dictToggles) {
         entryDictState.clear();
         savePrefs();
         redraw();
+    });
+}
+
+// Each language header has a disclosure arrow. It controls its dictionary list
+// manually; selecting or clearing dictionaries never collapses the list. The
+// open languages are remembered across reloads.
+const DICT_OPEN_KEY = "yabai-chaci-dict-open";
+
+function readOpenDictLangs() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(DICT_OPEN_KEY) || "[]");
+        return new Set(Array.isArray(saved) ? saved : []);
+    } catch (error) {
+        return new Set();
+    }
+}
+
+function saveOpenDictLangs() {
+    try {
+        const open = [...document.querySelectorAll(".dict-column.open")].map(
+            (column) => column.dataset.lang
+        );
+        localStorage.setItem(DICT_OPEN_KEY, JSON.stringify(open));
+    } catch (error) {
+        // localStorage unavailable - nothing to save.
+    }
+}
+
+const openDictLangs = readOpenDictLangs();
+for (const column of document.querySelectorAll(".dict-column")) {
+    const button = column.querySelector(".dict-disclosure");
+    if (!button) continue;
+    if (openDictLangs.has(column.dataset.lang)) {
+        column.classList.add("open");
+        button.setAttribute("aria-expanded", "true");
+    }
+    button.addEventListener("click", () => {
+        const open = !column.classList.contains("open");
+        column.classList.toggle("open", open);
+        button.setAttribute("aria-expanded", String(open));
+        saveOpenDictLangs();
     });
 }
 
@@ -2032,11 +2165,16 @@ document.addEventListener("copy", (event) => {
 // scrolled out of view; clicking it pulls the whole panel (options and
 // dictionaries included) down from the top, and clicking again closes it.
 const searchPanel = document.querySelector(".search-panel");
+const panelSlot = document.querySelector(".search-panel-slot");
 const pullArrow = document.getElementById("pull-arrow");
 
 // The panel's expanded state survives a refresh (sessionStorage is scoped to the
 // tab, so a fresh tab still starts with the panel in the page).
 const PULL_KEY = "yabai-chaci-pulled";
+// Pending timer that finishes the close animation.
+let closeTimer = null;
+// requestAnimationFrame id for making the pull tab follow the panel.
+let pullArrowFrame = null;
 
 function savePulled(open) {
     try {
@@ -2048,40 +2186,144 @@ function savePulled(open) {
 
 function positionPullArrow() {
     if (!searchPanel || !pullArrow) return;
-    const rect = searchPanel.getBoundingClientRect();
-    // Keep the handle's left edge on the search box's left edge, so it always
-    // lines up with the bottom-left corner it attaches to when pulled.
-    pullArrow.style.left = `${rect.left}px`;
-    pullArrow.style.top = searchPanel.classList.contains("pulled")
-        ? `${rect.bottom}px`
-        : "0";
+    if (
+        searchPanel.classList.contains("pulled") &&
+        !searchPanel.classList.contains("closing")
+    ) {
+        placePulledPanel();
+    }
+    // The tracking loop below owns the tab's visibility and position.
+}
+
+// Keep the handle on the panel's bottom edge every frame, then stick it to the
+// top center once the panel's bottom has scrolled above the viewport.
+function startPullArrowTracking() {
+    if (pullArrowFrame) return;
+
+    function track() {
+        if (!searchPanel) {
+            pullArrowFrame = null;
+            return;
+        }
+        const rect = searchPanel.getBoundingClientRect();
+        // Hidden while the bar is simply sitting on screen; shown once it is
+        // popped out or scrolled out of view.
+        pullArrow.hidden =
+            !searchPanel.classList.contains("pulled") && rect.bottom > 0;
+        // Lift by 1px so the tab's background covers the panel's bottom border.
+        pullArrow.style.top = `${Math.max(0, rect.bottom - 1)}px`;
+        pullArrowFrame = requestAnimationFrame(track);
+    }
+
+    pullArrowFrame = requestAnimationFrame(track);
 }
 
 function updatePullArrow() {
     if (!searchPanel || !pullArrow) return;
-    pullArrow.hidden =
-        !searchPanel.classList.contains("pulled") &&
-        searchPanel.getBoundingClientRect().bottom >= 0;
     positionPullArrow();
+}
+
+// Reserve the panel's normal space in the page before it becomes fixed, so the
+// content below does not jump. The panel's bottom margin normally collapses
+// with the next element's top margin; once the panel is fixed, only that next
+// margin remains, so add just the difference.
+function reservePanelSpace() {
+    if (!panelSlot) return;
+    const height = searchPanel.getBoundingClientRect().height;
+    const marginBottom = parseFloat(getComputedStyle(searchPanel).marginBottom) || 0;
+    const next = nextInFlowSibling(panelSlot);
+    const marginTop = next
+        ? parseFloat(getComputedStyle(next).marginTop) || 0
+        : 0;
+    panelSlot.style.height = `${height + Math.max(marginBottom - marginTop, 0)}px`;
+}
+
+// The next sibling that actually takes part in the page flow (the pull handle
+// is fixed, so skip it).
+function nextInFlowSibling(element) {
+    let node = element.nextElementSibling;
+    while (node) {
+        const position = getComputedStyle(node).position;
+        if (position !== "fixed" && position !== "absolute") return node;
+        node = node.nextElementSibling;
+    }
+    return null;
+}
+
+// The fixed panel keeps the same left edge and width as the body column. It
+// follows the page upward and sticks at the top only once its normal place has
+// scrolled past the viewport edge.
+function placePulledPanel() {
+    if (!panelSlot) return;
+    const rect = panelSlot.getBoundingClientRect();
+    searchPanel.style.setProperty("--pulled-left", `${rect.left}px`);
+    searchPanel.style.setProperty("--pulled-width", `${rect.width}px`);
+    const top = Math.max(0, rect.top);
+    searchPanel.style.top = `${top}px`;
+    const docked = top > 0;
+    searchPanel.classList.toggle("docked", docked);
+    // While docked in its normal place, keep the reserved space in sync with
+    // the panel's current height. When stuck at the top, leave it alone so
+    // growing the panel never moves the page.
+    if (docked) reservePanelSpace();
+}
+
+// Briefly disable the search-row transition so opening the stuck panel switches
+// straight to its compact size instead of animating down from the normal size.
+function suppressRowTransition() {
+    searchPanel.classList.add("no-row-transition");
+    // Flush the styles with transitions disabled.
+    searchPanel.getBoundingClientRect();
+    requestAnimationFrame(() => {
+        searchPanel.classList.remove("no-row-transition");
+    });
 }
 
 function setPulled(open) {
     if (!searchPanel) return;
-    if (open && !searchPanel.classList.contains("pulled")) {
-        // Sticky (see CSS): the panel keeps its place at the top of the page and
-        // follows the viewport once it would scroll out of view.
-        searchPanel.classList.add("pulled");
-        pullArrow.setAttribute("aria-expanded", "true");
-        pullArrow.hidden = false;
-        savePulled(true);
-        input.focus({ preventScroll: true });
-    } else if (!open && searchPanel.classList.contains("pulled")) {
-        searchPanel.classList.remove("pulled");
+    if (open) {
+        // If a close animation is still running, cancel it and stay open.
+        if (closeTimer) {
+            clearTimeout(closeTimer);
+            closeTimer = null;
+        }
+        searchPanel.classList.remove("closing");
+        if (!searchPanel.classList.contains("pulled")) {
+            // Keep the panel's place in the flow, then fix it to the viewport.
+            reservePanelSpace();
+            placePulledPanel();
+            suppressRowTransition();
+            searchPanel.classList.add("pulled");
+            pullArrow.setAttribute("aria-expanded", "true");
+            savePulled(true);
+            input.focus({ preventScroll: true });
+        }
+    } else if (searchPanel.classList.contains("pulled")) {
+        // Slide the panel up first, then return it to the normal page flow.
+        const closeDelay = searchPanel.classList.contains("docked") ? 150 : 210;
+        searchPanel.classList.add("closing");
         pullArrow.setAttribute("aria-expanded", "false");
         savePulled(false);
+        closeTimer = setTimeout(() => {
+            closeTimer = null;
+            searchPanel.classList.remove("closing", "pulled", "docked");
+            searchPanel.style.removeProperty("--pulled-left");
+            searchPanel.style.removeProperty("--pulled-width");
+            searchPanel.style.removeProperty("top");
+            if (panelSlot) panelSlot.style.height = "";
+            updatePullArrow();
+        }, closeDelay);
     }
     updatePullArrow();
 }
+
+// The opening animation slides the panel down; once it settles, move the pull
+// handle to the panel's real bottom edge.
+searchPanel.addEventListener("animationend", (event) => {
+    if (event.target === searchPanel && event.animationName === "pull-panel-in") {
+        positionPullArrow();
+    }
+});
 
 pullArrow.addEventListener("click", () => {
     setPulled(!searchPanel.classList.contains("pulled"));
@@ -2092,7 +2334,11 @@ if ("ResizeObserver" in window) {
     }).observe(searchPanel);
 }
 window.addEventListener("scroll", updatePullArrow, { passive: true });
-window.addEventListener("resize", updatePullArrow);
+window.addEventListener("resize", () => {
+    if (searchPanel.classList.contains("pulled")) placePulledPanel();
+    updatePullArrow();
+});
+startPullArrowTracking();
 updatePullArrow();
 
 // Re-render when the user navigates with the browser's back/forward buttons.

@@ -25,6 +25,16 @@ You can use * in searches as a wildcard, it mixes with tone pinyin queries too. 
 
 ### Dictionaries and Sources
 
+#### Mainland (Chinese Wiktionary)
+Chinese Wiktionary ([zh.wiktionary.org](https://zh.wiktionary.org/)) provides
+Chinese-language definitions for Mandarin headwords. Its data is licensed
+CC BY-SA 4.0.
+
+#### Japanese
+Japanese Wiktionary (`ja.wiktionary.org`) gives Chinese headwords Japanese-language
+definitions under `=={{L|zh}}==`. They are imported as a separate dictionary
+source (CC BY-SA 4.0).
+
 #### Taiwan (MOE) readings
 Taiwanese Mandarin is mostly the same as Mainland Mandarin, with a handful of different pronunciations for words and characters, and slightly different word usage. 
 
@@ -97,14 +107,18 @@ tier arrives. The result count keeps both times, for example
 ### Data files and rebuild order
 
 Generated files under `data/` (all gitignored): `cedict.sqlite`, `moe.sqlite`,
-`wiktionary.sqlite`, `subtlex.sqlite`, `english_words.sqlite`, and
-`definition_grams.sqlite`, and `gram_words.sqlite`. Rebuild in this order:
+`wiktionary.sqlite`, `zhwiktionary.sqlite`, `jpwiktionary.sqlite`,
+`subtlex.sqlite`, `english_words.sqlite`, `definition_grams.sqlite`, and
+`gram_words.sqlite`.
+Rebuild in this order:
 
 ```sh
 uv run python -m scripts.import_subtlex     # first: CEDICT copies its ranks
 uv run python -m scripts.import_cedict
 uv run python -m scripts.import_moe
 uv run python -m scripts.import_wiktionary  # needs cedict.sqlite
+uv run python -m scripts.import_zhwiktionary
+uv run python -m scripts.import_jpwiktionary
 uv run python -m scripts.import_english_words
 uv run python -m scripts.import_definition_grams
 uv run python -m scripts.import_gram_words
@@ -136,9 +150,11 @@ same way, so a source is interchangeable:
 - **`meta(key, value)`** - `updated`, shown on the About page.
 
 The databases are `cedict.sqlite` (CC-CEDICT, table `entries` + FTS5
-`entries_fts`), `moe.sqlite` (MOE 國語辭典簡編本, table `moe`), and
-`wiktionary.sqlite` (kaikki.org / Wiktextract). They’re registered in
-`_SOURCE_QUERIES` (`yabai_chaci/db.py`).
+`entries_fts`), `moe.sqlite` (MOE 國語辭典簡編本, table `moe`),
+`wiktionary.sqlite` (kaikki.org / Wiktextract), `zhwiktionary.sqlite`
+(Chinese Wiktionary, `headwords`/`senses` + trigram `senses_fts`), and
+`jpwiktionary.sqlite` (Chinese entries from Japanese Wiktionary). They’re
+registered in `_SOURCE_QUERIES` (`yabai_chaci/db.py`).
 
 ### Variant forms (`forms`)
 

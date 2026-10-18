@@ -5,7 +5,7 @@
     <meta charset="utf-8">
     <!-- Make the page scale correctly on mobile devices. -->
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Yabai-Chaci</title>
+    <title>Yabai Search ZH</title>
     <!-- Browser tab icon (served from the /static mount). -->
     <link rel="icon" type="image/png" href="/static/favicon.png">
     <!-- Colour scheme variables; edit variables.css to retheme. -->
@@ -21,10 +21,13 @@
     <!-- Page title / heading. -->
     <h1>
         <a id="home-link" href="/">牙白查词</a>
-        <span class="site-subtitle">Yabai Search</span>
+        <span class="site-subtitle">Yabai Search ZH</span>
     </h1>
     <!-- Search bar and its options share one surface, so the expanded options
        look like a dropdown connected to the search bar. Wired up by app.js. -->
+    <!-- The slot holds the panel's place in the page while it is pulled out
+       and fixed to the top of the screen. -->
+    <div class="search-panel-slot">
     <div class="search-panel">
         <form id="search-form" role="search" autocomplete="off">
             <!-- Search-language dropdown (EN / ZH / TW), left of the input. -->
@@ -35,6 +38,7 @@
                     <li role="option" data-value="EN" aria-selected="true">EN - English</li>
                     <li role="option" data-value="ZH" aria-selected="false">ZH - Mandarin</li>
                     <li role="option" data-value="TW" aria-selected="false">TW - Taiwan</li>
+                    <li role="option" data-value="JP" aria-selected="false">JP - Japanese</li>
                 </ul>
             </div>
             <input type="search" id="q" name="q" placeholder="Seach with English, Chinese, or Pinyin">
@@ -46,7 +50,7 @@
         <!-- Collapsed by default; the button toggles the panel (animated in CSS). -->
         <div class="options">
             <div id="search-options" class="options-collapse">
-                <!-- The four quick controls, each row with a description on the right. -->
+                <!-- The four quick controls, side by side with a description underneath. -->
                 <div class="option-rows">
                     <div class="option-row">
                         <div class="quick-pair quick-script" role="group" aria-label="Script">
@@ -76,7 +80,7 @@
                         </div>
                         <span class="option-description" id="phonetic-description"><span
                                 data-phonetic="pinyin">Pinyin</span>/<span
-                                data-phonetic="zhuyin">Zhuyin (Bopomofo)</span></span>
+                                data-phonetic="zhuyin">Zhuyin</span></span>
                     </div>
                     <div class="option-row">
                         <div class="quick-pair" role="group" aria-label="Region">
@@ -86,8 +90,9 @@
                                 title="Taiwan" aria-label="Taiwan" aria-pressed="false">🇹🇼</button>
                         </div>
                         <span class="option-description" id="dialect-description"><span
-                                data-region="china">Mainland</span>/<span
-                                data-region="taiwan">Taiwan</span> Readings</span>
+                                class="desc-line"><span data-region="china">Mainland</span>/<span
+                                    data-region="taiwan">Taiwan</span></span><span
+                                class="desc-line">Readings</span></span>
                     </div>
                     <!-- Same dark-chip design as the tone control above. -->
                     <button type="button" id="custom-dicts-button" class="quick-toggle custom-dicts-button"
@@ -102,19 +107,25 @@
             </div>
             <!-- Sits at the bottom of the panel, so it moves down when expanded. -->
             <button type="button" class="options-toggle search-options-toggle" aria-expanded="false"
-                aria-controls="search-options">Search options</button>
+                aria-controls="search-options"><span class="options-label">Search Options</span></button>
         </div>
         <!-- Dictionaries: pick which dictionaries to use, grouped by language.
            Unselected ones are used as backup (see app.js). -->
         <div class="options dictionaries">
             <div id="dictionary-options" class="options-collapse">
                 <div class="dict-body">
+                    <p class="dict-compact-hint">Toggling a language will automatically choose 1 dictionary per entry.</p>
                     <div class="dict-columns">
-                        {% for lang, name in [('english', 'English'), ('mainland', 'Mainland'), ('taiwan', 'Taiwan')] %}
+                        {% for lang, name in [('english', 'English'), ('mainland', 'Mainland'), ('taiwan', 'Taiwan'), ('japanese', 'Japanese')] %}
                         <div class="dict-column" data-lang="{{ lang }}">
-                            <label class="dict-column-head">
-                                <input type="checkbox" class="dict-group" data-lang="{{ lang }}"> <span>{{ name }}</span>
-                            </label>
+                            <div class="dict-column-head">
+                                <label class="dict-head-label">
+                                    <input type="checkbox" class="dict-group" data-lang="{{ lang }}"> <span
+                                        class="dict-name">{{ name }}</span>
+                                </label>
+                                <button type="button" class="dict-disclosure" aria-expanded="false"
+                                    aria-label="Show {{ name }} dictionaries"><span class="dict-caret"></span></button>
+                            </div>
                             <div class="dict-items">
                                 {% for d in dictionaries if d.lang == lang %}
                                 <label><input type="checkbox" class="dict-toggle" data-anchor="{{ d.anchor }}"> {{ d.label }}</label>
@@ -127,12 +138,12 @@
             </div>
             <!-- Sits at the bottom of the panel, so it moves down when expanded. -->
             <button type="button" class="options-toggle dictionaries-toggle" aria-expanded="false"
-                aria-controls="dictionary-options">Dictionaries</button>
+                aria-controls="dictionary-options">Dictionaries <span class="dictionaries-hint">- Toggling a language will automatically choose 1 dictionary per entry.</span></button>
         </div>
     </div>
-    <!-- Slim pull-down handle: appears once the main search panel is scrolled
-       out of view; clicking it pulls the whole panel (with its options and
-       dictionaries) down from the top. -->
+    </div>
+    <!-- Pull handle: hangs from the middle of the search bar, follows it while
+       scrolling, and sticks to the top center once the bar scrolls away. -->
     <button type="button" id="pull-arrow" class="pull-arrow" aria-label="Open search"
         aria-expanded="false" hidden></button>
     <!-- Centered description shown under the search bar. -->

@@ -224,6 +224,15 @@ def api_search(
             fuzzy = []
             pinyin_match = False
             english_match = False
+        elif "*" in q and not (len(q) >= 2 and q.startswith('"') and q.endswith('"')):
+            # A wildcard pattern is paged: the first (and only) response is
+            # the requested page, with its total for the pager.
+            entries, total, pinyin_match = db.wildcard_search(
+                q, db.ALL_PAGE_SIZE, offset
+            )
+            results = _expand_variants(entries)
+            fuzzy = []
+            english_match = False
         elif part == "primary":
             entries, pinyin_match = db.search(q, limit, taiwan, part="primary")
             results = _expand_variants(entries)

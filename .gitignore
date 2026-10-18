@@ -5,3 +5,4 @@ __pycache__/
 data/*.sqlite
 data/*.txt
 data/*.gz
+data/*.bz2
