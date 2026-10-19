@@ -12,7 +12,7 @@
 </head>
 
 <body>
-    <h1><a id="home-link" href="/">牙白查词</a> <span class="site-subtitle">Yabai Search</span></h1>
+    <h1><a id="home-link" href="/">牙白查词<span class="site-subtitle">Yabai Search</span></a></h1>
 
     <p>牙白查词 / Yabai Search is a powerful Chinese–English dictionary. It supports many different search functions, along
         with Simplified characters, Traditional characters, Zhuyin/Bopomofo, and Taiwanese Mandarin.</p>
@@ -24,7 +24,7 @@
         <li>dangan - Pinyin, any tone (matches 档案 单干)</li>
         <li>*字 - Wildcard, search all words that end with 字</li>
         <li>shi4shi2 - Specify tones</li>
-        <li>shi4shi - Leave tone blank, matches any tone</li>
+        <li>shi4shi - Leaving a tone blank matches any tone for that syllable</li>
     </ul>
 
     <h2 id="sources">Sources &amp; Licenses</h2>
@@ -72,6 +72,15 @@
             <div class="source-desc">Taiwan's Ministry of Education concise Mandarin dictionary - Taiwanese
                 pronunciations and monolingual definitions written in Chinese.</div>
         </li>
+        <li id="moe_revised">
+            <a href="https://language.moe.gov.tw/001/Upload/Files/site_content/M0001/respub/dict_reviseddict_download.html"
+                target="_blank" rel="noopener">《重編國語辭典修訂本》</a>
+            {% if counts.moe_revised %}<span class="count">{{ "{:,}".format(counts.moe_revised) }} entries</span>{% endif %}
+            <span class="licence">CC BY-ND 3.0 TW</span>
+            {% if updated.moe_revised %}<span class="updated">Updated {{ updated.moe_revised }}</span>{% endif %}
+            <div class="source-desc">Taiwan's Ministry of Education comprehensive Mandarin dictionary -
+                fuller definitions and additional Taiwanese readings.</div>
+        </li>
     </ul>
 
     <h3>Japanese</h3>
@@ -94,6 +103,19 @@
             {% if freq and freq.updated %}<span class="updated">Updated {{ freq.updated }}</span>{% endif %}
             <div class="source-desc">Chinese word frequencies from film and TV subtitles (Cai &amp; Brysbaert,
                 2010), used to rank results.</div>
+        </li>
+    </ul>
+
+    <h3>Vocabulary</h3>
+    <ul class="sources-list">
+        <li id="hsk">
+            <a href="https://github.com/drkameleon/complete-hsk-vocabulary" target="_blank"
+                rel="noopener">HSK Vocabulary</a>
+            {% if hsk and hsk.entries %}<span class="count">{{ "{:,}".format(hsk.entries) }} words</span>{% endif %}
+            <span class="licence">MIT</span>
+            {% if hsk and hsk.updated %}<span class="updated">Updated {{ hsk.updated }}</span>{% endif %}
+            <div class="source-desc">HSK 2.0, HSK 3.0, and 2026 syllabus vocabulary levels, shown next to
+                the frequency rank.</div>
         </li>
     </ul>
 

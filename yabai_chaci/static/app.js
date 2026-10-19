@@ -200,14 +200,14 @@ function debugSnapshot() {
     };
     const currentSearch = currentDebugSearch
         ? {
-              query: currentDebugSearch.query,
-              offset: currentDebugSearch.offset,
-              seq: currentDebugSearch.seq,
-              startedAt: currentDebugSearch.startedAt,
-              official: currentDebugSearch.official,
-              custom: currentDebugSearch.custom,
-              events: currentDebugSearch.events,
-          }
+            query: currentDebugSearch.query,
+            offset: currentDebugSearch.offset,
+            seq: currentDebugSearch.seq,
+            startedAt: currentDebugSearch.startedAt,
+            official: currentDebugSearch.official,
+            custom: currentDebugSearch.custom,
+            events: currentDebugSearch.events,
+        }
         : null;
     const info = {
         generatedAt: new Date().toISOString(),
@@ -539,22 +539,6 @@ function toZhuyin(syllable) {
     return body + ZHUYIN_TONES[toneOf(marked) - 1];
 }
 
-// One cell of the furigana grid: kind is "reading" (top row) or "char" (bottom
-// row); `column` is the CSS grid-column value. Tone coloring, when on, adds a
-// tone class so the cell can be colored.
-function gridCell(kind, content, column, tone) {
-    const cell = document.createElement("span");
-    cell.className = tone ? `${kind} tone${tone}` : kind;
-    cell.textContent = content;
-    cell.style.gridRow = kind === "reading" ? "1" : "2";
-    cell.style.gridColumn = column;
-    return cell;
-}
-
-// Build furigana: a two-row grid, one column per character, so each reading sits
-// above its character and the word is as wide as its reading. Readings come
-// first in the DOM (then all characters) so a range over a single kind is
-// contiguous - used by the double-click handler below.
 // Build the reading text for a group of syllables: one tone-colored span per
 // syllable when coloring is on, otherwise a single plain text node.
 function readingContent(readings, syllables, colored = state.toneColoring) {
@@ -662,7 +646,7 @@ function trailingTones(chars, syllables) {
     return tones;
 }
 
-function furigana(text, pinyin, allowTones = true) {
+function furigana(text, pinyin, allowTones = true, wrapPairs = false) {
     const chars = [...text];
     const syllables = pinyinSyllables(pinyin).filter(
         (syllable) => syllable && !PUNCT_TOKEN_RE.test(syllable)
@@ -675,76 +659,193 @@ function furigana(text, pinyin, allowTones = true) {
     // colours are Hanyu Pinyin tones, which do not apply to them.
     const colored = state.toneColoring && allowTones;
 
-    // Match readings to characters, ignoring punctuation. Without this a phrase
-    // like 除了他，谁也没来 (one comma, so one more character than syllable) would
-    // fall back to a single uncolored character row.
-    const spoken = chars.filter((char) => !PUNCT_CHAR_RE.test(char));
-    // Numeric headwords never use the per-character layout: a digit and a
-    // syllable do not line up (1500 = yī qiān wǔ bǎi). The fallback below keeps
-    // most digits white and colours the characters after the number.
+    // Some headwords keep a literal number in their reading: 21三体综合症
+    // has the pinyin "21 sān tǐ zōng hé zhèng". In that case the leading
+    // digits are not read, so they get empty reading cells.
     const leadingDigits = (text.match(/^\d+/) || [""])[0];
-    if (!leadingDigits && spoken.length === syllables.length) {
-        // One wrapper per character keeps its reading directly above it. The
-        // wrappers are flex items, so a long headword can wrap between
-        // characters on a narrow screen.
-        const readingCells = new Array(chars.length);
-        let index = 0;
-        chars.forEach((char, i) => {
-            if (PUNCT_CHAR_RE.test(char)) return;
-            const tone = colored ? toneOf(syllables[index]) : 0;
-            readingCells[i] = gridCell(
-                "reading",
-                readings[index],
-                String(i + 1),
-                tone
-            );
-            index += 1;
-        });
-        index = 0;
-        chars.forEach((char, i) => {
-            const column = document.createElement("span");
-            column.className = "furi-col";
-            if (readingCells[i]) column.append(readingCells[i]);
-            const punctuation = PUNCT_CHAR_RE.test(char);
-            const tone = !punctuation && colored ? toneOf(syllables[index]) : 0;
-            column.append(gridCell("char", char, String(i + 1), tone));
-            if (!punctuation) index += 1;
-            node.append(column);
-        });
-    } else {
-        // Counts differ: put the whole reading above the whole word (still colored).
-        const column = document.createElement("span");
-        column.className = "furi-col";
+    const pinyinDigits = (String(pinyin || "").trim().match(/^\d+/) || [""])[0];
+    const literalPrefix = Boolean(leadingDigits && pinyinDigits === leadingDigits);
 
+    // Map each character to its own reading when the counts line up. A literal
+    // number prefix has no reading; the characters after it start the mapping.
+    // Numeric headwords whose reading does not spell the digits one-for-one
+    // (1500 = yī qiān wǔ bǎi) use the single-cell fallback below.
+    let readingsByChar = null;
+    let syllablesByChar = null;
+    if (readings.length) {
+        const spoken = chars.filter((ch) => !PUNCT_CHAR_RE.test(ch));
+        const tailStart = literalPrefix ? leadingDigits.length : 0;
+        const tailSpoken = chars
+            .slice(tailStart)
+            .filter((ch) => !PUNCT_CHAR_RE.test(ch));
+        const canAlign = literalPrefix
+            ? tailSpoken.length === syllables.length
+            : !leadingDigits && spoken.length === syllables.length
+                ? true
+                : spoken.length === syllables.length && Boolean(numberTones(chars, syllables));
+        if (canAlign) {
+            readingsByChar = new Array(chars.length).fill(null);
+            syllablesByChar = new Array(chars.length).fill(null);
+            let index = 0;
+            chars.forEach((ch, i) => {
+                if (i < tailStart || PUNCT_CHAR_RE.test(ch)) return;
+                readingsByChar[i] = readings[index];
+                syllablesByChar[i] = syllables[index];
+                index += 1;
+            });
+        }
+    }
+
+    // A long headword wraps as a series of character/reading pairs. Each pair
+    // stays together when the line breaks, so the reading remains directly
+    // above its character instead of forming separate reading and character
+    // paragraphs.
+    if (wrapPairs && readingsByChar) {
+        node.classList.add("wrap");
+        chars.forEach((ch, i) => {
+            const pair = document.createElement("span");
+            pair.className = "furi-pair";
+
+            const readingCell = document.createElement("span");
+            readingCell.className = "reading-cell";
+            if (readingsByChar[i]) {
+                readingCell.append(
+                    readingContent(
+                        [readingsByChar[i]],
+                        [syllablesByChar[i]],
+                        colored
+                    )
+                );
+            }
+
+            const charCell = document.createElement("span");
+            charCell.className = "char-cell";
+            const glyph = document.createElement("span");
+            glyph.textContent = ch;
+            if (colored && syllablesByChar[i]) {
+                glyph.className = `tone${toneOf(syllablesByChar[i])}`;
+            }
+            charCell.append(glyph);
+
+            pair.append(readingCell, charCell);
+            node.append(pair);
+        });
+        return node;
+    }
+
+    // The reading row. When each character has a reading, one cell per
+    // character keeps the reading centered above that character. The empty
+    // cells for a number prefix or punctuation reserve the right amount of
+    // space. In the fallback the whole reading shares one centered cell.
+    if (readings.length) {
         const reading = document.createElement("span");
         reading.className = "reading";
-        reading.append(readingContent(readings, syllables, colored));
+        if (readingsByChar) {
+            chars.forEach((_ch, i) => {
+                const cell = document.createElement("span");
+                cell.className = "reading-cell";
+                if (readingsByChar[i]) {
+                    cell.append(
+                        readingContent(
+                            [readingsByChar[i]],
+                            [syllablesByChar[i]],
+                            colored
+                        )
+                    );
+                }
+                reading.append(cell);
+            });
+        } else {
+            const cell = document.createElement("span");
+            cell.className = "reading-cell";
+            cell.append(readingContent(readings, syllables, colored));
+            reading.append(cell);
+        }
+        node.append(reading);
+    }
 
-        const char = document.createElement("span");
-        char.className = "char";
-        // Numbers often have more characters than syllables (10000 = yī wàn),
-        // so give each digit the tone of the syllable that reads it.
-        let tones = colored ? numberTones(chars, syllables) : null;
-        if (!tones && colored) tones = trailingTones(chars, syllables);
+    // The character row. It is one line of inline-block cells, so native
+    // selection stays contiguous; the layout pass sets each cell to the wider
+    // of its character and reading, which spaces the characters and keeps the
+    // reading aligned.
+    const char = document.createElement("span");
+    char.className = "char";
+    if (readingsByChar) {
+        chars.forEach((ch, i) => {
+            const cell = document.createElement("span");
+            cell.className = "char-cell";
+            const glyph = document.createElement("span");
+            glyph.textContent = ch;
+            if (colored && syllablesByChar[i]) {
+                glyph.className = `tone${toneOf(syllablesByChar[i])}`;
+            }
+            cell.append(glyph);
+            char.append(cell);
+        });
+    } else {
+        const cell = document.createElement("span");
+        cell.className = "char-cell";
+        let tones = null;
+        if (colored) {
+            // Numbers often have more characters than syllables (10000 = yī
+            // wàn). A segmented row underlines each piece in its own colour.
+            tones = numberTones(chars, syllables) || trailingTones(chars, syllables);
+        }
         if (tones) {
             node.classList.add("segmented");
             chars.forEach((ch, i) => {
-                const cell = document.createElement("span");
-                cell.textContent = ch;
-                // Uncoloured pieces (digits) use the default colour, so their
-                // underline is white/black rather than the link accent.
-                cell.className = tones[i] ? `tone${tones[i]}` : "plain";
-                char.append(cell);
+                const glyph = document.createElement("span");
+                glyph.textContent = ch;
+                glyph.className = tones[i] ? `tone${tones[i]}` : "plain";
+                cell.append(glyph);
             });
         } else {
-            char.textContent = text;
+            cell.textContent = text;
         }
-
-        column.append(reading, char);
-        node.append(column);
+        char.append(cell);
     }
+    node.append(char);
     return node;
 }
+
+// Even out each reading/character pair: both cells get the width of the wider
+// one. The reading sits centered above its character and the character line
+// spreads naturally, while staying in normal inline flow for selection.
+function layoutFurigana(node) {
+    if (!node || node.dataset.furiganaLayout === "done") return;
+    const readingCells = [...node.querySelectorAll(".reading-cell")];
+    const charCells = [...node.querySelectorAll(".char-cell")];
+    if (!readingCells.length || !charCells.length) return;
+    for (const cell of [...readingCells, ...charCells]) {
+        cell.style.width = "";
+        cell.style.minWidth = "";
+    }
+    const pairs = Math.min(readingCells.length, charCells.length);
+    for (let i = 0; i < pairs; i += 1) {
+        const width = Math.max(
+            readingCells[i].getBoundingClientRect().width,
+            charCells[i].getBoundingClientRect().width
+        );
+        const rounded = `${Math.ceil(width * 100) / 100}px`;
+        readingCells[i].style.width = rounded;
+        charCells[i].style.width = rounded;
+    }
+    node.dataset.furiganaLayout = "done";
+}
+
+// New result rows, parsed words, and definition links are inserted all over
+// the page, so watch for new furigana nodes rather than calling the layout
+// pass from every render path.
+const furiganaLayoutObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+        for (const added of mutation.addedNodes) {
+            if (added.nodeType !== Node.ELEMENT_NODE) continue;
+            if (added.matches?.(".furigana")) layoutFurigana(added);
+            added.querySelectorAll?.(".furigana").forEach(layoutFurigana);
+        }
+    }
+});
+furiganaLayoutObserver.observe(document.body, { childList: true, subtree: true });
 
 // CEDICT cross-references look like "國際企業管理|国际企业管理[guo2 ji4 ...]"
 // or "个[ge4]". Group 1 = traditional (or the only form), 2 = simplified,
@@ -1157,7 +1258,22 @@ function entryDicts(entry) {
 // dictionary; compact mode keeps only the highest-ordered dictionary in each
 // language that actually has a definition for the entry.
 function initialDictSelection(entry) {
-    const selected = new Set(state.dicts);
+    let selected = new Set(state.dicts);
+    if (!state.customDicts) {
+        // In default mode the search language decides: every English source
+        // (CC-CEDICT, Wiktionary) is on, even though only CC-CEDICT is a
+        // default anchor.
+        const lang = selectedLangGroup();
+        selected = new Set();
+        for (const source of entry.definitions || []) {
+            const sourceLang =
+                source.lang || anchorLang.get(source.anchor) || "";
+            if (sourceLang === lang) selected.add(source.anchor);
+        }
+        if ((entry.forms || []).length && lang === "english") {
+            selected.add("cedict");
+        }
+    }
     if (!state.compact) return selected;
     const byLang = new Map();
     for (const source of entry.definitions || []) {
@@ -1267,6 +1383,11 @@ function idsHeadword(text, reading, images, entry) {
     return node;
 }
 
+// HSK 3.0 groups levels 7, 8 and 9 into a single "7-9" band.
+function formatHskLevel(level) {
+    return level >= 7 ? "7-9" : String(level);
+}
+
 // Build one result row for an entry.
 function entryRow(entry) {
     const row = document.createElement("div");
@@ -1280,9 +1401,14 @@ function entryRow(entry) {
 function fillEntryRow(row, entry) {
     row.replaceChildren();
     const primary = state.script === "traditional" ? entry.traditional : entry.simplified;
+    // Glyph references ("&8ff0._104_0.gif;") must count as one character for
+    // layout, so mask them before furigana() splits the headword per char.
+    // renderGlyphs() at the end swaps the placeholders back to pictures.
+    const primaryMasked = maskGlyphs(primary);
     // A 5+ character headword no longer fits the steady 10rem headword column;
     // stack its definitions underneath instead of pushing them to the right.
-    row.classList.toggle("long-headword", [...primary].length >= 5);
+    const longHeadword = [...primaryMasked].length >= 5;
+    row.classList.toggle("long-headword", longHeadword);
     const reading = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
 
     // The headword, frequency and source chips form one block, so the frequency
@@ -1295,8 +1421,34 @@ function fillEntryRow(row, entry) {
     if (entry.ids_images && entry.ids_images.length) {
         hanzi.append(idsHeadword(primary, reading, entry.ids_images, entry));
     } else {
-        hanzi.append(furigana(primary, reading, !entry.pinyin_no_tone));
+        hanzi.append(
+            furigana(
+                primaryMasked,
+                reading,
+                !entry.pinyin_no_tone,
+                longHeadword
+            )
+        );
     }
+    // Double-clicking the reading line or the character line selects only that
+    // line. A double-click elsewhere still selects the whole headword.
+    hanzi.addEventListener("dblclick", (event) => {
+        const group = hanzi.querySelector(".furigana");
+        const selection = window.getSelection();
+        if (!selection) return;
+        clearFuriganaSelection();
+        const reading = event.target.closest?.(".reading");
+        const char = event.target.closest?.(".char");
+        let target = group || hanzi;
+        if (group && reading) target = reading;
+        else if (group && char) target = char;
+        else hanzi.classList.add("word-selected");
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        event.preventDefault();
+    });
     head.append(hanzi);
     // A dialect reading (Xiang, Wu, Shanghainese) is tagged next to the word.
     if (entry.pinyin_label) {
@@ -1306,15 +1458,41 @@ function fillEntryRow(row, entry) {
         head.append(label);
     }
 
-    // SUBTLEX-CH frequency: a chip-like box under the headword, above the chips.
-    if (entry.freq) {
-        const freq = document.createElement("div");
-        freq.className = "freq";
-        const chip = document.createElement("span");
-        chip.className = "source";
-        chip.textContent = `Frequency: #${entry.freq.rank.toLocaleString()}`;
-        freq.append(chip);
-        head.append(freq);
+    // Frequency and HSK levels: chip-like boxes under the headword, above the
+    // dictionary source chips.
+    if (entry.freq || entry.hsk) {
+        const meta = document.createElement("div");
+        meta.className = "freq";
+        if (entry.freq) {
+            const chip = document.createElement("span");
+            chip.className = "source";
+            chip.textContent = `Frequency: #${entry.freq.rank.toLocaleString()}`;
+            meta.append(chip);
+        }
+        if (entry.hsk) {
+            // Prefer the current 2026 syllabus, then HSK 3.0, then HSK 2.0.
+            const level = entry.hsk.newest ?? entry.hsk.new ?? entry.hsk.old;
+            if (level) {
+                const chip = document.createElement("span");
+                chip.className = "source hsk";
+                chip.textContent = `HSK ${formatHskLevel(level)}`;
+                const details = [];
+                if (entry.hsk.newest) {
+                    details.push(
+                        `2026 syllabus: HSK ${formatHskLevel(entry.hsk.newest)}`
+                    );
+                }
+                if (entry.hsk.new) {
+                    details.push(`HSK 3.0: HSK ${formatHskLevel(entry.hsk.new)}`);
+                }
+                if (entry.hsk.old) {
+                    details.push(`HSK 2.0: HSK ${formatHskLevel(entry.hsk.old)}`);
+                }
+                chip.title = details.join(" | ");
+                meta.append(chip);
+            }
+        }
+        head.append(meta);
     }
 
     const enabled = visibleDicts(entry);
@@ -1336,11 +1514,20 @@ function fillEntryRow(row, entry) {
     });
 
     // Source chips are toggles: they are lit yellow when on, but stay in a
-    // stable order so clicking one does not make the row reshuffle.
+    // stable order so clicking one does not make the row reshuffle. A small
+    // header names the row, sitting below the frequency/HSK chips.
     if (definitions.length && state.customDicts) {
+        const label = document.createElement("div");
+        label.className = "sources-label";
+        label.textContent = "Dictionaries";
+        head.append(label);
+
         const box = document.createElement("div");
         box.className = "sources";
+        const chipAnchors = new Set();
         for (const source of definitions) {
+            if (chipAnchors.has(source.anchor)) continue;
+            chipAnchors.add(source.anchor);
             const chip = document.createElement("button");
             chip.type = "button";
             chip.className = enabled.has(source.anchor) ? "source on" : "source";
@@ -1364,15 +1551,15 @@ function fillEntryRow(row, entry) {
         const prons = extractPronunciations(entry.english_normalized);
         // With Taiwan readings already active, the separate Taiwan note is
         // redundant, so hide it.
-        if (!state.taiwan) {
-            for (const note of prons.taiwan) {
-                notes.push(detailRow("Taiwan pronunciation: ", furigana(primary, numericToMarked(note))));
+            if (!state.taiwan) {
+                for (const note of prons.taiwan) {
+                    notes.push(detailRow("Taiwan pronunciation: ", furigana(primaryMasked, numericToMarked(note))));
+                }
             }
-        }
-        for (const note of prons.others) {
-            const label = note.label ? `Also pronounced (${note.label}): ` : "Also pronounced: ";
-            notes.push(detailRow(label, furigana(primary, numericToMarked(note.reading))));
-        }
+            for (const note of prons.others) {
+                const label = note.label ? `Also pronounced (${note.label}): ` : "Also pronounced: ";
+                notes.push(detailRow(label, furigana(primaryMasked, numericToMarked(note.reading))));
+            }
         if (entry.forms && entry.forms.length) {
             const fragment = document.createDocumentFragment();
             entry.forms.forEach((form, i) => {
@@ -1434,8 +1621,182 @@ function fillEntryRow(row, entry) {
         defsBox.append(note);
     }
 
+    if (definitions.length || (entry.sources && entry.sources.length)) {
+        const actions = document.createElement("div");
+        actions.className = "entry-actions";
+        // Open the word in the same tab, using the normal search page so all of
+        // the entry's definitions and toggles stay available.
+        const details = document.createElement("a");
+        details.className = "report-link details-link";
+        details.href = `/word/${encodeURIComponent(
+            displayWord(entry) || entry.simplified || entry.traditional
+        )}`;
+        details.textContent = "Details";
+        const report = document.createElement("button");
+        report.type = "button";
+        report.className = "report-link";
+        report.textContent = "Report entry";
+        report.addEventListener("click", () => openReportDialog(entry));
+        actions.append(details, report);
+        defsBox.append(actions);
+    }
+
     row.append(head, defsBox);
+    // Swap any glyph references (raw in definitions, placeholders in the
+    // headword) for the tinted MOE pictures. See static/glyphs.js.
+    renderGlyphs(row);
 }
+
+// --- Bug report dialog --------------------------------------------------
+
+// Snapshot the display settings with a report. The reports page turns these
+// into URL parameters so clicking a reported word restores the same view.
+function currentReportSettings() {
+    return {
+        script: state.script,
+        toneColoring: state.toneColoring,
+        phonetic: state.phonetic,
+        taiwan: state.taiwan,
+        customDicts: state.customDicts,
+        compact: state.compact,
+        lang: state.lang,
+        selectedDictionaries: [...state.dicts].sort(),
+    };
+}
+
+function updateReportFields() {
+    const kind = document.getElementById("report-kind")?.value;
+    const suggestion = kind === "suggestion";
+    const wordField = document.getElementById("report-word-field");
+    const messageLabel = document.getElementById("report-message-label");
+    const message = document.getElementById("report-message");
+    const note = document.getElementById("report-note");
+    // Only entry-specific "Incorrect information" reports need the word.
+    if (wordField) wordField.hidden = kind !== "incorrect";
+    if (messageLabel) messageLabel.hidden = suggestion;
+    // Suggestions do not include the debug log.
+    if (note) note.hidden = suggestion;
+    if (message) {
+        message.placeholder = suggestion ? "Details" : "Describe the issue";
+        message.setAttribute(
+            "aria-label",
+            suggestion ? "Details" : "Describe the issue"
+        );
+    }
+}
+
+document
+    .getElementById("report-kind")
+    ?.addEventListener("change", updateReportFields);
+
+function openReportDialog(entry) {
+    const dialog = document.getElementById("report-dialog");
+    if (!dialog) return;
+    const kind = document.getElementById("report-kind");
+    const word = document.getElementById("report-word");
+    const message = document.getElementById("report-message");
+    const status = document.getElementById("report-status");
+    const submit = document.getElementById("report-submit");
+    const cancel = document.getElementById("report-cancel");
+    if (kind) kind.value = "incorrect";
+    updateReportFields();
+    if (word) word.value = displayWord(entry) || "";
+    if (message) message.value = "";
+    if (status) {
+        status.hidden = true;
+        status.textContent = "";
+        status.classList.remove("error");
+    }
+    if (submit) {
+        submit.hidden = false;
+        submit.disabled = false;
+        submit.textContent = "Send report";
+    }
+    if (cancel) cancel.textContent = "Cancel";
+    if (!dialog.open) dialog.showModal();
+    message?.focus();
+}
+
+const reportForm = document.getElementById("report-form");
+if (reportForm) {
+    reportForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const status = document.getElementById("report-status");
+        const submit = document.getElementById("report-submit");
+        const cancel = document.getElementById("report-cancel");
+        const kind = document.getElementById("report-kind")?.value || "incorrect";
+        const word = document.getElementById("report-word")?.value.trim() || "";
+        const message =
+            document.getElementById("report-message")?.value.trim() || "";
+        const payload = {
+            kind,
+            word: kind === "incorrect" ? word : "",
+            message,
+            url: location.href,
+            user_agent: navigator.userAgent,
+            log: kind === "suggestion" ? "" : debugSnapshot(),
+            settings: currentReportSettings(),
+        };
+        if (status) {
+            status.hidden = false;
+            status.classList.remove("error");
+            status.textContent = "Sending report...";
+        }
+        if (submit) submit.disabled = true;
+        try {
+            const response = await fetch("/api/report", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            if (!response.ok) {
+                throw new Error(await response.text());
+            }
+            if (status) {
+                status.classList.remove("error");
+                status.textContent =
+                    kind === "suggestion"
+                        ? "Suggestions/Requests sent. Thank you."
+                        : "Report sent. Thank you. The debug log was included.";
+            }
+            // Once the report is sent, the only action left is Close.
+            if (submit) submit.hidden = true;
+            if (cancel) {
+                cancel.textContent = "Close";
+                cancel.focus();
+            }
+        } catch (error) {
+            console.error("Report send failed:", error);
+            if (status) {
+                status.classList.add("error");
+                status.textContent =
+                    "Could not send the report. Please try again.";
+            }
+            if (submit) {
+                submit.hidden = false;
+                submit.disabled = false;
+                submit.textContent = "Send report";
+            }
+        }
+    });
+}
+
+document.getElementById("report-cancel")?.addEventListener("click", () => {
+    document.getElementById("report-dialog")?.close();
+});
+
+// Clear the custom double-click selection from every headword.
+function clearFuriganaSelection() {
+    document.querySelectorAll(".hanzi.word-selected").forEach((node) => {
+        node.classList.remove("word-selected");
+    });
+}
+
+// A primary click elsewhere clears the double-click selection. Right-click is
+// left alone so its Copy item still sees the selected row.
+document.addEventListener("pointerdown", (event) => {
+    if (event.button === 0) clearFuriganaSelection();
+});
 
 // A result is shown only when one of the selected dictionaries has a definition
 // for it; a word found only in unselected dictionaries lives in the "Matches in
@@ -1644,6 +2005,7 @@ function redraw() {
 let searchSeq = 0;
 
 async function search(query, offset = 0, scrollMode = false, recordTiming = true) {
+    releaseClearScrollGuard();
     const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}`;
     const startedAt = performance.now();
     const seq = ++searchSeq;
@@ -1660,9 +2022,9 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     const customMatchesPromise =
         !allWildcard && window.customDictionaryMatches
             ? window.customDictionaryMatches(query).catch((error) => {
-                  console.error("Custom dictionary search failed:", error);
-                  return [];
-              })
+                console.error("Custom dictionary search failed:", error);
+                return [];
+            })
             : Promise.resolve([]);
 
     // Phase 1: the fast CEDICT tier. Render it as soon as the server replies.
@@ -1738,7 +2100,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         const allHeadwordMatches = [...matches];
         const fastKeys = new Set(matches.map(customMatchKey));
         if (matches.length) {
-            await applyCustomMatches(full, matches);
+            await applyCustomMatches(full, matches, RESULTS_PAGE_SIZE);
             if (seq !== searchSeq) return 0;
             entryDictState.clear();
             currentEntries = full.results;
@@ -1758,7 +2120,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             const extra = slow.filter((match) => !fastKeys.has(customMatchKey(match)));
             if (extra.length) {
                 allHeadwordMatches.push(...extra);
-                await applyCustomMatches(full, extra);
+                await applyCustomMatches(full, extra, RESULTS_PAGE_SIZE);
                 if (seq !== searchSeq) return 0;
                 entryDictState.clear();
                 currentEntries = full.results;
@@ -1878,7 +2240,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             first.total = newTotal;
             if (customPage.matches.length) {
                 first.total = null;
-                await applyCustomMatches(first, customPage.matches);
+                await applyCustomMatches(first, customPage.matches, RESULTS_PAGE_SIZE);
                 first.total = newTotal;
                 entryDictState.clear();
                 currentEntries = first.results;
@@ -1909,7 +2271,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         : customResult.matches || [];
     const fastKeys = new Set(matches.map(customMatchKey));
     if (matches.length) {
-        await applyCustomMatches(first, matches);
+        await applyCustomMatches(first, matches, RESULTS_PAGE_SIZE);
         if (seq !== searchSeq) return 0;
         entryDictState.clear();
         currentEntries = first.results;
@@ -1928,7 +2290,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         if (seq !== searchSeq) return 0;
         const extra = slow.filter((match) => !fastKeys.has(customMatchKey(match)));
         if (extra.length) {
-            await applyCustomMatches(first, extra);
+            await applyCustomMatches(first, extra, RESULTS_PAGE_SIZE);
             if (seq !== searchSeq) return 0;
             entryDictState.clear();
             currentEntries = first.results;
@@ -1951,10 +2313,10 @@ function customMatchKey(match) {
     return `${match.dictId}|${match.term}|${match.reading}`;
 }
 
-async function applyCustomMatches(data, matches) {
+async function applyCustomMatches(data, matches, maxResults = RESULTS_PAGE_SIZE) {
     if (!window.mergeCustomMatches) return;
     try {
-        await window.mergeCustomMatches(data, matches);
+        await window.mergeCustomMatches(data, matches, maxResults);
     } catch (error) {
         console.error("Custom dictionary merge failed:", error);
     }
@@ -1999,7 +2361,10 @@ async function appendCustomChunked(
     ) {
         return { added: false, matches: [] };
     }
-    const remaining = Math.max(0, RESULTS_PAGE_SIZE - headwordMatches.length);
+    const remaining = Math.max(
+        0,
+        RESULTS_PAGE_SIZE - data.results.length
+    );
     if (!remaining) return { added: false, matches: [] };
     const skipKeys = headwordMatches.map(customMatchKey);
     const matches = await fetcher(query, skipKeys, remaining);
@@ -2012,7 +2377,7 @@ async function appendCustomChunked(
         page_size: RESULTS_PAGE_SIZE,
         offset: 0,
     };
-    await applyCustomMatches(temp, matches);
+    await applyCustomMatches(temp, matches, remaining);
     if (seq !== searchSeq || !temp.results.length) {
         return { added: false, matches };
     }
@@ -2254,6 +2619,7 @@ window.addEventListener("beforeunload", saveScroll);
 // Segment the input. Multi-word text shows clickable words; a single word is
 // looked up directly.
 async function annotate(text) {
+    releaseClearScrollGuard();
     const response = await fetch("/api/annotate", {
         method: "POST",
         cache: "no-store",
@@ -2366,13 +2732,32 @@ function restoreFromUrl() {
     }
 }
 
+// Release the temporary page height used to keep the scroll position after
+// clearing the search in the pop-out panel.
+function releaseClearScrollGuard() {
+    if (document.body.dataset.clearScrollGuard !== "true") return;
+    document.body.style.minHeight = "";
+    delete document.body.dataset.clearScrollGuard;
+}
+
 // Return to the home view: no query, no results, tagline shown, URL reset.
-function goHome() {
+// In the pop-out panel, keep the current scroll position: clearing the results
+// would otherwise make the page shorter and jump the user back to the top.
+function goHome(keepScroll = false) {
+    const scrollY = keepScroll ? window.scrollY : 0;
+    const height = keepScroll ? document.documentElement.scrollHeight : 0;
     input.value = "";
     setTitle("");
     clearResults();
     showTagline(true);
     history.pushState({}, "", location.pathname);
+    if (keepScroll) {
+        document.body.style.minHeight = `${height}px`;
+        document.body.dataset.clearScrollGuard = "true";
+        window.scrollTo(0, scrollY);
+    } else {
+        releaseClearScrollGuard();
+    }
 }
 
 // Load the display preferences from localStorage (if it's available).
@@ -2386,14 +2771,23 @@ function loadPrefs() {
         state.taiwan = localStorage.getItem("yabai-chaci-taiwan") === "true";
         state.customDicts = localStorage.getItem("yabai-chaci-custom-dicts") === "true";
         state.compact = localStorage.getItem("yabai-chaci-compact") === "true";
+        // The Compact/Detailed switch is inside the custom dictionary panel,
+        // so without custom dictionaries the app always uses compact mode.
+        if (!state.customDicts) state.compact = true;
         state.lang = localStorage.getItem("yabai-chaci-lang") || "EN";
         loadDictOrder();
         const stored = JSON.parse(localStorage.getItem("yabai-chaci-dicts") || "null");
-        // On a fresh start use the language's defaults (EN -> cedict only).
+        // Without custom dictionaries, ignore saved choices and use the
+        // language's defaults (EN -> cedict only). A custom order belongs to
+        // the custom setup, so drop it too.
         state.dicts =
-            stored === null
-                ? new Set(langDefaults[state.lang] || langDefaults.EN || ["cedict"])
+            stored === null || !state.customDicts
+                ? defaultDictsForLanguage(state.lang)
                 : new Set(stored);
+        if (!state.customDicts) {
+            dictOrder = {};
+            saveDictOrder();
+        }
     } catch (e) {
         // localStorage unavailable - keep the defaults.
     }
@@ -2423,6 +2817,81 @@ function savePrefs() {
     } catch (e) {
         // localStorage unavailable - nothing to save.
     }
+}
+
+// Apply the display settings carried by a report link (see the Reports page).
+// The URL parameters are optional; a normal search link only has q/page.
+function applySettingsFromUrl() {
+    const params = new URLSearchParams(location.search);
+    const boolParam = (name) => {
+        const value = params.get(name);
+        return value === "1" || value === "true" || value === "on";
+    };
+    let changed = false;
+    if (params.has("script")) {
+        state.script = params.get("script") === "traditional" ? "traditional" : "simplified";
+        changed = true;
+    }
+    if (params.has("tone")) {
+        state.toneColoring = boolParam("tone");
+        changed = true;
+    }
+    if (params.has("phonetic")) {
+        state.phonetic = params.get("phonetic") === "zhuyin" ? "zhuyin" : "pinyin";
+        changed = true;
+    }
+    if (params.has("taiwan")) {
+        state.taiwan = boolParam("taiwan");
+        changed = true;
+    }
+    if (params.has("custom")) {
+        state.customDicts = boolParam("custom");
+        changed = true;
+    }
+    if (params.has("compact")) {
+        state.compact = boolParam("compact");
+        changed = true;
+    }
+    if (params.has("lang")) {
+        const lang = params.get("lang");
+        if (lang) {
+            state.lang = lang;
+            changed = true;
+        }
+    }
+    if (params.has("dicts")) {
+        state.dicts = new Set(
+            (params.get("dicts") || "")
+                .split(",")
+                .map((anchor) => anchor.trim())
+                .filter(Boolean)
+        );
+        changed = true;
+    }
+    // Report links can carry dictionary choices, but they are ignored unless
+    // custom dictionaries are on.
+    if (!state.customDicts) {
+        state.dicts = defaultDictsForLanguage(state.lang);
+        state.compact = true;
+        dictOrder = {};
+        saveDictOrder();
+        entryDictState.clear();
+    }
+    if (!changed) return;
+
+    // Bring the visible controls in line with the restored state.
+    scriptToggle.checked = state.script === "traditional";
+    toneToggle.checked = state.toneColoring;
+    phoneticToggle.checked = state.phonetic === "zhuyin";
+    taiwanToggle.checked = state.taiwan;
+    customDictsToggle.checked = state.customDicts;
+    for (const input of dictToggles) input.checked = state.dicts.has(input.dataset.anchor);
+    updateQuickToggles();
+    syncGroups();
+    syncDictPanel();
+    applyLang(state.lang);
+    updateDictMode();
+    savePrefs();
 }
 
 // The quick controls mirror the display switches. Only the tone square's
@@ -2586,6 +3055,16 @@ taiwanToggle.addEventListener("change", () => {
 });
 customDictsToggle.addEventListener("change", () => {
     state.customDicts = customDictsToggle.checked;
+    // Turning custom dictionaries off returns the dictionary settings to the
+    // language defaults and forces compact mode, which shows one higher-priority
+    // source per language.
+    if (!state.customDicts) {
+        state.compact = true;
+        updateDictMode();
+        resetDictSettings();
+    } else {
+        entryDictState.clear();
+    }
     savePrefs();
     syncDictPanel();
     // Re-render so the per-entry dictionary chips appear/disappear too.
@@ -2722,16 +3201,34 @@ function setLangOpen(open) {
     langButton.setAttribute("aria-expanded", String(open));
 }
 
+// The dictionaries a search language uses by default.
+function defaultDictsForLanguage(lang) {
+    return new Set(langDefaults[lang] || langDefaults.EN || ["cedict"]);
+}
+
 // Selecting a search language switches on its default dictionaries and off all
 // the others (see yabai_chaci/default_dictionaries.py).
 function applyDictDefaults(value) {
     if (!(value in langDefaults)) return;
-    state.dicts = new Set(langDefaults[value]);
+    state.dicts = defaultDictsForLanguage(value);
     for (const toggle of dictToggles) {
         toggle.checked = state.dicts.has(toggle.dataset.anchor);
     }
     syncGroups();
     entryDictState.clear();
+}
+
+// Reset every dictionary setting: selection, per-entry toggles and the custom
+// drag order. The search language itself stays as the user chose it.
+function resetDictSettings() {
+    state.dicts = defaultDictsForLanguage(state.lang);
+    for (const toggle of dictToggles) {
+        toggle.checked = state.dicts.has(toggle.dataset.anchor);
+    }
+    entryDictState.clear();
+    dictOrder = {};
+    saveDictOrder();
+    syncGroups();
 }
 
 langButton.addEventListener("click", () => setLangOpen(langMenu.hidden));
@@ -2772,9 +3269,6 @@ function syncMobileSearchOptionsToggle(panel) {
         String(panel.classList.contains("open"))
     );
 }
-
-// On phones the two disclosures behave like an accordion.
-const narrowOptionsQuery = window.matchMedia("(max-width: 600px)");
 
 function applyOptionPanelState(panel, open, save = true) {
     panel.classList.toggle("open", open);
@@ -2845,23 +3339,23 @@ function switchOptionPanel(panel, others, searchPanel, save) {
 }
 
 function setOptionPanelOpen(panel, open, save = true) {
-    if (open && narrowOptionsQuery.matches) {
-        const others = [
-            ...document.querySelectorAll(".options.open"),
-        ].filter((other) => other !== panel);
-        const searchPanel = panel.closest(".search-panel");
-        if (searchPanel && others.length) {
-            if (save) {
-                switchOptionPanel(panel, others, searchPanel, save);
-            } else {
-                // Restoring saved state on load: do not animate.
-                applyOptionPanelState(panel, true, save);
-                for (const other of others) {
-                    applyOptionPanelState(other, false, save);
-                }
+    // The two disclosures behave like an accordion on every screen size:
+    // opening one closes the other.
+    const others = [...document.querySelectorAll(".options.open")].filter(
+        (other) => other !== panel
+    );
+    const searchPanel = panel.closest(".search-panel");
+    if (open && searchPanel && others.length) {
+        if (save) {
+            switchOptionPanel(panel, others, searchPanel, save);
+        } else {
+            // Restoring saved state on load: do not animate.
+            applyOptionPanelState(panel, true, save);
+            for (const other of others) {
+                applyOptionPanelState(other, false, save);
             }
-            return;
         }
+        return;
     }
     applyOptionPanelState(panel, open, save);
 }
@@ -2918,7 +3412,9 @@ form.addEventListener("submit", (event) => {
 // The clear (✕) button empties the box, returns to the home view, and re-focuses
 // the input - which reopens the keyboard on mobile.
 clearButton.addEventListener("click", () => {
-    goHome();
+    // Keep the page position when the search panel is popped out; removing the
+    // results would otherwise make the document shorter and scroll to the top.
+    goHome(searchPanel.classList.contains("pulled"));
     input.focus();
 });
 
@@ -2929,7 +3425,7 @@ document.getElementById("home-link").addEventListener("click", (event) => {
 });
 
 // Copy text for a selection inside one furigana group, Jisho-style: the whole
-// reading, a space, then the word (e.g. "diàn nǎo 电脑"). Selecting just the
+// reading, a newline, then the word (e.g. "diàn nǎo\n电脑"). Selecting just the
 // reading or just the word copies only that. Returns null when the selection is
 // not inside a single furigana group, so normal copying is untouched.
 function furiganaCopyText(range) {
@@ -2942,18 +3438,22 @@ function furiganaCopyText(range) {
     const group = start ? start.closest(".furigana") : null;
     if (!group || !end || end.closest(".furigana") !== group) return null;
 
-    const selected = (selector) =>
-        [...group.querySelectorAll(selector)]
+    const selected = (rowSelector, cellSelector, separator) => {
+        const row = group.querySelector(rowSelector);
+        if (!row || !range.intersectsNode(row)) return "";
+        return [...row.querySelectorAll(cellSelector)]
             .filter((node) => range.intersectsNode(node))
-            .map((node) => node.textContent);
-    const readings = selected(".reading");
-    const chars = selected(".char");
-    if (!readings.length && !chars.length) return null;
-    // The grid cells copy with newlines between them; join them into one line.
-    if (readings.length && chars.length) {
-        return `${readings.join(" ")} ${chars.join("")}`;
-    }
-    return readings.length ? readings.join(" ") : chars.join("");
+            .map((node) => node.textContent)
+            .filter(Boolean)
+            .join(separator);
+    };
+    const readings = selected(".reading", ".reading-cell", " ");
+    const chars = selected(".char", ".char-cell", "");
+    if (!readings && !chars) return null;
+    // The reading and the headword are separate lines; copy only the line(s)
+    // the selection actually touched.
+    if (readings && chars) return `${readings}\n${chars}`;
+    return readings || chars;
 }
 
 document.addEventListener("copy", (event) => {
@@ -3142,6 +3642,7 @@ function setPulled(open) {
             searchPanel.style.removeProperty("--pulled-width");
             searchPanel.style.removeProperty("top");
             updatePullArrow();
+            releaseClearScrollGuard();
             // Keep the reserved height until the search row has grown back to
             // the normal tall size. Clearing it earlier makes the page scroll.
             slotReleaseTimer = setTimeout(() => {
@@ -3387,6 +3888,28 @@ function setupDictionaryDrag(container) {
         });
     }
 
+    // Move the dragged row to where the pointer is. Running this on every
+    // dragover (not just drop) makes the list follow the pointer and lets a
+    // drop in the empty space below the last row still move the item.
+    function moveDraggedTo(event) {
+        if (!draggedDictLabel || draggedDictLabel.parentElement !== container) return;
+        const others = [
+            ...container.querySelectorAll("label:not(.dict-loading)"),
+        ].filter((other) => other !== draggedDictLabel);
+        let target = null;
+        for (const other of others) {
+            const rect = other.getBoundingClientRect();
+            if (event.clientY < rect.top + rect.height / 2) {
+                target = other;
+                break;
+            }
+        }
+        const placeholder = container.querySelector("label.dict-loading");
+        if (target) container.insertBefore(draggedDictLabel, target);
+        else if (placeholder) container.insertBefore(draggedDictLabel, placeholder);
+        else container.append(draggedDictLabel);
+    }
+
     if (container.dataset.dragReady === "true") return;
     container.dataset.dragReady = "true";
     container.addEventListener("dragstart", (event) => {
@@ -3407,21 +3930,12 @@ function setupDictionaryDrag(container) {
         if (!draggedDictLabel || draggedDictLabel.parentElement !== container) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
+        moveDraggedTo(event);
     });
     container.addEventListener("drop", (event) => {
         if (!draggedDictLabel || draggedDictLabel.parentElement !== container) return;
         event.preventDefault();
-        const target = event.target.closest("label");
-        if (target && target !== draggedDictLabel) {
-            const rect = target.getBoundingClientRect();
-            const before = event.clientY < rect.top + rect.height / 2;
-            container.insertBefore(
-                draggedDictLabel,
-                before ? target : target.nextSibling
-            );
-        } else if (!target) {
-            container.append(draggedDictLabel);
-        }
+        moveDraggedTo(event);
         const lang = container.closest(".dict-column")?.dataset.lang;
         if (lang) {
             dictOrder[lang] = [
@@ -3458,8 +3972,10 @@ window.refreshSearch = () => {
     else redraw();
 };
 
-// On first load: apply saved preferences, then restore a search from the URL.
+// On first load: apply saved preferences, then any report-link settings, then
+// restore a search from the URL.
 loadPrefs();
+applySettingsFromUrl();
 setupDictionaryOrdering();
 // Reserve space so restoring the scroll position does not visibly jump once the
 // results render.
@@ -3480,17 +3996,16 @@ restoreFromUrl();
 function fitTitle() {
     const heading = document.querySelector("h1");
     const link = document.getElementById("home-link");
-    const sub = heading && heading.querySelector(".site-subtitle");
-    if (!heading || !link || !sub) return;
+    if (!heading || !link) return;
     // Start from the CSS size, so growing the window can restore it.
     heading.style.fontSize = "";
     const style = getComputedStyle(heading);
-    const gap = parseFloat(style.columnGap) || parseFloat(style.gap) || 0;
     const available = heading.clientWidth;
-    const textWidth = link.scrollWidth + sub.scrollWidth;
-    if (textWidth + gap <= available) return;
+    // The subtitle lives inside the link, so its width is already included.
+    const textWidth = link.scrollWidth;
+    if (textWidth <= available) return;
     const size = parseFloat(style.fontSize);
-    const scale = (available - gap - 1) / textWidth;
+    const scale = (available - 1) / textWidth;
     heading.style.fontSize = `${(size * scale).toFixed(2)}px`;
 }
 fitTitle();

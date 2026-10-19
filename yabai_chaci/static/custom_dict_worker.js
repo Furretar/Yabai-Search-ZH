@@ -48,7 +48,6 @@ DROP INDEX IF EXISTS entries_term;
 CREATE TABLE IF NOT EXISTS ngrams (
     id INTEGER PRIMARY KEY,
     gram TEXT NOT NULL,
-    dict_id TEXT NOT NULL,
     entry_id INTEGER NOT NULL
 );
 `;
@@ -61,7 +60,7 @@ const SEARCH_INDEXES = [
     "CREATE UNIQUE INDEX IF NOT EXISTS entries_source ON entries(dict_id, source_key)",
 ];
 const NGRAM_INDEX =
-    "CREATE INDEX IF NOT EXISTS ngrams_idx ON ngrams(gram, dict_id, entry_id)";
+    "CREATE INDEX IF NOT EXISTS ngrams_idx ON ngrams(gram, entry_id)";
 
 function ensureSearchIndexes() {
     for (const sql of SEARCH_INDEXES) db.exec(sql);
@@ -113,14 +112,17 @@ function initDb() {
     // Migrate the old WITHOUT ROWID ngrams table to the append-friendly rowid
     // table. The ngram backfill rebuilds it from entries.
     const ngramColumns = db.selectObjects("PRAGMA table_info(ngrams)");
-    if (
-        ngramColumns.length &&
-        !ngramColumns.some((column) => column.name === "id")
-    ) {
+    const hasNgramId = ngramColumns.some(
+        (column) => column.name === "id"
+    );
+    const hasNgramDictId = ngramColumns.some(
+        (column) => column.name === "dict_id"
+    );
+    if (ngramColumns.length && (!hasNgramId || hasNgramDictId)) {
         db.exec("DROP TABLE ngrams");
         db.exec(
             "CREATE TABLE ngrams (id INTEGER PRIMARY KEY, gram TEXT NOT NULL, " +
-                "dict_id TEXT NOT NULL, entry_id INTEGER NOT NULL)"
+                "entry_id INTEGER NOT NULL)"
         );
         setMeta("ngrams_ready", "0");
         setMeta("ngram_cursor", "0");
@@ -207,15 +209,9 @@ function addRows(rows) {
                 sql: `INSERT OR IGNORE INTO entries
                         (id, source_key, dict_id, term, simplified,
                          traditional, reading, reading_toneless, definition)
-                      SELECT json_extract(value, '$[0]'),
-                             json_extract(value, '$[1]'),
-                             json_extract(value, '$[2]'),
-                             json_extract(value, '$[3]'),
-                             json_extract(value, '$[4]'),
-                             json_extract(value, '$[5]'),
-                             json_extract(value, '$[6]'),
-                             json_extract(value, '$[7]'),
-                             json_extract(value, '$[8]')
+                      SELECT value->>0, value->>1, value->>2, value->>3,
+                             value->>4, value->>5, value->>6, value->>7,
+                             value->>8
                       FROM json_each(?)`,
                 bind: [JSON.stringify(entryValues)],
             });
@@ -224,15 +220,13 @@ function addRows(rows) {
                 const entryId = row.source_key;
                 if (existing.has(Number(entryId))) continue;
                 for (const gram of rowNgrams(row)) {
-                    pairs.push([gram, row.dict_id, entryId]);
+                    pairs.push([gram, entryId]);
                 }
             }
             if (pairs.length) {
                 db.exec({
-                    sql: `INSERT INTO ngrams (gram, dict_id, entry_id)
-                          SELECT json_extract(value, '$[0]'),
-                                 json_extract(value, '$[1]'),
-                                 json_extract(value, '$[2]')
+                    sql: `INSERT INTO ngrams (gram, entry_id)
+                          SELECT value->>0, value->>1
                           FROM json_each(?)`,
                     bind: [JSON.stringify(pairs)],
                 });
@@ -245,7 +239,7 @@ function addRows(rows) {
                 "INSERT OR IGNORE INTO entries (id, source_key, dict_id, term, simplified, traditional, reading, reading_toneless, definition) VALUES (NULL,NULL,?,?,?,?,?,?,?)"
             );
             const gramStatement = db.prepare(
-                "INSERT INTO ngrams (gram, dict_id, entry_id) VALUES (?,?,?)"
+                "INSERT INTO ngrams (gram, entry_id) VALUES (?,?)"
             );
             try {
                 for (const row of withoutKeys) {
@@ -451,7 +445,7 @@ self.onmessage = async (event) => {
                 return;
             }
             const statement = db.prepare(
-                "INSERT OR IGNORE INTO ngrams (gram, dict_id, entry_id) VALUES (?,?,?)"
+                "INSERT OR IGNORE INTO ngrams (gram, entry_id) VALUES (?,?)"
             );
             try {
                 db.exec("BEGIN");

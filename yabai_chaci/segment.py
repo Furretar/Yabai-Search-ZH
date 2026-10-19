@@ -10,6 +10,7 @@ import jieba
 from yabai_chaci.db import (
     DB_PATH,
     MOE_DB_PATH,
+    MOE_REVISED_DB_PATH,
     SUBTLEX_DB_PATH,
     WIKTIONARY_DB_PATH,
     has_cjk,
@@ -55,6 +56,9 @@ def _headwords() -> set[str]:
         )
         words |= _headwords_from(
             MOE_DB_PATH, "SELECT word FROM moe WHERE length(word) > 1"
+        )
+        words |= _headwords_from(
+            MOE_REVISED_DB_PATH, "SELECT word FROM moe WHERE length(word) > 1"
         )
         words |= _headwords_from(
             WIKTIONARY_DB_PATH,

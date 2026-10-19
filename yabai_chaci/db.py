@@ -50,8 +50,15 @@ def to_simplified(text: str) -> str:
 # Path to the generated CEDICT database: <project root>/data/cedict.sqlite.
 DB_PATH = Path(__file__).resolve().parents[1] / "data" / "cedict.sqlite"
 
-# Path to the MOE dictionary (Taiwan readings), built by scripts/import_moe.py.
+# Path to the concise MOE dictionary (Taiwan readings), built by
+# scripts/import_moe.py.
 MOE_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "moe.sqlite"
+
+# Path to the comprehensive MOE dictionary (重編國語辭典修訂本), built by
+# scripts/import_moe.py --kind revised.
+MOE_REVISED_DB_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "moe_revised.sqlite"
+)
 
 # Path to the Wiktionary headword list (kaikki.org/Wiktextract), built by
 # scripts/import_wiktionary.py.
@@ -72,6 +79,9 @@ JPWIKTIONARY_DB_PATH = (
 # Path to the SUBTLEX-CH word frequencies (Cai & Brysbaert, 2010), built by
 # scripts/import_subtlex.py.
 SUBTLEX_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "subtlex.sqlite"
+
+# Path to the HSK vocabulary levels, built by scripts/import_hsk.py.
+HSK_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "hsk.sqlite"
 
 # Path to the definition word list (scripts/import_english_words.py): the whole
 # words that appear in any dictionary's definitions, used for the English-search
@@ -290,6 +300,24 @@ _SOURCE_QUERIES = [
         "count_sql": "SELECT COUNT(*) FROM moe",
     },
     {
+        "label": "重編國語辭典修訂本",
+        "anchor": "moe_revised",
+        "lang": "taiwan",
+        "database": MOE_REVISED_DB_PATH,
+        "sql": "SELECT DISTINCT word FROM moe WHERE word IN ({ph})",
+        "like_sql": "SELECT DISTINCT word FROM moe "
+                    "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        "all_sql": "SELECT DISTINCT word FROM moe WHERE word <> ''",
+        "repeat": 1,
+        "sense_sql": _SENSES_SQL,
+        "cls_sql": _CLASSIFIERS_SQL,
+        "pinyin_sql": "SELECT pinyin FROM moe WHERE word = ? AND pinyin <> '' LIMIT 1",
+        "pinyin_batch_sql": "SELECT word, pinyin FROM moe "
+                            "WHERE word IN ({ph}) AND pinyin <> ''",
+        "pinyin_rows_sql": "SELECT word, pinyin FROM moe WHERE pinyin <> ''",
+        "count_sql": "SELECT COUNT(*) FROM moe",
+    },
+    {
         "label": "Wiktionary",
         "anchor": "wiktionary",
         "lang": "english",
@@ -458,6 +486,27 @@ def frequency_source() -> dict | None:
     return {"label": "SUBTLEX-CH", "anchor": "subtlex", "updated": updated, "entries": entries}
 
 
+def hsk_source() -> dict | None:
+    """Info about the HSK vocabulary list (or None if it isn't imported)."""
+    if not HSK_DB_PATH.exists():
+        return None
+    updated = None
+    entries = None
+    try:
+        connection = _connect(HSK_DB_PATH)
+    except sqlite3.Error:
+        return None
+    try:
+        row = connection.execute("SELECT value FROM meta WHERE key = 'updated'").fetchone()
+        updated = row[0] if row else None
+        entries = connection.execute("SELECT COUNT(*) FROM hsk").fetchone()[0]
+    except sqlite3.Error:
+        pass
+    finally:
+        connection.close()
+    return {"label": "HSK Vocabulary", "anchor": "hsk", "updated": updated, "entries": entries}
+
+
 def dictionaries() -> list[dict]:
     """Every dictionary with its key, label, anchor and language group.
 
@@ -614,23 +663,35 @@ def _like_pattern(text: str) -> str:
     return escaped.replace("*", "%")
 
 
+def _moe_db_paths() -> list[Path]:
+    """The MOE databases that are present, concise first then comprehensive."""
+    return [
+        path
+        for path in (MOE_DB_PATH, MOE_REVISED_DB_PATH)
+        if path.exists()
+    ]
+
+
 def _moe_readings(words: list[str]) -> dict[str, list[str]]:
-    """Return {word: [Taiwan pinyin, ...]} for `words` from the MOE database."""
-    if not words or not MOE_DB_PATH.exists():
+    """Return {word: [Taiwan pinyin, ...]} from both MOE databases."""
+    paths = _moe_db_paths()
+    if not words or not paths:
         return {}
     placeholders = ",".join("?" * len(words))
-    connection = _connect(MOE_DB_PATH)
-    try:
-        rows = connection.execute(
-            f"SELECT DISTINCT word, pinyin FROM moe "
-            f"WHERE word IN ({placeholders}) AND pinyin <> ''",
-            words,
-        ).fetchall()
-    finally:
-        connection.close()
     by_word: dict[str, list[str]] = defaultdict(list)
-    for word, pinyin in rows:
-        by_word[word].append(pinyin)
+    for path in paths:
+        connection = _connect(path)
+        try:
+            rows = connection.execute(
+                f"SELECT DISTINCT word, pinyin FROM moe "
+                f"WHERE word IN ({placeholders}) AND pinyin <> ''",
+                words,
+            ).fetchall()
+        finally:
+            connection.close()
+        for word, pinyin in rows:
+            if pinyin not in by_word[word]:
+                by_word[word].append(pinyin)
     return by_word
 
 
@@ -671,12 +732,12 @@ def _char_taiwan(syllable: str, options: list[str]) -> str | None:
 
 
 def _moe_char_map() -> dict[str, list[str]]:
-    """Return {character: [Taiwan readings]} from MOE single-character entries."""
+    """Return {character: [Taiwan readings]} from both MOE databases."""
     global _moe_char_cache
     if _moe_char_cache is None:
         mapping: dict[str, list[str]] = defaultdict(list)
-        if MOE_DB_PATH.exists():
-            connection = _connect(MOE_DB_PATH)
+        for path in _moe_db_paths():
+            connection = _connect(path)
             try:
                 rows = connection.execute(
                     "SELECT word, pinyin FROM moe "
@@ -685,7 +746,8 @@ def _moe_char_map() -> dict[str, list[str]]:
             finally:
                 connection.close()
             for word, pinyin in rows:
-                mapping[word].append(pinyin)
+                if pinyin not in mapping[word]:
+                    mapping[word].append(pinyin)
         _moe_char_cache = mapping
     return _moe_char_cache
 
@@ -698,8 +760,8 @@ def _moe_toneless_map() -> dict[str, set[str]]:
     global _moe_toneless_cache
     if _moe_toneless_cache is None:
         mapping: dict[str, set[str]] = defaultdict(set)
-        if MOE_DB_PATH.exists():
-            connection = _connect(MOE_DB_PATH)
+        for path in _moe_db_paths():
+            connection = _connect(path)
             try:
                 rows = connection.execute(
                     "SELECT DISTINCT word, pinyin FROM moe WHERE pinyin <> ''"
@@ -723,8 +785,8 @@ def _zhuyin_map() -> dict[str, str]:
     global _zhuyin_cache
     if _zhuyin_cache is None:
         mapping: dict[str, str] = {}
-        if MOE_DB_PATH.exists():
-            connection = _connect(MOE_DB_PATH)
+        for path in _moe_db_paths():
+            connection = _connect(path)
             try:
                 rows = connection.execute(
                     "SELECT DISTINCT zhuyin, pinyin FROM moe "
@@ -896,6 +958,42 @@ def _attach_freq(entries: list[dict]) -> list[dict]:
     return entries
 
 
+def _attach_hsk(entries: list[dict]) -> list[dict]:
+    """Attach the old, 3.0, and 2026 HSK levels for each entry.
+
+    Matched by the simplified form, then the traditional form. Each value is a
+    level number (7 means HSK 7-9), or None when the word is not in that list.
+    """
+    words = sorted(
+        {entry["simplified"] for entry in entries}
+        | {entry["traditional"] for entry in entries}
+    )
+    for entry in entries:
+        entry["hsk"] = None
+    if not words or not HSK_DB_PATH.exists():
+        return entries
+    placeholders = ",".join("?" * len(words))
+    connection = _connect(HSK_DB_PATH)
+    try:
+        rows = connection.execute(
+            "SELECT simplified, traditional, old_level, new_level, newest_level "
+            f"FROM hsk WHERE simplified IN ({placeholders}) "
+            f"OR traditional IN ({placeholders})",
+            tuple(words) * 2,
+        ).fetchall()
+    finally:
+        connection.close()
+    by_word: dict[str, dict] = {}
+    for simplified, traditional, old, new, newest in rows:
+        value = {"old": old, "new": new, "newest": newest}
+        by_word.setdefault(simplified, value)
+        if traditional:
+            by_word.setdefault(traditional, value)
+    for entry in entries:
+        entry["hsk"] = by_word.get(entry["simplified"]) or by_word.get(entry["traditional"])
+    return entries
+
+
 # Cap on the number of definitions shown per source, per headword (keeps a common
 # word from dumping dozens of Wiktionary glosses).
 _MAX_DEFS = 12
@@ -993,6 +1091,26 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                         # spell out the label for the numbered definition.
                         value = value.replace("CL:", "Classifier:")
                     senses[anchor].setdefault(word, []).append((reading or "", value))
+            if anchor == "wiktionary":
+                # Wiktionary can store a gloss on a different traditional
+                # spelling of the same simplified word (e.g. 寧為 vs 寧爲).
+                # Attach those glosses under the simplified key too.
+                extra_glosses = connection.execute(
+                    "SELECT r.word, r.simplified, w.gloss FROM readings r "
+                    "JOIN wiktionary w ON w.word = r.word "
+                    "WHERE r.simplified IN ({ph}) AND w.gloss IS NOT NULL".format(
+                        ph=placeholders
+                    ),
+                    params,
+                )
+                for word, simplified, text in extra_glosses:
+                    value = (text or "").strip()
+                    if not value:
+                        continue
+                    for key in (word, simplified):
+                        bucket = senses[anchor].setdefault(key, [])
+                        if value not in {existing for _read, existing in bucket}:
+                            bucket.append(("", value))
             for word, trad, simp, codes, note in connection.execute(
                 source["cls_sql"].format(ph=placeholders), params
             ):
@@ -1333,6 +1451,7 @@ def _decorate(entries: list[dict]) -> list[dict]:
     _attach_sources(entries)
     _attach_definitions(entries)
     _attach_freq(entries)
+    _attach_hsk(entries)
     _attach_source_pinyin(entries)
     for entry in entries:
         if entry.get("pinyin"):
@@ -1467,6 +1586,16 @@ def has_cjk(text: str) -> bool:
         ):
             return True
     return False
+
+
+# A rare character the MOE dictionary keeps as a picture ("&8ff0._104_0.gif;").
+# Such a headword has no CJK codepoint, but is still a real entry to look up.
+_MOE_GLYPH_RE = re.compile(r"&[A-Za-z0-9][A-Za-z0-9._-]*\.(?:gif|png);")
+
+
+def has_cjk_or_glyph(text: str) -> bool:
+    """Like has_cjk(), but also accepts an MOE glyph picture reference."""
+    return has_cjk(text) or bool(_MOE_GLYPH_RE.search(text))
 
 
 def _parse_pinyin_query(query: str) -> tuple[str, dict[int, str], set[int]] | None:
@@ -1645,7 +1774,7 @@ def _cedict_heads() -> set[str]:
 # How the UI prioritizes sources: English (CC-CEDICT, Wiktionary) before
 # Mainland, then Taiwan. Used to order the secondary-source results.
 _LANG_ORDER = {"english": 0, "mainland": 1, "taiwan": 2}
-_ANCHOR_ORDER = ["cedict", "wiktionary", "moe"]
+_ANCHOR_ORDER = ["cedict", "wiktionary", "moe", "moe_revised"]
 
 
 def _source_rank(source: dict) -> tuple[int, int]:
@@ -2230,6 +2359,27 @@ def _has_moe_fts() -> bool:
     return _moe_fts_cache
 
 
+_moe_revised_fts_cache: bool | None = None
+
+
+def _has_moe_revised_fts() -> bool:
+    """True when the comprehensive MOE database has the senses_fts table."""
+    global _moe_revised_fts_cache
+    if _moe_revised_fts_cache is None:
+        connection = _connect(MOE_REVISED_DB_PATH)
+        try:
+            _moe_revised_fts_cache = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='senses_fts'"
+                ).fetchone()
+                is not None
+            )
+        finally:
+            connection.close()
+    return _moe_revised_fts_cache
+
+
 _wiktionary_fts_cache: bool | None = None
 _zhwiktionary_fts_cache: bool | None = None
 _jpwiktionary_fts_cache: bool | None = None
@@ -2322,12 +2472,19 @@ def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
             }
         )
 
-    if MOE_DB_PATH.exists():
-        connection = _connect(MOE_DB_PATH)
+    for path, has_fts, use_gram_index in (
+        (MOE_DB_PATH, _has_moe_fts, True),
+        (MOE_REVISED_DB_PATH, _has_moe_revised_fts, False),
+    ):
+        if not path.exists():
+            continue
+        connection = _connect(path)
         try:
-            use_fts = _has_moe_fts()
+            use_fts = has_fts()
             for form, pattern in pairs:
-                candidates = _gram_candidates("moe_sense", form)
+                # The gram index is built from the concise dictionary only, so
+                # the comprehensive dictionary must use the normal scan.
+                candidates = _gram_candidates("moe_sense", form) if use_gram_index else None
                 if candidates is not None:
                     if not candidates:
                         continue
@@ -2608,7 +2765,7 @@ def _entries_with_forms(limit: int = 50) -> list[dict]:
 
 def _entries_with_classifiers(limit: int = 50) -> list[dict]:
     words: list[str] = []
-    for path in (DB_PATH, MOE_DB_PATH, WIKTIONARY_DB_PATH):
+    for path in (DB_PATH, MOE_DB_PATH, MOE_REVISED_DB_PATH, WIKTIONARY_DB_PATH):
         if not path.exists():
             continue
         connection = _connect(path)
@@ -2662,7 +2819,13 @@ def _source_matches(query: str, limit: int = 20) -> list[dict]:
     text = (query or "").strip()
     if not text:
         return []
-    entries = list(_source_only_entries(query, limit=limit))
+    # An exact source headword counts even without a gloss: Wiktionary stores
+    # some words only as readings (e.g. a phrase whose simplified spelling has
+    # no gloss row), so the normal gloss-filtered lookup misses them.
+    entries = list(
+        _source_only_entries(query, limit=limit, exact=True, allow_no_gloss=True)
+    )
+    entries.extend(_source_only_entries(query, limit=limit))
     if has_cjk(text):
         # Searching a Chinese phrase also matches source definitions (e.g. the
         # IDS characters named inside a Wiktionary gloss).
@@ -2679,6 +2842,62 @@ def _source_matches(query: str, limit: int = 20) -> list[dict]:
         seen.add(key)
         unique.append(entry)
     return unique
+
+
+def dialect_entries(query: str, limit: int = 200) -> list[dict]:
+    """Words whose Wiktionary dialect reading label or reading matches `query`.
+
+    Wiktionary stores variety labels such as "Chengdu Sichuanese" on readings,
+    not on the headword or gloss. Searching that variety name (or its pinyin)
+    should still find words like 姜包儿 even when the label is their only
+    searchable mention.
+    """
+    text = (query or "").strip()
+    if not text or "*" in text or has_cjk(text) or len(text) < 3:
+        return []
+    if not WIKTIONARY_DB_PATH.exists():
+        return []
+    label_pattern = _like_pattern(f"*{text}*")
+    letters = to_toneless(text)
+
+    where = "kind <> 'mandarin' AND label <> '' AND label LIKE ? ESCAPE '\\'"
+    params: list[str] = [label_pattern]
+    if letters:
+        # A whole dialect reading only (not a prefix): common Mandarin-ish
+        # pinyin such as "shi" should not pull in large dialect lists.
+        where += " OR (kind <> 'mandarin' AND pinyin_toneless = ?)"
+        params.append(letters)
+
+    connection = _connect(WIKTIONARY_DB_PATH)
+    try:
+        rows = connection.execute(
+            "SELECT word, pinyin, label, simplified FROM readings "
+            f"WHERE {where} "
+            "ORDER BY length(word), word, id LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for word, pinyin, label, simplified in rows:
+        simplified = simplified or to_simplified(word)
+        if simplified in seen:
+            continue
+        seen.add(simplified)
+        entries.append(
+            {
+                "simplified": simplified,
+                "traditional": word,
+                "pinyin": pinyin,
+                "english": "",
+                "english_normalized": "",
+                "pinyin_no_tone": True,
+                "pinyin_label": label,
+            }
+        )
+    return _decorate(entries)
 
 
 # How many results a "list everything" (*) page shows.
@@ -2730,6 +2949,26 @@ def _all_headwords_list() -> list[str]:
                 row[0]
                 for row in connection.execute(
                     "SELECT DISTINCT word FROM moe.senses WHERE text <> ''"
+                )
+            )
+        if MOE_REVISED_DB_PATH.exists():
+            # The comprehensive dictionary adds headwords the concise one lacks.
+            connection.execute(
+                "ATTACH DATABASE ? AS moe_rev", (str(MOE_REVISED_DB_PATH),)
+            )
+            parts.append(
+                "SELECT DISTINCT word FROM moe_rev.senses WHERE text <> ''"
+            )
+            has_reading.update(
+                to_simplified(row[0])
+                for row in connection.execute(
+                    "SELECT word FROM moe_rev.moe WHERE pinyin <> ''"
+                )
+            )
+            def_words.update(
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT word FROM moe_rev.senses WHERE text <> ''"
                 )
             )
         if WIKTIONARY_DB_PATH.exists():
@@ -2879,7 +3118,7 @@ def source_entries(word: str) -> list[dict]:
     input can show its reading and be clickable, even though it has no CEDICT
     entry. Non-Chinese tokens (pinyin, punctuation, "*") get nothing.
     """
-    if not has_cjk(word):
+    if not has_cjk_or_glyph(word):
         return []
     return _decorate(_source_only_entries(word, limit=1, exact=True))
 
@@ -2987,8 +3226,373 @@ def wildcard_search(
     return _decorate(entries), total, pinyin_match
 
 
+# --- Chinese <-> Arabic numerals ------------------------------------------
+# Headwords use both forms (21三体综合症, 二十一世纪, 廿一). Expand a query so
+# a search for one form also finds the others.
+_CN_DIGITS = "零一二三四五六七八九"
+_CN_NUM_RE = re.compile(r"[零〇一二三四五六七八九十百千万亿两廿卅卌]+")
+_ARABIC_NUM_RE = re.compile(r"\d+")
+
+
+def _arabic_to_chinese(number: int) -> str:
+    """Convert an integer to standard Chinese numerals (21 -> 二十一)."""
+    if number == 0:
+        return "零"
+    if number < 0:
+        return "负" + _arabic_to_chinese(-number)
+    units = ("", "十", "百", "千")
+
+    def section(value: int) -> str:
+        text = ""
+        zero = False
+        for place in range(3, -1, -1):
+            digit = (value // (10**place)) % 10
+            if digit == 0:
+                if text and not text.endswith("零"):
+                    zero = True
+                continue
+            if zero:
+                text += "零"
+                zero = False
+            text += _CN_DIGITS[digit] + units[place]
+        return text
+
+    if number < 10000:
+        text = section(number)
+    elif number < 100000000:
+        high, low = divmod(number, 10000)
+        text = section(high) + "万"
+        if low:
+            text += ("零" if low < 1000 else "") + section(low)
+    else:
+        high, low = divmod(number, 100000000)
+        text = _arabic_to_chinese(high) + "亿"
+        if low:
+            text += ("零" if low < 10000000 else "") + _arabic_to_chinese(low)
+    # 一十 -> 十 at the start (10, 11, 100000 -> 十万).
+    if text.startswith("一十"):
+        text = "十" + text[2:]
+    return text
+
+
+def _digitwise_chinese(value: str | int) -> str:
+    """Read each digit separately (2026 -> 二零二六)."""
+    return "".join(_CN_DIGITS[int(digit)] for digit in str(value))
+
+
+def _abbreviated_chinese(number: int) -> str:
+    """Use 廿/卅/卌 for 20s/30s/40s where that form is common."""
+    standard = _arabic_to_chinese(number)
+    for unit, base in (("廿", 20), ("卅", 30), ("卌", 40)):
+        if base <= number < base + 10:
+            rest = standard[-1] if number % 10 else ""
+            return unit + rest
+    return standard
+
+
+def _liang_chinese(number: int) -> str:
+    """Use 两 instead of 二 before a unit (两百, 两千, 两万)."""
+    standard = _arabic_to_chinese(number)
+    if number == 2:
+        return "两"
+    if (
+        number >= 200
+        and standard.startswith("二")
+        and standard[1:2] in {"百", "千", "万", "亿"}
+    ):
+        return "两" + standard[1:]
+    return standard
+
+
+def _chinese_to_arabic(text: str) -> int | None:
+    """Parse a standard or common variant Chinese numeral, or return None."""
+    text = text.replace("〇", "零").replace("两", "二")
+    text = text.replace("廿", "二十").replace("卅", "三十").replace("卌", "四十")
+    if not text:
+        return None
+    allowed = _CN_DIGITS + "十百千万亿"
+    if any(char not in allowed for char in text):
+        return None
+    # A digit string without units (二零二六) is read digit by digit.
+    if not any(unit in text for unit in "十百千万亿"):
+        return int("".join(str(_CN_DIGITS.index(char)) for char in text))
+
+    def parse_section(section: str) -> int | None:
+        total = 0
+        number = 0
+        for char in section:
+            if char in _CN_DIGITS:
+                number = _CN_DIGITS.index(char)
+            elif char == "十":
+                total += (number or 1) * 10
+                number = 0
+            elif char == "百":
+                total += (number or 1) * 100
+                number = 0
+            elif char == "千":
+                total += (number or 1) * 1000
+                number = 0
+            else:
+                return None
+        return total + number
+
+    if "亿" in text:
+        high, rest = text.split("亿", 1)
+        high_value = parse_section(high) if high else 1
+        if high_value is None:
+            return None
+        rest_value = _chinese_to_arabic(rest) if rest else 0
+        if rest_value is None:
+            return None
+        return high_value * 100000000 + rest_value
+    if "万" in text:
+        high, rest = text.split("万", 1)
+        high_value = parse_section(high) if high else 1
+        if high_value is None:
+            return None
+        rest_value = _chinese_to_arabic(rest) if rest else 0
+        if rest_value is None:
+            return None
+        return high_value * 10000 + rest_value
+    return parse_section(text)
+
+
+def _chinese_numeral_variants(number: int) -> set[str]:
+    """All common spellings of one number that a headword might use."""
+    standard = _arabic_to_chinese(number)
+    digitwise = _digitwise_chinese(number)
+    return {
+        standard,
+        digitwise,
+        digitwise.replace("零", "〇"),
+        _abbreviated_chinese(number),
+        _liang_chinese(number),
+    }
+
+
+def _number_query_forms(text: str, limit: int = 12) -> list[str]:
+    """Return the original query plus its Arabic/Chinese numeral variants."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    forms = [text]
+
+    def add(value: str) -> None:
+        if value and value not in forms and len(forms) < limit:
+            forms.append(value)
+
+    if _ARABIC_NUM_RE.search(text):
+        add(_ARABIC_NUM_RE.sub(lambda m: _arabic_to_chinese(int(m.group())), text))
+        add(_ARABIC_NUM_RE.sub(lambda m: _digitwise_chinese(m.group()), text))
+        add(
+            _ARABIC_NUM_RE.sub(
+                lambda m: _digitwise_chinese(m.group()).replace("零", "〇"), text
+            )
+        )
+        add(_ARABIC_NUM_RE.sub(lambda m: _abbreviated_chinese(int(m.group())), text))
+        add(_ARABIC_NUM_RE.sub(lambda m: _liang_chinese(int(m.group())), text))
+
+    if _CN_NUM_RE.search(text):
+        def convert(match: re.Match) -> str:
+            run = match.group()
+            number = _chinese_to_arabic(run)
+            # Only convert a run that is actually a canonical numeral. This
+            # leaves words like 万一 or 千万 alone.
+            if number is None or run not in _chinese_numeral_variants(number):
+                return run
+            return str(number)
+
+        arabic = _CN_NUM_RE.sub(convert, text)
+        add(arabic)
+        if arabic != text:
+            add(_ARABIC_NUM_RE.sub(lambda m: _arabic_to_chinese(int(m.group())), arabic))
+            add(_ARABIC_NUM_RE.sub(lambda m: _digitwise_chinese(m.group()), arabic))
+            add(
+                _ARABIC_NUM_RE.sub(
+                    lambda m: _digitwise_chinese(m.group()).replace("零", "〇"),
+                    arabic,
+                )
+            )
+            add(_ARABIC_NUM_RE.sub(lambda m: _abbreviated_chinese(int(m.group())), arabic))
+            add(_ARABIC_NUM_RE.sub(lambda m: _liang_chinese(int(m.group())), arabic))
+    return forms
+
+
+def headword_query_forms(query: str) -> list[str]:
+    """Headword substrings to try for a query, including number variants."""
+    text = to_simplified(query).replace("*", "").strip()
+    return _number_query_forms(text) if text else []
+
+
+# Parenthetical notes in CEDICT definitions, e.g. "to turn left (Shanghainese)".
+_PAREN_NOTE_RE = re.compile(r"\([^)]*\)")
+
+# Parentheses that actually name a language or dialect. Cross-references such
+# as "[xiang4]" are not language notes, so only these parentheses are ignored
+# when deciding whether a query occurs in a normal definition.
+_LANGUAGE_NOTE_HINT_RE = re.compile(
+    r"\b(?:dialect|dialectal|language|languages|"
+    r"cantonese|shanghainese|hokkien|hakka|minnan|taiwanese|mandarin|"
+    r"hunanese|teochew|chaozhou|swatow|amoy|sichuanese|northeastern)\b",
+    re.IGNORECASE,
+)
+
+# Words that show a definition is describing the language itself, not a person
+# or place whose name happens to contain the query.
+_LANGUAGE_CONTEXT_RE = re.compile(
+    r"\b(?:dialect|dialects|dialectal|language|languages|"
+    r"romanization|mandarin)\b",
+    re.IGNORECASE,
+)
+
+# Dialect/language names that mark a query as a language-note search. A query
+# in this set gets definition-note matches ranked below normal definitions.
+_LANGUAGE_QUERY_TERMS = frozenset(
+    {
+        "dialect",
+        "dialectal",
+        "regional",
+        "language",
+        "languages",
+        "cantonese",
+        "shanghainese",
+        "hokkien",
+        "hakka",
+        "minnan",
+        "taiwanese",
+        "mandarin",
+        "hunanese",
+        "teochew",
+        "chaozhou",
+        "swatow",
+        "amoy",
+        "wu",
+        "xiang",
+        "gan",
+        "jin",
+        "hui",
+        "pinghua",
+        "min",
+        "yue",
+        "sichuan",
+        "sichuanese",
+        "beijing",
+        "northeastern",
+        "shandong",
+        "henan",
+        "hebei",
+        "anhui",
+        "zhejiang",
+        "guangxi",
+        "yunnan",
+        "guizhou",
+        "jiangxi",
+        "jiangsu",
+        "shaanxi",
+        "shanxi",
+        "guangdong",
+        "canton",
+    }
+)
+
+_LANGUAGE_SUFFIX_RE = re.compile(r"\s+dialect(?:al)?$", re.IGNORECASE)
+
+
+def _is_language_query(query: str) -> bool:
+    """True when the query names a language/dialect note term.
+
+    Wildcard and quoted queries are left alone: only a plain name such as
+    "shanghainese", "wu" or "sichuan dialect" triggers the note ranking.
+    """
+    text = (query or "").strip().lower()
+    if not text or "*" in text or text.startswith('"'):
+        return False
+    text = _LANGUAGE_SUFFIX_RE.sub("", text)
+    return text in _LANGUAGE_QUERY_TERMS
+
+
+def _query_regex(query: str) -> re.Pattern:
+    """A case-insensitive substring regex; '*' still acts as a wildcard."""
+    return re.compile(re.escape(query.lower()).replace(r"\*", ".*"))
+
+
+def _strip_language_notes(text: str) -> str:
+    """Remove parentheses that name a language or dialect."""
+
+    def replace(match: re.Match) -> str:
+        note = match.group(0)
+        return "" if _LANGUAGE_NOTE_HINT_RE.search(note) else note
+
+    return _PAREN_NOTE_RE.sub(replace, text or "")
+
+
+def _matches_outside_notes(text: str, query: str) -> bool:
+    """True when `query` matches `text` outside language/dialect notes."""
+    stripped = _strip_language_notes(text)
+    return _query_regex(query).search(stripped.lower()) is not None
+
+
+def _language_match_tier(text: str, query: str) -> int:
+    """Rank a definition match for a language-name query.
+
+    0 = the definition describes the language itself ("Xiang ... dialect"),
+    1 = the query occurs only inside a language note, 2 = some other mention
+    (a person or place name, for example).
+    """
+    if not text:
+        return 2
+    stripped = _strip_language_notes(text)
+    if _query_regex(query).search(stripped.lower()):
+        # The language words may sit in a note ("Sichuanese (a group of
+        # Southwestern Mandarin dialects)"), so look at the full text here.
+        return 0 if _LANGUAGE_CONTEXT_RE.search(text) else 2
+    return 1
+
+
+def _rank_language_matches(entries: list[dict], query: str) -> list[dict]:
+    """Stable partition: language entries, then notes, then other mentions."""
+    tiers: dict[int, list[dict]] = {0: [], 1: [], 2: []}
+    for entry in entries:
+        text = entry.get("english_normalized") or ""
+        tiers[_language_match_tier(text, query)].append(entry)
+    return tiers[0] + tiers[1] + tiers[2]
+
+
+def _split_language_matches(
+    entries: list[dict], query: str
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split definition matches into (language, notes, other) for pinyin searches."""
+    language: list[dict] = []
+    notes: list[dict] = []
+    other: list[dict] = []
+    for entry in entries:
+        text = entry.get("english_normalized") or ""
+        tier = _language_match_tier(text, query)
+        (language if tier == 0 else notes if tier == 1 else other).append(entry)
+    return language, notes, other
+
+
+def _merge_unique(base: list[dict], extra: list[dict]) -> list[dict]:
+    """Append `extra` entries that are not already in `base` (by headword)."""
+    seen = {
+        (entry.get("traditional"), entry.get("simplified")) for entry in base
+    }
+    merged = list(base)
+    for entry in extra:
+        key = (entry.get("traditional"), entry.get("simplified"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(entry)
+    return merged
+
+
 def search(
-    query: str, limit: int = 50, taiwan: bool = False, part: str = "all"
+    query: str,
+    limit: int = 50,
+    taiwan: bool = False,
+    part: str = "all",
+    _skip_pinyin: bool = False,
 ) -> tuple[list[dict], bool]:
     """Search the dictionary.
 
@@ -3065,7 +3669,7 @@ def search(
     # reading, honouring a tone where one is given and leaving a tone-less
     # syllable free to match any tone. Whole readings rank first, then readings
     # that begin with the query, then readings that merely contain it.
-    parsed = _parse_pinyin_query(query)
+    parsed = None if _skip_pinyin else _parse_pinyin_query(query)
     if parsed:
         letters, tones, boundaries = parsed
         # Rank 0 and 1 require the reading to start with the query's letters, so
@@ -3164,8 +3768,23 @@ def search(
         for entry in result:
             entry.pop("_search_rank", None)
         if part == "primary":
+            if _is_language_query(query):
+                # A language name is also a reading (e.g. "xiang", "wu").
+                # Show the language's own definitions and notes first, then
+                # the reading matches, then unrelated mentions.
+                extra, _ = search(
+                    query, limit, taiwan, part="primary", _skip_pinyin=True
+                )
+                language, notes, other = _split_language_matches(extra, query)
+                result = _merge_unique(language + notes, result)
+                result = _merge_unique(result, other)
             return result, True
         result.extend(decorated[len(top):])
+        if _is_language_query(query):
+            extra, _ = search(query, limit, taiwan, part=part, _skip_pinyin=True)
+            language, notes, other = _split_language_matches(extra, query)
+            result = _merge_unique(language + notes, result)
+            result = _merge_unique(result, other)
         return result, True
 
     # Exact pinyin reading (e.g. "yabai" -> 牙白): if the query is a complete
@@ -3174,7 +3793,7 @@ def search(
     # space) pins syllable boundaries ("dan'gan" -> 单干, not 档案).
     wildcard = "*" in query
     segments = [to_toneless(part) for part in re.split(r"['’\s]+", query) if part]
-    pinyin_key = to_toneless(query)
+    pinyin_key = "" if _skip_pinyin else to_toneless(query)
     if pinyin_key:
         # A bare query matches the whole reading or a word that starts with it,
         # with exact matches first ("xinu" and "xinu*" behave the same). A '*'
@@ -3233,45 +3852,135 @@ def search(
             source_rows = [] if part == "primary" else _source_pinyin_entries(query, limit=limit)
             decorated = _decorate(entries + source_rows)
             if part == "primary":
-                return decorated[: len(entries)], True
-            return decorated, True
+                result = decorated[: len(entries)]
+            else:
+                result = decorated
+            if _is_language_query(query):
+                # A language name can also be a valid reading (e.g. "sichuan").
+                # Show the language's own definitions and notes first, then
+                # the reading matches, then unrelated mentions.
+                extra, _ = search(query, limit, taiwan, part=part, _skip_pinyin=True)
+                language, notes, other = _split_language_matches(extra, query)
+                result = _merge_unique(language + notes, result)
+                result = _merge_unique(result, other)
+            return result, True
 
     # Chinese: convert to simplified. A plain query matches anywhere in the word,
     # ranked exact first, then words starting with the query, then the rest.
     chinese = to_simplified(query)
     literal = chinese.replace("*", "")  # the "exact" word, ranked first
 
-    # Only a query containing hanzi can match the Chinese word column; a latin
-    # query is pinyin or English and must not match latin headwords like "word".
+    # Hanzi and numeric queries may match the headword column. A purely latin
+    # query is pinyin or English and must not match latin headwords like
+    # "word". Numeric headwords (21三体综合症, 421) should rank above entries
+    # that only mention the number in a definition.
     is_chinese = has_cjk(literal)
+    is_numeric = not is_chinese and bool(re.search(r"\d", literal))
 
+    # Search all common spellings of a number: 21, 二十一, 廿一, 二零二六,
+    # and so on. The original query is always first.
+    headword_forms = (
+        _number_query_forms(chinese)
+        if "*" not in query and (is_chinese or is_numeric)
+        else [chinese]
+    )
+    contains_patterns = [
+        _like_pattern(f"*{form}*") for form in headword_forms
+    ]
+    prefix_patterns = [
+        _like_pattern(f"{form}*") for form in headword_forms
+    ]
     if "*" in query:
         # Explicit wildcard (e.g. "*字"): honour it as typed.
-        pattern_chinese = _like_pattern(chinese)
-        prefix_chinese = pattern_chinese
+        contains_patterns = [_like_pattern(chinese)]
+        prefix_patterns = contains_patterns
+
+    # Definitions can use a different numeral spelling too (2026 vs 二零二六).
+    if "*" in query:
+        definition_patterns = [_like_pattern(query)]
     else:
-        pattern_chinese = _like_pattern(f"*{chinese}*")  # contains
-        prefix_chinese = _like_pattern(f"{chinese}*")    # starts with
+        definition_patterns = [
+            _like_pattern(f"*{form}*") for form in headword_forms
+        ]
+    definition_clause = "(" + " OR ".join(
+        "english_normalized LIKE ? ESCAPE '\\'" for _ in definition_patterns
+    ) + ")"
 
-    # English: match anywhere in the definitions unless a "*" is given.
-    english = query if "*" in query else f"*{query}*"
-    pattern_english = _like_pattern(english)
-
-    # WHERE: the Chinese word (hanzi queries only) or the definitions.
-    where_parts = ["english_normalized LIKE ? ESCAPE '\\'"]
-    where_params = [pattern_english]
+    # WHERE: the headword (hanzi or numeric queries) or the definitions.
+    where_parts = [definition_clause]
+    where_params = list(definition_patterns)
     if is_chinese:
-        where_parts.insert(0, "simplified LIKE ? ESCAPE '\\'")
-        where_params.insert(0, pattern_chinese)
+        clause = "(" + " OR ".join(
+            "simplified LIKE ? ESCAPE '\\'" for _ in headword_forms
+        ) + ")"
+        where_parts.insert(0, clause)
+        where_params[0:0] = contains_patterns
+    elif is_numeric:
+        clause = "(" + " OR ".join(
+            "(simplified LIKE ? ESCAPE '\\' OR traditional LIKE ? ESCAPE '\\')"
+            for _ in headword_forms
+        ) + ")"
+        headword_params = []
+        for pattern in contains_patterns:
+            headword_params += [pattern, pattern]
+        where_parts.insert(0, clause)
+        where_params[0:0] = headword_params
 
     # ORDER BY tiers (with their own parameters).
     order_parts = []
     order_params = []
     if is_chinese:
-        order_parts.append("(simplified = ?) DESC")  # exact Chinese word
-        order_params.append(literal)
-        order_parts.append("(simplified LIKE ? ESCAPE '\\') DESC")  # starts with
-        order_params.append(prefix_chinese)
+        if len(headword_forms) > 1:
+            # Prefer the spelling the user typed (e.g. 二十一) over the other
+            # number variants (21, 二一, 廿一).
+            order_parts.append("(simplified = ?) DESC")
+            order_params.append(headword_forms[0])
+            order_parts.append("(simplified LIKE ? ESCAPE '\\') DESC")
+            order_params.append(prefix_patterns[0])
+        clause = "(" + " OR ".join(
+            "simplified = ?" for _ in headword_forms
+        ) + ")"
+        order_parts.append(clause + " DESC")  # exact Chinese word
+        order_params.extend(headword_forms)
+        clause = "(" + " OR ".join(
+            "simplified LIKE ? ESCAPE '\\'" for _ in headword_forms
+        ) + ")"
+        order_parts.append(clause + " DESC")  # starts with
+        order_params.extend(prefix_patterns)
+    elif is_numeric:
+        if len(headword_forms) > 1:
+            # Prefer the Arabic spelling as typed (21) over its Chinese
+            # variants (二十一, 二一, 廿一), including substring matches so a
+            # headword like 421 stays above variant-only matches.
+            order_parts.append("(simplified = ? OR traditional = ?) DESC")
+            order_params += [headword_forms[0], headword_forms[0]]
+            order_parts.append(
+                "(simplified LIKE ? ESCAPE '\\' "
+                "OR traditional LIKE ? ESCAPE '\\') DESC"
+            )
+            order_params += [prefix_patterns[0], prefix_patterns[0]]
+            order_parts.append(
+                "(simplified LIKE ? ESCAPE '\\' "
+                "OR traditional LIKE ? ESCAPE '\\') DESC"
+            )
+            order_params += [contains_patterns[0], contains_patterns[0]]
+        clause = "(" + " OR ".join(
+            "(simplified = ? OR traditional = ?)" for _ in headword_forms
+        ) + ")"
+        order_parts.append(clause + " DESC")  # exact number
+        for form in headword_forms:
+            order_params += [form, form]
+        clause = "(" + " OR ".join(
+            "(simplified LIKE ? ESCAPE '\\' OR traditional LIKE ? ESCAPE '\\')"
+            for _ in headword_forms
+        ) + ")"
+        order_parts.append(clause + " DESC")  # starts with
+        for pattern in prefix_patterns:
+            order_params += [pattern, pattern]
+        # Any headword containing the number ranks above definition-only hits.
+        order_parts.append(clause + " DESC")
+        for pattern in contains_patterns:
+            order_params += [pattern, pattern]
     order_parts.append("(english_normalized LIKE ? ESCAPE '\\') DESC")
     order_params.append(_like_pattern(f"{query}*"))
     if "*" not in query:
@@ -3289,7 +3998,11 @@ def search(
         "FROM entries WHERE " + " OR ".join(where_parts) + " "
         "ORDER BY " + ", ".join(order_parts) + " LIMIT ?"
     )
-    params = [*where_params, *order_params, limit]
+    language_query = _is_language_query(query)
+    # For a language name, fetch extra rows so note-only matches cannot crowd
+    # normal definition matches out of the page before the stable partition.
+    fetch_limit = limit * 3 if language_query else limit
+    params = [*where_params, *order_params, fetch_limit]
 
     connection = connect()
     try:
@@ -3298,6 +4011,8 @@ def search(
         connection.close()  # always close, even if the query raised
 
     entries = [dict(row) for row in rows]
+    if language_query:
+        entries = _rank_language_matches(entries, query)[:limit]
     # Also surface headwords that only the secondary sources or the frequency
     # list have, so a word CEDICT lacks is still findable.
     source_rows = [] if part == "primary" else _source_matches(query, limit=20)

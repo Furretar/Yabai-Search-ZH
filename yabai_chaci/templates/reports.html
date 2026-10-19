@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bug reports - Yabai-Chaci</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+</head>
+
+<body>
+    <h1><a id="home-link" href="/">牙白查词</a> <span class="site-subtitle">Reports</span></h1>
+    <p class="muted">Local bug reports received by this device.</p>
+
+    {% if reports %}
+    <div class="report-list">
+        {% for report in reports %}
+        <article class="report-item">
+            <h2>
+                {{ labels.get(report.get('kind', ''), report.get('kind', 'Report')) }}
+                {% if report.get('word') %} - <a class="report-word-link"
+                    href="{{ report.get('search_url', '/?q=' ~ report.get('word')) }}">{{ report.get('word') }}</a>{% endif %}
+            </h2>
+            <p class="report-meta">
+                {{ report.get('received_at', '') }}
+                {% if report.get('url') %} - {{ report.get('url') }}{% endif %}
+            </p>
+            {% if report.get('message') %}
+            <p class="report-message">{{ report.get('message') }}</p>
+            {% endif %}
+            {% if report.get('user_agent') %}
+            <p class="report-meta">{{ report.get('user_agent') }}</p>
+            {% endif %}
+            {% if report.get('log') %}
+            <details>
+                <summary>Debug log</summary>
+                <pre class="report-log">{{ report.get('log') }}</pre>
+            </details>
+            {% endif %}
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">No reports yet.</p>
+    {% endif %}
+
+    <footer>
+        <a href="/">Back to search</a>
+    </footer>
+</body>
+
+</html>

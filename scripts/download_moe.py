@@ -10,6 +10,9 @@ Usage (from the project root):
     uv run python -m scripts.download_moe revised    # 重編國語辭典修訂本
     uv run python -m scripts.download_moe mini       # 國語小字典
     uv run python -m scripts.download_moe idioms     # 成語典
+    uv run python -m scripts.download_moe revised --pics
+        # also fetch the 字圖 zip (glyph images for characters Unicode can't
+        # represent, referenced in definitions as &8ff0._104_0.gif;)
 
 Note: the data is released under CC BY-ND 3.0 TW (Attribution, NoDerivatives).
 """
@@ -37,6 +40,8 @@ OUT_DIR = ROOT / "data" / "moe"
 ZIP_RE = re.compile(r'href="(download/[^"]+\.zip)"')
 # The text database only; skip the image and audio archives.
 NON_TEXT_RE = re.compile(r"_(pic|music|img)")
+# The glyph-image archive ("字圖" - pictures for characters Unicode can't show).
+PIC_RE = re.compile(r"_pic")
 
 
 def open_url(url: str):
@@ -61,21 +66,28 @@ def fetch(url: str) -> bytes:
         return response.read()
 
 
-def latest_text_zip(dict_key: str) -> str | None:
-    """Return the (relative) URL of the newest text-database zip on the page."""
+def latest_zip(dict_key: str, pic: bool = False) -> str | None:
+    """Return the (relative) URL of the newest matching zip on the page.
+
+    The default is the text database; `pic=True` picks the 字圖 (glyph image)
+    archive instead.
+    """
     page = fetch(BASE + PAGES[dict_key]).decode("utf-8", "replace")
     # De-duplicate while keeping order; the current version is listed first.
     zips = list(dict.fromkeys(ZIP_RE.findall(page)))
     for z in zips:
-        if not NON_TEXT_RE.search(z):
+        if pic and PIC_RE.search(z):
+            return z
+        if not pic and not NON_TEXT_RE.search(z):
             return z
     return None
 
 
-def download(dict_key: str) -> int:
-    relative = latest_text_zip(dict_key)
+def download(dict_key: str, pic: bool = False) -> int:
+    relative = latest_zip(dict_key, pic=pic)
     if not relative:
-        print(f"no text-data zip found for '{dict_key}'")
+        kind = "picture" if pic else "text"
+        print(f"no {kind}-data zip found for '{dict_key}'")
         return 1
 
     url = BASE + relative
@@ -91,11 +103,13 @@ def download(dict_key: str) -> int:
 
 
 def main() -> int:
-    dict_key = sys.argv[1] if len(sys.argv) > 1 else "concised"
+    args = [arg for arg in sys.argv[1:] if arg != "--pics"]
+    pic = "--pics" in sys.argv[1:]
+    dict_key = args[0] if args else "concised"
     if dict_key not in PAGES:
         print(f"unknown dictionary: {dict_key!r}. Choose from: {', '.join(PAGES)}")
         return 2
-    return download(dict_key)
+    return download(dict_key, pic=pic)
 
 
 if __name__ == "__main__":

@@ -41,7 +41,7 @@ export function rowNgrams(row) {
 // Statement-based helper kept for the Node regression adapter.
 export function addRowNgrams(row, entryId, statement) {
     for (const gram of rowNgrams(row)) {
-        statement.bind([gram, row.dict_id, entryId]);
+        statement.bind([gram, entryId]);
         statement.step();
         statement.reset();
     }
@@ -158,7 +158,7 @@ export function searchEntries(db, message) {
                         `SELECT ${qualifiedColumns}
                          FROM entries e
                          JOIN ngrams n ON n.entry_id = e.id
-                         WHERE n.gram = ? AND n.dict_id = ?
+                         WHERE n.gram = ? AND e.dict_id = ?
                          ORDER BY length(e.term), e.id
                          LIMIT ?`,
                         [raw, dictId, perDictCandidates],
@@ -179,15 +179,15 @@ export function searchEntries(db, message) {
                         `SELECT ${columns} FROM entries WHERE id IN (
                             SELECT entry_id FROM ngrams
                             WHERE gram IN (${gramPlaceholders})
-                              AND dict_id IN (${placeholders})
                             GROUP BY entry_id
                             HAVING COUNT(DISTINCT gram) = ?
-                         ) AND (term LIKE ? OR simplified LIKE ? OR traditional LIKE ?)
+                         ) AND dict_id IN (${placeholders})
+                           AND (term LIKE ? OR simplified LIKE ? OR traditional LIKE ?)
                          LIMIT ?`,
                         [
                             ...grams,
-                            ...dictIds,
                             grams.length,
+                            ...dictIds,
                             `%${raw}%`,
                             `%${raw}%`,
                             `%${raw}%`,

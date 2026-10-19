@@ -6,3 +6,8 @@ data/*.sqlite
 data/*.txt
 data/*.gz
 data/*.bz2
+data/*.jsonl
+data/*.json
+data/*.zip
+data/moe/
+data/moe_glyphs/

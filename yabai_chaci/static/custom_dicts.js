@@ -16,7 +16,7 @@
         }
     })();
     const DB_NAME = "yabai-chaci-custom-dicts";
-    const DB_VERSION = 4;
+    const DB_VERSION = 6;
     const OPEN_KEY = "yabai-chaci-dict-open";
     const MAX_SEARCH_RESULTS = 50;
 
@@ -63,7 +63,7 @@
     const cancelledImports = new Set();
 
     class ImportCancelled extends Error {}
-    const CUSTOM_INDEX_VERSION = 8;
+    const CUSTOM_INDEX_VERSION = 9;
     const BUILD_STATE_KEY = "yabai-chaci-custom-index-build";
 
     // Where a partially built SQLite index stopped. IndexedDB keys are stable
@@ -136,6 +136,7 @@
         buildBatches: 0,
         migrating: false,
         ngramsReady: false,
+        lastImport: null,
         lastSource: "",
         sqliteReady: false,
     };
@@ -310,9 +311,11 @@
             return [];
         }
     };
-    window.mergeCustomMatches = async (data, matches) => {
+    window.mergeCustomMatches = async (data, matches, maxResults) => {
         await ready;
-        if (matches && matches.length) await mergeImported(data, matches);
+        if (matches && matches.length) {
+            await mergeImported(data, matches, maxResults);
+        }
     };
 
     // --- IndexedDB ---------------------------------------------------------
@@ -356,10 +359,25 @@
                     }
                 }
                 if (!db.objectStoreNames.contains("grams")) {
-                    const store = db.createObjectStore("grams", {
+                    // dictId is the key prefix, so a separate index is not
+                    // needed for lookups or deletion.
+                    db.createObjectStore("grams", {
                         keyPath: ["dictId", "size", "gram"],
                     });
-                    store.createIndex("dictId", "dictId", { unique: false });
+                } else {
+                    const store =
+                        request.transaction.objectStore("grams");
+                    if (store.indexNames.contains("dictId")) {
+                        store.deleteIndex("dictId");
+                    }
+                }
+                if (!db.objectStoreNames.contains("gramBuckets")) {
+                    // One record per (dict, size, first character), holding a
+                    // sorted gram array. New imports use this instead of one
+                    // record per gram.
+                    db.createObjectStore("gramBuckets", {
+                        keyPath: ["dictId", "size", "bucket"],
+                    });
                 }
             };
             request.onsuccess = () => resolve(request.result);
@@ -1320,13 +1338,18 @@
 
     async function addTermRows(rows, onTransaction = null) {
         const db = await openDb();
+        const storeNames = onTransaction
+            ? ["entries", "dictionaries", "imports"]
+            : "entries";
         return new Promise((resolve, reject) => {
-            const tx = db.transaction(
-                onTransaction
-                    ? ["entries", "dictionaries", "imports"]
-                    : "entries",
-                "readwrite"
-            );
+            let tx;
+            try {
+                tx = db.transaction(storeNames, "readwrite", {
+                    durability: "relaxed",
+                });
+            } catch (error) {
+                tx = db.transaction(storeNames, "readwrite");
+            }
             const store = tx.objectStore("entries");
             for (const row of rows) store.add(row);
             if (onTransaction) onTransaction(tx);
@@ -1382,6 +1405,71 @@
         }
     }
 
+    function writeBucketChunk(db, records) {
+        return new Promise((resolve, reject) => {
+            let tx;
+            try {
+                tx = db.transaction("gramBuckets", "readwrite", {
+                    durability: "relaxed",
+                });
+            } catch (error) {
+                tx = db.transaction("gramBuckets", "readwrite");
+            }
+            const store = tx.objectStore("gramBuckets");
+            for (const record of records) store.put(record);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
+    }
+
+    async function writeGramBuckets(
+        dictId,
+        size,
+        values,
+        total,
+        onProgress = null,
+        shouldStop = null
+    ) {
+        const db = await openDb();
+        const records = [];
+        let bucket = null;
+        let bucketGrams = [];
+        let processed = 0;
+        const flushBucket = () => {
+            if (!bucketGrams.length) return;
+            bucketGrams.sort();
+            records.push({ dictId, size, bucket, grams: bucketGrams });
+            bucketGrams = [];
+        };
+        const flushRecords = async () => {
+            if (!records.length) return;
+            await writeBucketChunk(db, records.splice(0));
+        };
+        for (const gram of values) {
+            if (shouldStop && shouldStop()) {
+                throw new ImportCancelled("Import cancelled");
+            }
+            const first = [...gram][0];
+            if (bucket === null) {
+                bucket = first;
+            } else if (first !== bucket) {
+                flushBucket();
+                bucket = first;
+            }
+            bucketGrams.push(gram);
+            processed += 1;
+            if (records.length >= 20) {
+                await flushRecords();
+            }
+            if (onProgress && processed % 25000 === 0) {
+                onProgress(processed, total);
+            }
+        }
+        flushBucket();
+        await flushRecords();
+        if (onProgress) onProgress(processed, total);
+    }
+
     async function addGramRows(
         dictId,
         size,
@@ -1389,29 +1477,43 @@
         onProgress = null,
         shouldStop = null
     ) {
-        const values = [...grams];
+        const values = Array.isArray(grams) ? grams : [...grams];
         if (!values.length) {
             if (onProgress) onProgress(0, 0);
             return;
         }
-        const db = await openDb();
-        const chunkSize = 2000;
-        for (let offset = 0; offset < values.length; offset += chunkSize) {
-            if (shouldStop && shouldStop()) {
-                throw new ImportCancelled("Import cancelled");
-            }
-            const chunk = values.slice(offset, offset + chunkSize);
-            await new Promise((resolve, reject) => {
-                const tx = db.transaction("grams", "readwrite");
-                const store = tx.objectStore("grams");
-                for (const gram of chunk) store.put({ dictId, size, gram });
-                tx.oncomplete = () => resolve();
-                tx.onerror = () => reject(tx.error);
-            });
-            if (onProgress) {
-                onProgress(Math.min(offset + chunkSize, values.length), values.length);
-            }
+        await writeGramBuckets(
+            dictId,
+            size,
+            values,
+            values.length,
+            onProgress,
+            shouldStop
+        );
+    }
+
+    async function addNumericGramRows(
+        dictId,
+        size,
+        grams,
+        onProgress = null,
+        shouldStop = null
+    ) {
+        if (!grams.length) {
+            if (onProgress) onProgress(0, 0);
+            return;
         }
+        function* strings() {
+            for (const value of grams) yield unpackBigram(value);
+        }
+        await writeGramBuckets(
+            dictId,
+            size,
+            strings(),
+            grams.length,
+            onProgress,
+            shouldStop
+        );
     }
 
     async function deleteDictionaryData(dictId) {
@@ -1420,17 +1522,30 @@
         await dbDelete("dictionaries", dictId);
         const db = await openDb();
         return new Promise((resolve, reject) => {
-            const tx = db.transaction(["entries", "grams"], "readwrite");
-            for (const storeName of ["entries", "grams"]) {
-                const index = tx.objectStore(storeName).index("dictId");
-                const cursor = index.openKeyCursor(IDBKeyRange.only(dictId));
-                cursor.onsuccess = () => {
-                    const current = cursor.result;
-                    if (!current) return;
-                    tx.objectStore(storeName).delete(current.primaryKey);
-                    current.continue();
-                };
-            }
+            const tx = db.transaction(
+                ["entries", "grams", "gramBuckets"],
+                "readwrite"
+            );
+            const entries = tx.objectStore("entries");
+            const cursor = entries
+                .index("dictId")
+                .openKeyCursor(IDBKeyRange.only(dictId));
+            cursor.onsuccess = () => {
+                const current = cursor.result;
+                if (!current) return;
+                entries.delete(current.primaryKey);
+                current.continue();
+            };
+            // Both gram stores start with dictId in the key. An array upper
+            // bound sorts after every string size, covering bi and tri.
+            const range = IDBKeyRange.bound(
+                [dictId],
+                [dictId, []],
+                false,
+                true
+            );
+            tx.objectStore("grams").delete(range);
+            tx.objectStore("gramBuckets").delete(range);
             tx.oncomplete = () => resolve();
             tx.onerror = () => reject(tx.error);
         });
@@ -1682,6 +1797,173 @@
         return { bigrams, trigrams };
     }
 
+    // Import-time gram collection. Bigrams pack into one exact 42-bit Number;
+    // trigrams stay strings because three 21-bit code points exceed the 53-bit
+    // integer range once supplementary-plane Han is included. Each bank is
+    // sorted, deduplicated, and merged into the running sorted arrays.
+    const BIGRAM_BASE = 0x200000; // 2^21
+
+    function packBigram(a, b) {
+        return a * BIGRAM_BASE + b;
+    }
+
+    function unpackBigram(value) {
+        const low = value % BIGRAM_BASE;
+        const high = (value - low) / BIGRAM_BASE;
+        return (
+            String.fromCodePoint(high) +
+            String.fromCodePoint(low)
+        );
+    }
+
+    function mergeSortedNumbers(left, right) {
+        const merged = [];
+        let i = 0;
+        let j = 0;
+        while (i < left.length && j < right.length) {
+            const a = left[i];
+            const b = right[j];
+            if (a < b) {
+                merged.push(a);
+                i += 1;
+            } else if (b < a) {
+                merged.push(b);
+                j += 1;
+            } else {
+                merged.push(a);
+                i += 1;
+                j += 1;
+            }
+        }
+        while (i < left.length) merged.push(left[i++]);
+        while (j < right.length) merged.push(right[j++]);
+        return merged;
+    }
+
+    function mergeSortedStrings(left, right) {
+        const merged = [];
+        let i = 0;
+        let j = 0;
+        while (i < left.length && j < right.length) {
+            const a = left[i];
+            const b = right[j];
+            if (a < b) {
+                merged.push(a);
+                i += 1;
+            } else if (b < a) {
+                merged.push(b);
+                j += 1;
+            } else {
+                merged.push(a);
+                i += 1;
+                j += 1;
+            }
+        }
+        while (i < left.length) merged.push(left[i++]);
+        while (j < right.length) merged.push(right[j++]);
+        return merged;
+    }
+
+    // Size-tiered merging keeps gram merging O(N log banks) without holding
+    // every per-bank array and every merge level at once.
+    function createSortedMerger(mergeFn) {
+        const tiers = [];
+        let total = 0;
+        return {
+            add(sorted) {
+                total += sorted.length;
+                let current = sorted;
+                let level = 0;
+                while (tiers[level]) {
+                    current = mergeFn(tiers[level], current);
+                    tiers[level] = null;
+                    level += 1;
+                }
+                tiers[level] = current;
+            },
+            get total() {
+                return total;
+            },
+            finish() {
+                let result = [];
+                for (const tier of tiers) {
+                    if (!tier) continue;
+                    result = result.length
+                        ? mergeFn(result, tier)
+                        : tier;
+                }
+                return result;
+            },
+        };
+    }
+
+    function createGramCollector() {
+        const bigrams = [];
+        const trigrams = [];
+        let run = [];
+        const flush = () => {
+            for (let index = 0; index < run.length; index += 1) {
+                if (index + 1 < run.length) {
+                    bigrams.push(packBigram(run[index], run[index + 1]));
+                }
+                if (index + 2 < run.length) {
+                    trigrams.push(
+                        String.fromCodePoint(run[index]) +
+                            String.fromCodePoint(run[index + 1]) +
+                            String.fromCodePoint(run[index + 2])
+                    );
+                }
+            }
+        };
+        return {
+            addText(text) {
+                run = [];
+                for (const char of text || "") {
+                    const code = char.codePointAt(0);
+                    if (isHan(code)) {
+                        run.push(code);
+                    } else {
+                        flush();
+                        run = [];
+                    }
+                }
+                flush();
+            },
+            finish() {
+                bigrams.sort((a, b) => a - b);
+                let write = 0;
+                for (let read = 0; read < bigrams.length; read += 1) {
+                    if (read === 0 || bigrams[read] !== bigrams[read - 1]) {
+                        bigrams[write++] = bigrams[read];
+                    }
+                }
+                bigrams.length = write;
+                trigrams.sort();
+                write = 0;
+                for (let read = 0; read < trigrams.length; read += 1) {
+                    if (read === 0 || trigrams[read] !== trigrams[read - 1]) {
+                        trigrams[write++] = trigrams[read];
+                    }
+                }
+                trigrams.length = write;
+                return { bigrams, trigrams };
+            },
+        };
+    }
+
+    function numericGramBytes(grams) {
+        let bytes = 0;
+        for (const value of grams) {
+            const low = value % BIGRAM_BASE;
+            const high = (value - low) / BIGRAM_BASE;
+            bytes +=
+                utf8Length(String.fromCodePoint(high)) +
+                utf8Length(String.fromCodePoint(low)) +
+                GRAM_BYTES_OVERHEAD;
+        }
+        return bytes;
+    }
+
     function utf8Length(text) {
         let bytes = 0;
         for (let index = 0; index < text.length; index += 1) {
@@ -1729,39 +2011,59 @@
         return promise;
     }
 
-    // Convert several headwords in one request. A custom search can match many
-    // entries at once, and one /api/convert round-trip per entry made those
-    // searches wait on a long chain of small requests. Cached words are reused.
+    // Convert several headwords in one request. The server caps each request
+    // at 200 texts, so send 200 per request with a few requests in flight.
+    const CONVERT_BATCH_SIZE = 200;
+    const CONVERT_CONCURRENCY = 5;
+
     async function convertScripts(texts) {
         const unique = [...new Set(texts.filter(Boolean))];
         if (!unique.length) return [];
         const missing = unique.filter((text) => !convertCache.has(text));
-        if (missing.length) {
-            const resultsPromise = fetch("/api/convert-batch", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ texts: missing }),
-                cache: "no-store",
-            })
-                .then((response) => {
-                    if (!response.ok) throw new Error("convert-batch failed");
-                    return response.json();
-                })
-                .then((data) => (Array.isArray(data) ? data : data.results || []))
-                .catch(() => []);
-            missing.forEach((text, index) => {
-                convertCache.set(
-                    text,
-                    resultsPromise.then((items) => {
-                        const item = items[index] || {};
-                        return {
-                            simplified: item.simplified || text,
-                            traditional: item.traditional || text,
-                        };
-                    })
-                );
-            });
+        const chunks = [];
+        for (let offset = 0; offset < missing.length; offset += CONVERT_BATCH_SIZE) {
+            chunks.push(missing.slice(offset, offset + CONVERT_BATCH_SIZE));
         }
+        let nextChunk = 0;
+        const workers = Array.from(
+            { length: Math.min(CONVERT_CONCURRENCY, chunks.length) },
+            async () => {
+                while (true) {
+                    const index = nextChunk++;
+                    if (index >= chunks.length) return;
+                    const chunk = chunks[index];
+                    let items = [];
+                    try {
+                        const response = await fetch("/api/convert-batch", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ texts: chunk }),
+                            cache: "no-store",
+                        });
+                        if (!response.ok) {
+                            throw new Error("convert-batch failed");
+                        }
+                        const data = await response.json();
+                        items = Array.isArray(data)
+                            ? data
+                            : data.results || [];
+                    } catch (error) {
+                        items = [];
+                    }
+                    chunk.forEach((text, itemIndex) => {
+                        const item = items[itemIndex] || {};
+                        convertCache.set(
+                            text,
+                            Promise.resolve({
+                                simplified: item.simplified || text,
+                                traditional: item.traditional || text,
+                            })
+                        );
+                    });
+                }
+            }
+        );
+        await Promise.all(workers);
         return Promise.all(unique.map((text) => convertCache.get(text)));
     }
 
@@ -1778,7 +2080,7 @@
         "Ī": "I", "Í": "I", "Ǐ": "I", "Ì": "I",
         "Ō": "O", "Ó": "O", "Ǒ": "O", "Ò": "O",
         "Ū": "U", "Ú": "U", "Ǔ": "U", "Ù": "U",
-        "Ǖ": "Ü", "Ǘ": "Ü", "Ǚ": "Ü", "ǜ": "Ü",
+        "Ǖ": "Ü", "Ǘ": "Ü", "Ǚ": "Ü", "Ǜ": "Ü",
     };
     const TONE_NUMBER = {
         "ā": 1, "á": 2, "ǎ": 3, "à": 4,
@@ -1792,7 +2094,7 @@
         "Ī": 1, "Í": 2, "Ǐ": 3, "Ì": 4,
         "Ō": 1, "Ó": 2, "Ǒ": 3, "Ò": 4,
         "Ū": 1, "Ú": 2, "Ǔ": 3, "Ù": 4,
-        "Ǖ": 1, "Ǘ": 2, "Ǚ": 3, "ǜ": 4,
+        "Ǖ": 1, "Ǘ": 2, "Ǚ": 3, "Ǜ": 4,
     };
 
     function markedToNumeric(pinyin) {
@@ -1990,7 +2292,12 @@
             } else {
                 row.dataset.cancelled = "true";
                 importCancelled = true;
-                status.textContent = "cancelling...";
+                row.remove();
+                const importStatus =
+                    document.querySelector(".import-status");
+                if (importStatus) {
+                    importStatus.textContent = "Cancelling import...";
+                }
             }
         });
         row.append(toggle, text, cancel);
@@ -2014,6 +2321,12 @@
     ) {
         let dictionary = null;
         let job = resumeJob;
+        const importStartedAt = performance.now();
+        let parseMs = 0;
+        let convertMs = 0;
+        let entriesMs = 0;
+        let bigramMs = 0;
+        let trigramMs = 0;
         const status = document.querySelector(".import-status");
         const setStatus = (text) => {
             if (status) status.textContent = statusPrefix + text;
@@ -2029,6 +2342,9 @@
             (dictionary && cancelledImports.has(dictionary.id));
         try {
             setStatus(resumeJob ? "Resuming import..." : "Reading ZIP...");
+            setPlaceholderStatus(
+                resumeJob ? "resuming import..." : "reading ZIP..."
+            );
             const buffer = await file.arrayBuffer();
             const zip = zipEntries(buffer);
             let dictId;
@@ -2039,8 +2355,8 @@
             let startBank = 0;
             let termCount = 0;
             let dataBytes = 0;
-            const bigrams = new Set();
-            const trigrams = new Set();
+            const bigramMerger = createSortedMerger(mergeSortedNumbers);
+            const trigramMerger = createSortedMerger(mergeSortedStrings);
 
             if (resumeJob) {
                 dictId = resumeJob.dictId;
@@ -2093,10 +2409,25 @@
                     "dictId",
                     dictId
                 );
-                for (const row of existingRows) {
-                    addHanGrams(row.term || "", bigrams, trigrams);
-                    addHanGrams(row.reading || "", bigrams, trigrams);
-                    addHanGrams(row.gloss || "", bigrams, trigrams);
+                const rowChunk = 25000;
+                for (
+                    let offset = 0;
+                    offset < existingRows.length;
+                    offset += rowChunk
+                ) {
+                    const collector = createGramCollector();
+                    for (const row of existingRows.slice(
+                        offset,
+                        offset + rowChunk
+                    )) {
+                        collector.addText(row.term || "");
+                        collector.addText(row.reading || "");
+                        collector.addText(row.gloss || "");
+                    }
+                    const part = collector.finish();
+                    bigramMerger.add(part.bigrams);
+                    trigramMerger.add(part.trigrams);
+                    await new Promise((resolve) => setTimeout(resolve, 0));
                 }
             } else {
                 const indexBytes = await zip.read("index.json");
@@ -2191,13 +2522,16 @@
                     throw new ImportCancelled("Import cancelled");
                 }
                 setStatus(
-                    `Reading ${bankNames[b]} (${b + 1}/${bankNames.length})...`
+                    `Bank ${b + 1}/${bankNames.length} · reading ${bankNames[b]}...`
                 );
                 setPlaceholderStatus(
-                    `loading (${b + 1}/${bankNames.length})`
+                    `bank ${b + 1}/${bankNames.length} · reading`
                 );
+                const parseStarted = performance.now();
                 const bytes = await zip.read(bankNames[b]);
                 const rows = JSON.parse(new TextDecoder().decode(bytes));
+                parseMs += performance.now() - parseStarted;
+                const collector = createGramCollector();
                 const batch = [];
                 for (const row of rows) {
                     if (!Array.isArray(row) || !row[0]) continue;
@@ -2210,9 +2544,9 @@
                     );
                     if (!gloss) gloss = cleanGloss(glossaryText(row[5]));
                     if (!term || !gloss) continue;
-                    addHanGrams(term, bigrams, trigrams);
-                    addHanGrams(reading, bigrams, trigrams);
-                    addHanGrams(gloss, bigrams, trigrams);
+                    collector.addText(term);
+                    collector.addText(reading);
+                    collector.addText(gloss);
                     dataBytes +=
                         utf8Length(term) +
                         utf8Length(reading) +
@@ -2220,10 +2554,22 @@
                         32;
                     batch.push({ dictId, term, reading, gloss });
                 }
+                const bankGrams = collector.finish();
+                bigramMerger.add(bankGrams.bigrams);
+                trigramMerger.add(bankGrams.trigrams);
                 if (shouldStop()) {
                     throw new ImportCancelled("Import cancelled");
                 }
+                setStatus(
+                    `Bank ${b + 1}/${bankNames.length} · ` +
+                        `converting ${formatCount(batch.length)} rows...`
+                );
+                setPlaceholderStatus(
+                    `bank ${b + 1}/${bankNames.length} · converting`
+                );
+                const convertStarted = performance.now();
                 await convertRowsInPlace(batch, shouldStop);
+                convertMs += performance.now() - convertStarted;
                 const nextTermCount = termCount + batch.length;
                 dictionary.termCount = nextTermCount;
                 dictionary.dataBytes = dataBytes;
@@ -2231,72 +2577,101 @@
                 job.nextBankIndex = b + 1;
                 job.termCount = nextTermCount;
                 job.dataBytes = dataBytes;
+                setStatus(
+                    `Bank ${b + 1}/${bankNames.length} · saving rows...`
+                );
+                setPlaceholderStatus(
+                    `bank ${b + 1}/${bankNames.length} · saving rows`
+                );
+                const entriesStarted = performance.now();
                 await addTermRows(batch, (transaction) => {
                     transaction
                         .objectStore("dictionaries")
                         .put(dictionary);
                     transaction.objectStore("imports").put(job);
                 });
+                entriesMs += performance.now() - entriesStarted;
                 termCount = nextTermCount;
+                const elapsed = (
+                    (performance.now() - importStartedAt) /
+                    1000
+                ).toFixed(1);
                 const counts =
                     `${formatCount(termCount)} entries · ` +
-                    `${formatCount(bigrams.size)} bigrams · ` +
-                    `${formatCount(trigrams.size)} trigrams`;
+                    `${formatCount(bigramMerger.total)} bigrams · ` +
+                    `${formatCount(trigramMerger.total)} trigrams · ` +
+                    `${elapsed}s`;
                 setStatus(
-                    `Read ${bankNames[b]} (${b + 1}/${bankNames.length}) · ${counts}`
+                    `Bank ${b + 1}/${bankNames.length} done · ${counts}`
                 );
                 setPlaceholderStatus(
-                    `loading (${b + 1}/${bankNames.length}) · ${counts}`
+                    `bank ${b + 1}/${bankNames.length} · ${counts}`
                 );
                 await new Promise((resolve) => setTimeout(resolve, 0));
             }
 
-            const bigramTotal = formatCount(bigrams.size);
-            const trigramTotal = formatCount(trigrams.size);
-            setStatus(`Writing bigram index (0/${bigramTotal})...`);
-            setPlaceholderStatus(`writing bigrams 0/${bigramTotal}`);
-            await addGramRows(
+            const bigrams = bigramMerger.finish();
+            const trigrams = trigramMerger.finish();
+            const bigramTotal = formatCount(bigrams.length);
+            const trigramTotal = formatCount(trigrams.length);
+            const writeElapsed = () =>
+                ((performance.now() - importStartedAt) / 1000).toFixed(1);
+            setStatus(
+                `Writing bigrams 0/${bigramTotal} · ` +
+                    `${formatCount(termCount)} entries · ${writeElapsed()}s`
+            );
+            setPlaceholderStatus(`bigrams 0/${bigramTotal}`);
+            const bigramStarted = performance.now();
+            await addNumericGramRows(
                 dictId,
                 "bi",
                 bigrams,
                 (done, total) => {
                     setStatus(
-                        `Writing bigram index (${formatCount(done)}/${formatCount(total)})...`
+                        `Writing bigrams ${formatCount(done)}/${formatCount(total)} · ` +
+                            `${formatCount(termCount)} entries · ${writeElapsed()}s`
                     );
                     setPlaceholderStatus(
-                        `writing bigrams ${formatCount(done)}/${formatCount(total)}`
+                        `bigrams ${formatCount(done)}/${formatCount(total)}`
                     );
                 },
                 shouldStop
             );
-            setStatus(`Writing trigram index (0/${trigramTotal})...`);
-            setPlaceholderStatus(`writing trigrams 0/${trigramTotal}`);
+            bigramMs += performance.now() - bigramStarted;
+            setStatus(
+                `Writing trigrams 0/${trigramTotal} · ` +
+                    `${formatCount(termCount)} entries · ${writeElapsed()}s`
+            );
+            setPlaceholderStatus(`trigrams 0/${trigramTotal}`);
+            const trigramStarted = performance.now();
             await addGramRows(
                 dictId,
                 "tri",
                 trigrams,
                 (done, total) => {
                     setStatus(
-                        `Writing trigram index (${formatCount(done)}/${formatCount(total)})...`
+                        `Writing trigrams ${formatCount(done)}/${formatCount(total)} · ` +
+                            `${formatCount(termCount)} entries · ${writeElapsed()}s`
                     );
                     setPlaceholderStatus(
-                        `writing trigrams ${formatCount(done)}/${formatCount(total)}`
+                        `trigrams ${formatCount(done)}/${formatCount(total)}`
                     );
                 },
                 shouldStop
             );
+            trigramMs += performance.now() - trigramStarted;
             if (shouldStop()) {
                 throw new ImportCancelled("Import cancelled");
             }
             setStatus("Saving dictionary...");
             setPlaceholderStatus("saving...");
-            const bigramBytes = gramBytes(bigrams);
+            const bigramBytes = numericGramBytes(bigrams);
             const trigramBytes = gramBytes(trigrams);
             dictionary.termCount = termCount;
             dictionary.dataBytes = dataBytes;
             dictionary.indexed = true;
-            dictionary.bigramCount = bigrams.size;
-            dictionary.trigramCount = trigrams.size;
+            dictionary.bigramCount = bigrams.length;
+            dictionary.trigramCount = trigrams.length;
             dictionary.bigramBytes = bigramBytes;
             dictionary.trigramBytes = trigramBytes;
             dictionary.totalBytes =
@@ -2312,6 +2687,10 @@
             invalidateSqliteSearch();
             resetScanWorker();
             scheduleSqliteRebuild();
+            if (shouldStop()) {
+                await cleanupImport(dictId, dictionary, placeholder);
+                return "cancelled";
+            }
             addDictionaryToLanguage(dictionary, false, placeholder);
             window.state.customDicts = true;
             const customToggle = document.getElementById(
@@ -2326,6 +2705,19 @@
             setStatus(
                 `Imported ${title} (${termCount.toLocaleString()} entries).`
             );
+            customStats.lastImport = {
+                id: dictId,
+                title,
+                termCount,
+                bigrams: bigrams.length,
+                trigrams: trigrams.length,
+                parseMs: Math.round(parseMs),
+                convertMs: Math.round(convertMs),
+                entriesMs: Math.round(entriesMs),
+                bigramMs: Math.round(bigramMs),
+                trigramMs: Math.round(trigramMs),
+                totalMs: Math.round(performance.now() - importStartedAt),
+            };
             return "imported";
         } catch (error) {
             const wasCancelled =
@@ -2392,19 +2784,17 @@
     function cancelImport(dictId, placeholder = null) {
         importCancelled = true;
         if (dictId) cancelledImports.add(dictId);
-        if (placeholder) {
-            placeholder.dataset.cancelled = "true";
-            const statusNode = placeholder.querySelector(
-                ".dict-loading-status"
-            );
-            if (statusNode) statusNode.textContent = "cancelling...";
-        }
+        const dictionary = dictId
+            ? dictionaries.find((entry) => entry.id === dictId)
+            : null;
+        // Close the row immediately. The background import checks the cancel
+        // flag at its next checkpoint and deletes the partial data.
+        if (placeholder && placeholder.isConnected) placeholder.remove();
+        if (dictionary) forgetDictionary(dictionary);
         const status = document.querySelector(".import-status");
         if (status) status.textContent = "Cancelling import...";
-        if (!importing) {
-            const dictionary = dictId
-                ? dictionaries.find((entry) => entry.id === dictId)
-                : null;
+        const active = importing && activeImportId === dictId;
+        if (!active) {
             cleanupImport(dictId, dictionary, placeholder).catch((error) =>
                 console.error(error)
             );
@@ -2972,7 +3362,32 @@
         return termIndexPromise;
     }
 
-    async function gramExists(dictId, size, gram) {
+    function binarySearch(sorted, value) {
+        let low = 0;
+        let high = sorted.length - 1;
+        while (low <= high) {
+            const middle = (low + high) >> 1;
+            const current = sorted[middle];
+            if (current === value) return middle;
+            if (current < value) low = middle + 1;
+            else high = middle - 1;
+        }
+        return -1;
+    }
+
+    async function getGramBucket(dictId, size, bucket) {
+        const db = await openDb();
+        return new Promise((resolve, reject) => {
+            const request = db
+                .transaction("gramBuckets", "readonly")
+                .objectStore("gramBuckets")
+                .get([dictId, size, bucket]);
+            request.onsuccess = () => resolve(request.result || null);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async function oldGramExists(dictId, size, gram) {
         const db = await openDb();
         return new Promise((resolve, reject) => {
             const request = db
@@ -2984,6 +3399,15 @@
         });
     }
 
+    async function gramExists(dictId, size, gram) {
+        const bucket = [...gram][0];
+        const record = await getGramBucket(dictId, size, bucket);
+        if (record) {
+            return binarySearch(record.grams, gram) >= 0;
+        }
+        return oldGramExists(dictId, size, gram);
+    }
+
     // Exact negative filter: a missing bigram or trigram proves the substring
     // cannot occur in this dictionary, so its entries do not need scanning.
     async function dictionaryHasGrams(dictId, grams) {
@@ -2991,8 +3415,29 @@
             ["bi", grams.bigrams],
             ["tri", grams.trigrams],
         ]) {
+            if (!set.size) continue;
+            const buckets = new Map();
             for (const gram of set) {
-                if (!(await gramExists(dictId, size, gram))) return false;
+                const bucket = [...gram][0];
+                const list = buckets.get(bucket);
+                if (list) list.push(gram);
+                else buckets.set(bucket, [gram]);
+            }
+            for (const [bucket, list] of buckets) {
+                const record = await getGramBucket(dictId, size, bucket);
+                if (record) {
+                    for (const gram of list) {
+                        if (binarySearch(record.grams, gram) < 0) {
+                            return false;
+                        }
+                    }
+                } else {
+                    for (const gram of list) {
+                        if (!(await oldGramExists(dictId, size, gram))) {
+                            return false;
+                        }
+                    }
+                }
             }
         }
         return true;
@@ -3148,7 +3593,59 @@
         return result;
     }
 
-    async function mergeImported(data, matches) {
+    function mergeDefinition(target, source) {
+        target.groups = target.groups || [];
+        target.defs = target.defs || [];
+        const sourceGroups =
+            source.groups && source.groups.length
+                ? source.groups
+                : [{ pinyin: "", senses: source.defs || [] }];
+        for (const group of sourceGroups) {
+            const reading = group.pinyin || "";
+            let targetGroup = target.groups.find(
+                (item) => (item.pinyin || "") === reading
+            );
+            if (!targetGroup) {
+                targetGroup = { pinyin: reading, senses: [] };
+                target.groups.push(targetGroup);
+            }
+            for (const sense of group.senses || []) {
+                if (!targetGroup.senses.includes(sense)) {
+                    targetGroup.senses.push(sense);
+                }
+            }
+        }
+        for (const sense of source.defs || []) {
+            if (!target.defs.includes(sense)) target.defs.push(sense);
+        }
+        if (source.classifiers && source.classifiers.length) {
+            target.classifiers = target.classifiers || [];
+            for (const classifier of source.classifiers) {
+                const key = `${classifier.traditional}|${classifier.simplified}|` +
+                    `${classifier.codes}|${classifier.note}`;
+                const duplicate = target.classifiers.some(
+                    (item) =>
+                        `${item.traditional}|${item.simplified}|` +
+                            `${item.codes}|${item.note}` === key
+                );
+                if (!duplicate) target.classifiers.push(classifier);
+            }
+        }
+    }
+
+    function addOrMergeDefinition(entry, source) {
+        entry.definitions = entry.definitions || [];
+        const existing = entry.definitions.find(
+            (item) => item.anchor === source.anchor
+        );
+        if (existing) {
+            mergeDefinition(existing, source);
+            return;
+        }
+        entry.definitions.push(source);
+    }
+
+    async function mergeImported(data, matches, maxResults = Infinity) {
         if (!matches.length) return;
         const entries = data.results;
         const dictById = new Map(dictionaries.map((d) => [d.id, d]));
@@ -3230,8 +3727,7 @@
                     byHeadword.get(simplified) || byHeadword.get(traditional);
             }
             if (existing) {
-                existing.definitions = existing.definitions || [];
-                existing.definitions.push(source);
+                addOrMergeDefinition(existing, source);
                 existing.sources = existing.sources || [];
                 if (!existing.sources.some((item) => item.anchor === source.anchor)) {
                     existing.sources.push({
@@ -3263,7 +3759,7 @@
                 customByKey.set(key, entry);
                 customOnly.push(entry);
             }
-            entry.definitions.push(source);
+            addOrMergeDefinition(entry, source);
             if (!entry.sources.some((item) => item.anchor === source.anchor)) {
                 entry.sources.push({
                     label: source.label,
@@ -3271,10 +3767,11 @@
                 });
             }
         }
-        // Imported rows are always appended after the server rows. Wildcard
-        // paging is handled by the caller, which requests the right custom
-        // page and updates the total itself.
-        for (const entry of customOnly) entries.push(entry);
+        // Imported rows are appended after the server rows, but never past the
+        // page limit. Definitions merged into existing rows do not consume a
+        // slot; only custom-only rows do.
+        const room = Math.max(0, maxResults - entries.length);
+        for (const entry of customOnly.slice(0, room)) entries.push(entry);
     }
 
     // --- Storage report ----------------------------------------------------
@@ -3601,13 +4098,18 @@
         languages = await dbAll("languages");
         dictionaries = await dbAll("dictionaries");
         const importJobs = await dbAll("imports");
-        const importFiles = await dbAll("import-files");
         const jobsById = new Map(
             importJobs.map((job) => [job.id, job])
         );
-        const filesById = new Map(
-            importFiles.map((entry) => [entry.id, entry.file])
-        );
+        // Load ZIP blobs only for jobs that still need them. Pulling every
+        // stored ZIP at startup delays the dictionary menu on large imports.
+        const filesById = new Map();
+        for (const job of importJobs) {
+            const entry = await dbGet("import-files", job.id);
+            if (entry && entry.file) {
+                filesById.set(job.id, entry.file);
+            }
+        }
         const resumeJobs = [];
         // Resume imports whose ZIP was saved. Anything else is marked
         // incomplete so the user can delete or re-import it.

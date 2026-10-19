@@ -34,9 +34,8 @@ CREATE INDEX entries_dict_term ON entries(dict_id, term);
 CREATE UNIQUE INDEX entries_source ON entries(dict_id, source_key);
 CREATE TABLE ngrams (
     gram TEXT NOT NULL,
-    dict_id TEXT NOT NULL,
     entry_id INTEGER NOT NULL,
-    PRIMARY KEY (gram, dict_id, entry_id)
+    PRIMARY KEY (gram, entry_id)
 ) WITHOUT ROWID;
 `);
 
@@ -64,7 +63,7 @@ const insertRow = db.prepare(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
 const insertGram = db.prepare(
-    "INSERT OR IGNORE INTO ngrams (gram, dict_id, entry_id) VALUES (?, ?, ?)"
+    "INSERT OR IGNORE INTO ngrams (gram, entry_id) VALUES (?, ?)"
 );
 
 let nextId = 1;

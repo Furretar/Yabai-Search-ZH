@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ word }} - Yabai Search</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+</head>
+
+<body class="word-page">
+    <header class="word-header">
+        <a class="word-home" href="/">牙白查词 / Yabai Search</a>
+        <a class="word-back" href="/">Back to search</a>
+    </header>
+
+    <main class="word-main">
+        {% for entry in entries %}
+        <article class="entry word-entry">
+            <div class="entry-head">
+                <span class="hanzi">{{ entry.traditional }}</span>
+                {% if entry.simplified and entry.simplified != entry.traditional %}
+                <span class="word-alternate">{{ entry.simplified }}</span>
+                {% endif %}
+
+                <div class="word-readings">
+                    {% if entry.pinyin %}<span class="pinyin">{{ entry.pinyin }}</span>{% endif %}
+                    {% if entry.pinyin_taiwan and entry.pinyin_taiwan != entry.pinyin %}
+                    <span class="muted">Taiwan: {{ entry.pinyin_taiwan }}</span>
+                    {% endif %}
+                    {% if entry.pinyin_label %}<span class="muted">{{ entry.pinyin_label }}</span>{% endif %}
+                </div>
+
+                {% if entry.freq or entry.hsk %}
+                <div class="freq">
+                    {% if entry.freq %}
+                    <span class="source">Frequency: #{{ "{:,}".format(entry.freq.rank) }}</span>
+                    {% endif %}
+                    {% if entry.hsk %}
+                    {% set hsk_level = entry.hsk.newest or entry.hsk.new or entry.hsk.old %}
+                    {% if hsk_level %}
+                    <span class="source">HSK {{ "7-9" if hsk_level >= 7 else hsk_level }}</span>
+                    {% endif %}
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                {% if entry.sources %}
+                <div class="sources-label">Dictionaries</div>
+                <div class="sources">
+                    {% for source in entry.sources %}
+                    <a class="source" href="/about#{{ source.anchor }}">{{ source.label }}</a>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="entry-defs">
+                {% for definition in entry.definitions %}
+                <section class="word-definition">
+                    {% if definition.href %}
+                    <h2><a class="word-source-name" href="{{ definition.href }}"
+                            {% if definition.external %}target="_blank" rel="noopener"{% endif %}>{{ definition.label }}</a></h2>
+                    {% else %}
+                    <h2>{{ definition.label }}</h2>
+                    {% endif %}
+                    {% if definition.groups %}
+                    {% for group in definition.groups %}
+                    {% if group.pinyin %}<div class="def-reading">{{ group.pinyin }}</div>{% endif %}
+                    {% for sense in group.senses %}
+                    <div class="def-source-line">
+                        <span class="def-source-num">{{ loop.index }}.</span>{{ sense }}
+                    </div>
+                    {% endfor %}
+                    {% endfor %}
+                    {% else %}
+                    {% for sense in definition.defs %}
+                    <div class="def-source-line">
+                        <span class="def-source-num">{{ loop.index }}.</span>{{ sense }}
+                    </div>
+                    {% endfor %}
+                    {% endif %}
+                    {% for classifier in definition.classifiers %}
+                    <div class="def-source-cls">
+                        Classifier: {{ classifier.traditional or classifier.simplified }}
+                        {% if classifier.codes %} ({{ classifier.codes }}){% endif %}
+                        {% if classifier.note %} - {{ classifier.note }}{% endif %}
+                    </div>
+                    {% endfor %}
+                </section>
+                {% endfor %}
+
+                {% if entry.forms %}
+                <p class="word-forms">
+                    Other forms:
+                    {% for form in entry.forms %}
+                    {% if not loop.first %}; {% endif %}{{ form.traditional }}{% if form.pinyin %} ({{ form.pinyin }}){% endif %}
+                    {% endfor %}
+                </p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+    </main>
+
+    <footer>
+        <a href="/">← Back to search</a>
+    </footer>
+    <!-- MOE glyph pictures: swaps "&8ff0._104_0.gif;" references in the
+       rendered text for tinted images (this page has no app.js). -->
+    <script src="/static/glyphs.js?v={{ asset_version }}"></script>
+</body>
+
+</html>

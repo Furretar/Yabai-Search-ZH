@@ -1,0 +1,207 @@
+"""Per-dictionary integration tests: definitions, chips, readings and metadata."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from yabai_chaci import db
+from yabai_chaci.default_dictionaries import DEFAULTS
+
+DATA = Path(__file__).resolve().parents[1] / "data"
+
+pytestmark = pytest.mark.skipif(
+    not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
+)
+
+requires_moe = pytest.mark.skipif(
+    not (DATA / "moe.sqlite").exists(), reason="MOE concise database not built"
+)
+requires_revised = pytest.mark.skipif(
+    not (DATA / "moe_revised.sqlite").exists(),
+    reason="MOE comprehensive database not built",
+)
+requires_wiktionary = pytest.mark.skipif(
+    not (DATA / "wiktionary.sqlite").exists(), reason="Wiktionary database not built"
+)
+requires_subtlex = pytest.mark.skipif(
+    not (DATA / "subtlex.sqlite").exists(), reason="SUBTLEX database not built"
+)
+requires_hsk = pytest.mark.skipif(
+    not (DATA / "hsk.sqlite").exists(), reason="HSK database not built"
+)
+requires_all_sources = pytest.mark.skipif(
+    not all(
+        (DATA / name).exists()
+        for name in (
+            "moe.sqlite",
+            "moe_revised.sqlite",
+            "wiktionary.sqlite",
+            "zhwiktionary.sqlite",
+            "jpwiktionary.sqlite",
+        )
+    ),
+    reason="not all dictionary databases are built",
+)
+
+
+def _anchors(entry):
+    return [source["anchor"] for source in entry.get("sources", [])]
+
+
+def _definition_anchors(entry):
+    return [definition["anchor"] for definition in entry.get("definitions", [])]
+
+
+def test_cedict_source_and_definition(search, find_result):
+    """CC-CEDICT supplies the headword reading and its definitions."""
+    entry = find_result(search("档案"), "档案")
+    assert entry is not None
+    assert "cedict" in _anchors(entry)
+    assert "cedict" in _definition_anchors(entry)
+    assert entry["pinyin"] == "dàng àn"
+
+
+@requires_moe
+def test_moe_concise_source_and_taiwan_reading(search, find_result):
+    """The concise MOE dictionary supplies Chinese definitions and Taiwan pinyin."""
+    entry = find_result(search("垃圾"), "垃圾")
+    assert entry is not None
+    assert "moe" in _anchors(entry)
+    assert "moe" in _definition_anchors(entry)
+    assert entry["pinyin_taiwan"] == "lè sè"
+
+
+@requires_revised
+def test_moe_revised_source_and_definition(search, find_result):
+    """The comprehensive MOE dictionary adds a separate definition block."""
+    entry = find_result(search("档案"), "档案")
+    assert entry is not None
+    assert "moe_revised" in _anchors(entry)
+    definition = next(
+        item for item in entry["definitions"] if item["anchor"] == "moe_revised"
+    )
+    assert definition["label"] == "重編國語辭典修訂本"
+    assert definition["defs"]
+
+
+@requires_revised
+@requires_wiktionary
+def test_moe_revised_can_supply_a_word_cedict_lacks(search, find_result):
+    """A source-only word is returned with its comprehensive MOE definition."""
+    assert db.lookup("劣性") == []
+    entry = find_result(search("劣性"), "劣性")
+    assert entry is not None
+    assert "moe_revised" in _anchors(entry)
+    assert "moe_revised" in _definition_anchors(entry)
+
+
+@requires_moe
+def test_taiwan_toggle_uses_moe_readings(search, find_result):
+    """lese finds 垃圾 only when the Taiwan reading toggle is on."""
+    without = search("lese")
+    with_taiwan = search("lese", taiwan="true")
+    assert find_result(without, "垃圾") is None
+    assert find_result(with_taiwan, "垃圾") is not None
+
+
+@requires_wiktionary
+def test_wiktionary_gloss_source(search, find_result):
+    """English Wiktionary glosses appear as their own source."""
+    entry = find_result(search("擸𢶍"), "擸𢶍")
+    assert entry is not None
+    assert "wiktionary" in _anchors(entry)
+    assert "wiktionary" in _definition_anchors(entry)
+
+
+def test_zhwiktionary_source(search, find_result):
+    """Chinese Wiktionary definitions are attached for its headwords."""
+    entry = find_result(search("0擼"), "0撸")
+    assert entry is not None
+    assert "zhwiktionary" in _anchors(entry)
+    assert "zhwiktionary" in _definition_anchors(entry)
+
+
+@requires_wiktionary
+def test_jpwiktionary_source(search, find_result):
+    """Japanese Wiktionary definitions are attached separately."""
+    entry = find_result(search("劣性"), "劣性")
+    assert entry is not None
+    assert "jpwiktionary" in _anchors(entry)
+    assert "jpwiktionary" in _definition_anchors(entry)
+
+
+@requires_wiktionary
+def test_dialect_reading_is_kept_untinted(search, find_result):
+    """A Wu/Xiang-only reading is shown but marked as non-Mandarin."""
+    entry = find_result(search("㑲"), "㑲")
+    assert entry is not None
+    assert entry["pinyin_no_tone"] is True
+    assert entry["pinyin_label"] == "Xiang"
+
+
+def test_cedict_taiwan_note_is_used(search, find_result):
+    """A CEDICT 'Taiwan pr.' note becomes pinyin_taiwan when MOE lacks the word."""
+    entry = find_result(search("便秘"), "便秘")
+    assert entry is not None
+    assert "moe" not in _anchors(entry)
+    assert "moe_revised" not in _anchors(entry)
+    assert entry["pinyin_taiwan"] == "biàn bì"
+
+
+def test_manual_taiwan_override(search, find_result):
+    """A manual override wins for a character with a Taiwan reading exception."""
+    entry = find_result(search("血"), "血")
+    assert entry is not None
+    assert entry["pinyin_taiwan"] == "xiě"
+
+
+@requires_subtlex
+def test_subtlex_frequency(search, find_result):
+    """SUBTLEX-CH rank is attached to matching entries."""
+    entry = find_result(search("的"), "的")
+    assert entry is not None
+    assert entry["freq"]["rank"] == 1
+    assert entry["freq"]["count"] > 1_000_000
+    source = db.frequency_source()
+    assert source is not None and source["anchor"] == "subtlex"
+
+
+@requires_hsk
+def test_hsk_levels_are_attached(search, find_result):
+    """HSK 2.0, 3.0 and 2026 levels are attached next to frequency."""
+    entry = find_result(search("档案"), "档案")
+    assert entry is not None
+    assert entry["hsk"] == {"old": 6, "new": 6, "newest": 6}
+    laji = find_result(search("垃圾"), "垃圾")
+    assert laji is not None
+    assert laji["hsk"]["new"] == 4
+    assert laji["hsk"]["newest"] == 4
+
+
+@requires_moe
+@requires_revised
+@requires_wiktionary
+def test_source_chips_are_unique_and_in_registry_order(search, find_result):
+    """Source chips appear once each, in the dictionary registry order."""
+    entry = find_result(search("垃圾"), "垃圾")
+    anchors = _anchors(entry)
+    assert len(anchors) == len(set(anchors))
+    expected = ["cedict", "moe", "moe_revised", "wiktionary", "zhwiktionary", "jpwiktionary"]
+    assert anchors == [anchor for anchor in expected if anchor in anchors]
+
+
+@requires_all_sources
+def test_sources_metadata_reports_all_built_dictionaries():
+    """The About-page metadata includes every built dictionary and its count."""
+    sources = {source["anchor"]: source for source in db.sources()}
+    for anchor in ("cedict", "moe", "moe_revised", "wiktionary", "zhwiktionary", "jpwiktionary"):
+        assert anchor in sources
+    assert sources["moe_revised"]["entries"] > 100_000
+    assert sources["moe_revised"]["updated"]
+
+
+def test_default_dictionaries_include_both_taiwan_sources():
+    """The TW default switches on the concise and comprehensive MOE dictionaries."""
+    assert DEFAULTS["TW"] == ["moe", "moe_revised"]

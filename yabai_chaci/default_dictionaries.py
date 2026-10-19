@@ -15,6 +15,6 @@ memory at runtime - no per-request disk access.
 DEFAULTS: dict[str, list[str]] = {
     "EN": ["cedict"],
     "ZH": ["zhwiktionary"],
-    "TW": ["moe"],
+    "TW": ["moe", "moe_revised"],
     "JP": ["jpwiktionary"],
 }

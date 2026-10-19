@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import collections
+import ipaddress
+import json
+import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
-from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from yabai_chaci import db, segment
 from yabai_chaci.default_dictionaries import DEFAULTS
@@ -27,6 +33,182 @@ _STATIC_DIR = BASE / "static"
 # Normal (non-wildcard) searches are paged as well. Fetch up to this many
 # matches so the total and the requested page can be computed in one pass.
 _MAX_NORMAL_RESULTS = 5000
+
+# Cache of the local device's Tailscale IPs, used to decide whether a report
+# request came from this machine.
+_local_ips_cache: tuple[float, set[str]] | None = None
+
+
+def _local_tailscale_ips() -> set[str]:
+    """Return this machine's own Tailscale IPs, refreshed once a minute."""
+    global _local_ips_cache
+    now = time.monotonic()
+    if _local_ips_cache and now - _local_ips_cache[0] < 60:
+        return _local_ips_cache[1]
+    ips: set[str] = set()
+    tailscale = shutil.which("tailscale") or "/run/current-system/sw/bin/tailscale"
+    try:
+        result = subprocess.run(
+            [tailscale, "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            ips = set(data.get("Self", {}).get("TailscaleIPs", []))
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        pass
+    _local_ips_cache = (now, ips)
+    return ips
+
+
+def _ip_is_local(host: str) -> bool:
+    """True for loopback or one of this device's Tailscale addresses."""
+    host = (host or "").strip().strip("[]")
+    if not host:
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host.lower() == "localhost"
+    if address.is_loopback:
+        return True
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    for candidate in _local_tailscale_ips():
+        try:
+            if address == ipaddress.ip_address(candidate):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _request_is_local(request: Request) -> bool:
+    """Whether the request came from this machine, directly or via Serve."""
+    client = request.client.host if request.client else ""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    # Only trust a forwarded address when the immediate peer is local (the
+    # Tailscale Serve proxy runs on this machine).
+    if forwarded and _ip_is_local(client):
+        return _ip_is_local(forwarded.split(",")[0])
+    return _ip_is_local(client)
+
+
+def _load_reports(limit: int = 200) -> list[dict]:
+    """Read the newest JSONL bug reports, newest first."""
+    path = BASE.parent / "data" / "bug_reports.jsonl"
+    if not path.exists():
+        return []
+    reports: collections.deque[dict] = collections.deque(maxlen=limit)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    reports.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+    return list(reversed(reports))
+
+
+# Display settings that a report can carry back to the search page. Keep the
+# list small and fixed so a report cannot inject arbitrary query parameters.
+_REPORT_SETTING_KEYS = (
+    "script",
+    "toneColoring",
+    "phonetic",
+    "taiwan",
+    "customDicts",
+    "compact",
+    "lang",
+    "selectedDictionaries",
+)
+
+
+def _clean_report_settings(settings: object) -> dict:
+    """Keep only the known, bounded display settings from a report."""
+    if not isinstance(settings, dict):
+        return {}
+    cleaned: dict = {}
+    for key in _REPORT_SETTING_KEYS:
+        if key not in settings:
+            continue
+        value = settings[key]
+        if key == "selectedDictionaries":
+            if isinstance(value, list):
+                cleaned[key] = [
+                    str(anchor)[:80]
+                    for anchor in value[:100]
+                    if str(anchor).strip()
+                ]
+        elif isinstance(value, bool):
+            cleaned[key] = value
+        elif isinstance(value, (int, float)):
+            cleaned[key] = value
+        elif isinstance(value, str):
+            cleaned[key] = value[:80]
+    return cleaned
+
+
+def _report_settings(report: dict) -> dict:
+    """Return the display settings stored with a report.
+
+    New reports carry a settings object. Older reports only have the debug log,
+    which embeds the same values under currentState; read that as a fallback so
+    old report links still restore the reporter's view.
+    """
+    settings = _clean_report_settings(report.get("settings"))
+    if settings:
+        return settings
+    log = report.get("log")
+    if not isinstance(log, str):
+        return {}
+    start = log.find("{")
+    if start == -1:
+        return {}
+    try:
+        data, _ = json.JSONDecoder().raw_decode(log[start:])
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    state = data.get("currentState") if isinstance(data, dict) else None
+    return _clean_report_settings(state)
+
+
+def _report_search_url(report: dict) -> str:
+    """Build a search link that restores the reporter's display settings."""
+    word = str(report.get("word") or "").strip()
+    if not word:
+        return ""
+    settings = _report_settings(report)
+    params: dict[str, str] = {"q": word}
+    # Map the stored setting names to short, stable URL parameter names.
+    mapping = {
+        "script": "script",
+        "toneColoring": "tone",
+        "phonetic": "phonetic",
+        "taiwan": "taiwan",
+        "customDicts": "custom",
+        "compact": "compact",
+        "lang": "lang",
+    }
+    for source_key, param_key in mapping.items():
+        if source_key not in settings:
+            continue
+        value = settings[source_key]
+        if isinstance(value, bool):
+            params[param_key] = "1" if value else "0"
+        elif value not in (None, ""):
+            params[param_key] = str(value)[:80]
+    dictionaries = settings.get("selectedDictionaries")
+    if isinstance(dictionaries, list) and dictionaries:
+        params["dicts"] = ",".join(str(anchor)[:80] for anchor in dictionaries)
+    return "/?" + urlencode(params)
 
 
 def asset_version() -> str:
@@ -56,6 +238,25 @@ def _warm_caches() -> None:
 # (e.g. /static/style.css, /static/app.js). Read-only, served verbatim.
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
+# MOE glyph pictures (data/moe_glyphs/, unpacked by scripts/import_moe.py from
+# the 字圖 zip). Definitions reference them as "&8ff0._104_0.gif;", which the
+# frontend swaps for one of these images so the rare character shows inline.
+_GLYPH_DIR = BASE.parent / "data" / "moe_glyphs"
+# Names are MOE's own hex codes, e.g. "8ff0._104_0.gif" or "f4ff2_.png" - no
+# path separators, so they cannot escape the directory.
+_GLYPH_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:gif|png)$")
+
+
+@app.get("/moe-glyphs/{name}")
+def moe_glyph(name: str):
+    """Serve one MOE glyph picture, or 404 when the name or file is unknown."""
+    if not _GLYPH_NAME_RE.match(name):
+        raise HTTPException(status_code=404)
+    path = _GLYPH_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(path)
+
 # Tell Jinja2 where to find HTML templates.
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 
@@ -71,6 +272,9 @@ def index(request: Request):
             "sources": db.sources(),
             "dictionaries": db.dictionaries(),
             "defaults": DEFAULTS,
+            "show_reports": _request_is_local(request),
+            # The debug log button is useful for every client, not just local.
+            "show_debug": True,
         },
     )
 
@@ -90,9 +294,95 @@ def about(request: Request):
             "updated": updated,
             "counts": counts,
             "freq": db.frequency_source(),
+            "hsk": db.hsk_source(),
         },
     )
 
+
+# External lookups for the dictionary headers above each definition. These must
+# match definitionsBlock() in static/app.js, so the word page links to the same
+# places the search results do.
+_CC_CEDICT_SEARCH = (
+    "https://cc-cedict.org/editor/editor.php?handler=QueryDictionary"
+    "&querydictionary_search="
+)
+_WIKTIONARY_PAGE = "https://en.wiktionary.org/wiki/"
+_JPWIKTIONARY_PAGE = "https://ja.wiktionary.org/wiki/"
+
+
+def _link_definitions(entries: list[dict], word: str) -> None:
+    """Give every definition block the href of its dictionary header.
+
+    Mirrors definitionsBlock(): CC-CEDICT and the Wiktionaries open the word at
+    the source (a new tab), custom dictionaries have no link, everything else
+    links to its section on the About page. `definition["href"]` is None when
+    the header should render as a plain label.
+    """
+    for entry in entries:
+        for definition in entry.get("definitions", ()):
+            anchor = definition.get("anchor", "")
+            headword = definition.get("headword") or word
+            if anchor == "cedict":
+                definition["href"] = _CC_CEDICT_SEARCH + quote(headword)
+                definition["external"] = True
+            elif anchor == "wiktionary":
+                definition["href"] = _WIKTIONARY_PAGE + quote(headword)
+                definition["external"] = True
+            elif anchor == "jpwiktionary":
+                definition["href"] = _JPWIKTIONARY_PAGE + quote(headword)
+                definition["external"] = True
+            elif anchor.startswith("custom-"):
+                definition["href"] = None
+                definition["external"] = False
+            else:
+                definition["href"] = f"/about#{quote(anchor)}"
+                definition["external"] = False
+
+
+@app.get("/word/{word:path}", response_class=HTMLResponse)
+def word_page(request: Request, word: str):
+    """A standalone page for one word, with no search controls."""
+    entries = db.lookup(word)
+    if not entries:
+        # Words that only a secondary dictionary has do not live in CEDICT.
+        entries = db.source_entries(word)
+    if not entries:
+        raise HTTPException(status_code=404)
+    _link_definitions(entries, word)
+    return templates.TemplateResponse(
+        request,
+        "word.html",
+        {
+            "asset_version": asset_version(),
+            "word": word,
+            "entries": entries,
+        },
+    )
+
+
+@app.get("/reports", response_class=HTMLResponse)
+def reports_page(request: Request):
+    """Show locally stored bug reports. Only this device may open this page."""
+    if not _request_is_local(request):
+        raise HTTPException(status_code=404)
+    reports = _load_reports()
+    # The template links each reported word to a search using that reporter's
+    # language, script, phonetic, and dictionary choices.
+    for report in reports:
+        report["search_url"] = _report_search_url(report)
+    return templates.TemplateResponse(
+        request,
+        "reports.html",
+        {
+            "asset_version": asset_version(),
+            "reports": reports,
+            "labels": {
+                "incorrect": "Incorrect information",
+                "bug": "Bug report",
+                "suggestion": "Suggestions/Requests",
+            },
+        },
+    )
 
 def _reading_count(entry: dict) -> int:
     """How many CEDICT definitions this entry's own reading has."""
@@ -264,16 +554,18 @@ def api_search(
                     for entry in _expand_variants(variant_results)
                     if (entry.get("traditional"), entry.get("simplified")) not in seen
                 ]
-            elif db.has_cjk(q):
-                # Definition-only matches are hidden when the query also matched
-                # headwords; only show the headword matches.
-                literal = db.to_simplified(q.replace("*", "")).strip()
-                if literal:
+            # Definition-only matches are hidden when the query also matched a
+            # headword or reading. Number queries try every numeral spelling,
+            # so 21 also keeps 二十一世纪 and 廿一 headwords.
+            if not pinyin_match:
+                forms = db.headword_query_forms(q)
+                if forms:
                     headword_matches = [
                         entry
                         for entry in results
                         if any(
-                            literal in word
+                            form in word
+                            for form in forms
                             for word in (
                                 entry.get("simplified", ""),
                                 entry.get("traditional", ""),
@@ -283,6 +575,19 @@ def api_search(
                     ]
                     if headword_matches:
                         results = headword_matches
+            # Variety labels live on source readings, not on headwords or
+            # glosses: searching "Chengdu" or "Sichuanese" must still find
+            # words labelled "Chengdu Sichuanese".
+            dialect = db.dialect_entries(q)
+            if dialect:
+                expanded = _expand_variants(dialect)
+                # A place/variety label search (e.g. "Chengdu") is about the
+                # labelled words, so show them first. For a language name the
+                # language entry itself is already first, so append.
+                if db._is_language_query(q):
+                    results = db._merge_unique(results, expanded)
+                else:
+                    results = db._merge_unique(expanded, results)
             # Offer the English search only when it would actually find something.
             english_match = False
             if pinyin_match:
@@ -317,6 +622,16 @@ class AnnotateRequest(BaseModel):
 
 class ConvertBatchRequest(BaseModel):
     texts: list[str] = []
+
+
+class BugReportRequest(BaseModel):
+    kind: str = "Incorrect information"
+    word: str = ""
+    message: str = ""
+    url: str = ""
+    user_agent: str = ""
+    log: str = ""
+    settings: dict = Field(default_factory=dict)
 
 
 @app.get("/api/convert")
@@ -357,6 +672,35 @@ def api_convert_batch(request: ConvertBatchRequest):
         ]
     }
 
+
+
+@app.post("/api/report")
+def api_report(report: BugReportRequest):
+    """Append a bug report, including the client's debug log, to a JSONL file.
+
+    Reports are local data, not part of the dictionary. They are written under
+    data/ so a re-import of CEDICT never touches them.
+    """
+    record = {
+        "received_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "kind": report.kind[:80],
+        "word": report.word[:200],
+        "message": report.message[:10000],
+        "url": report.url[:2000],
+        "user_agent": report.user_agent[:1000],
+        "log": report.log[:200000],
+        "settings": _clean_report_settings(report.settings),
+    }
+    path = BASE.parent / "data" / "bug_reports.jsonl"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as error:
+        raise HTTPException(
+            status_code=500, detail="Could not save the report."
+        ) from error
+    return {"ok": True}
 
 
 @app.post("/api/annotate")

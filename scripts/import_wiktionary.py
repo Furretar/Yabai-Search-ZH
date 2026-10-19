@@ -96,6 +96,7 @@ CREATE TABLE readings (
 );
 CREATE INDEX idx_readings_word ON readings(word);
 CREATE INDEX idx_readings_toneless ON readings(pinyin_toneless);
+CREATE INDEX idx_readings_simplified ON readings(simplified);
 
 -- The subset a source-pinyin search can return: Mandarin readings that CEDICT
 -- does not already cover. Keeping it separate makes the hot query table small.
