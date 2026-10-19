@@ -16,7 +16,7 @@
         }
     })();
     const DB_NAME = "yabai-chaci-custom-dicts";
-    const DB_VERSION = 3;
+    const DB_VERSION = 4;
     const OPEN_KEY = "yabai-chaci-dict-open";
     const MAX_SEARCH_RESULTS = 50;
 
@@ -52,9 +52,18 @@
     let scanWorker = null;
     let scanRequestId = 0;
     const scanPending = new Map();
+    // One SQLite search may run while one newer query waits. Superseded
+    // queries resolve empty instead of queueing up behind a slow scan.
+    const searchQueue = { active: null, pending: null };
+    let migrationSeq = 0;
     let importTarget = null;
     let importing = false;
-    const CUSTOM_INDEX_VERSION = 5;
+    let importCancelled = false;
+    let activeImportId = null;
+    const cancelledImports = new Set();
+
+    class ImportCancelled extends Error {}
+    const CUSTOM_INDEX_VERSION = 8;
     const BUILD_STATE_KEY = "yabai-chaci-custom-index-build";
 
     // Where a partially built SQLite index stopped. IndexedDB keys are stable
@@ -85,6 +94,29 @@
             // localStorage unavailable - nothing to clear.
         }
     }
+
+    let buildWakeLock = null;
+
+    // Android browsers throttle background tabs. Keep the screen awake while
+    // building; failure is harmless and the build still resumes later.
+    async function acquireBuildWakeLock() {
+        try {
+            if (navigator.wakeLock && !buildWakeLock) {
+                buildWakeLock = await navigator.wakeLock.request("screen");
+            }
+        } catch (error) {
+            buildWakeLock = null;
+        }
+    }
+
+    function releaseBuildWakeLock() {
+        try {
+            buildWakeLock?.release();
+        } catch (error) {
+            // Already released.
+        }
+        buildWakeLock = null;
+    }
     const customStats = {
         lastSearchMs: 0,
         lastIndexMs: 0,
@@ -92,6 +124,18 @@
         lastMatches: 0,
         lastWildcardTotal: 0,
         lastWildcardMatches: 0,
+        lastTiers: [],
+        lastDefTiers: [],
+        lastPinyinTiers: [],
+        lastCandidates: 0,
+        entryCount: 0,
+        lastDefMs: 0,
+        lastPinyinMs: 0,
+        buildReadMs: 0,
+        buildInsertMs: 0,
+        buildBatches: 0,
+        migrating: false,
+        ngramsReady: false,
         lastSource: "",
         sqliteReady: false,
     };
@@ -110,8 +154,15 @@
             sqliteWorkerFailed,
             sqlitePreparing,
             sqliteIndexPending: Boolean(sqliteIndexPromise),
+            ngramsReady: customStats.ngramsReady,
+            migrating: customStats.migrating,
             scanWorkerActive: Boolean(scanWorker),
             buildState: loadBuildState(),
+            expectedEntryCount: buildableDictionaries().reduce(
+                (sum, dictionary) =>
+                    sum + (Number(dictionary.termCount) || 0),
+                0
+            ),
             selectedAnchors: state ? [...state.dicts].sort() : [],
             activeIds: activeCustomDictIds(),
             dictionaries: dictionaries.map((dictionary) => ({
@@ -162,7 +213,7 @@
         }
         if (sqliteSearchEnabled && sqliteReady && !sqliteWorkerFailed) {
             try {
-                const response = await sqliteRequest({
+                const response = await queueSqliteSearch({
                     type: "search",
                     query,
                     dictIds,
@@ -170,6 +221,8 @@
                 const result = matchesFromSqliteRows(response.rows || []);
                 customStats.lastSearchMs = performance.now() - startedAt;
                 customStats.lastMatches = result.length;
+                customStats.lastTiers = response.timings || [];
+                customStats.lastCandidates = response.candidates || 0;
                 customStats.lastSource = "sqlite";
                 return result;
             } catch (error) {
@@ -195,6 +248,68 @@
         customStats.lastSource = "indexeddb-tiered";
         return { matches: fast, slow };
     };
+    // Definition matches run as a separate, abortable worker request so the
+    // headword results can render first. A newer search cancels the scan.
+    window.customDictionaryDefinitionMatches = async (
+        query,
+        skipKeys = [],
+        limit = MAX_SEARCH_RESULTS
+    ) => {
+        await ready;
+        const dictIds = activeCustomDictIds();
+        if (!dictIds.length || !sqliteReady || sqliteWorkerFailed) return [];
+        try {
+            const startedAt = performance.now();
+            const response = await sqliteRequest(
+                {
+                    type: "searchDefs",
+                    query,
+                    dictIds,
+                    skipKeys: [...skipKeys],
+                    limit,
+                },
+                0
+            );
+            if (response.aborted) return [];
+            customStats.lastDefMs = performance.now() - startedAt;
+            customStats.lastDefTiers = response.timings || [];
+            return matchesFromSqliteRows(response.rows || []);
+        } catch (error) {
+            console.error("SQLite definition search failed:", error);
+            return [];
+        }
+    };
+    // Pinyin/Latin substring matches use the same chunked, abortable scan as
+    // definitions so they cannot block the headword results.
+    window.customDictionaryPinyinMatches = async (
+        query,
+        skipKeys = [],
+        limit = MAX_SEARCH_RESULTS
+    ) => {
+        await ready;
+        const dictIds = activeCustomDictIds();
+        if (!dictIds.length || !sqliteReady || sqliteWorkerFailed) return [];
+        try {
+            const startedAt = performance.now();
+            const response = await sqliteRequest(
+                {
+                    type: "searchPinyin",
+                    query,
+                    dictIds,
+                    skipKeys: [...skipKeys],
+                    limit,
+                },
+                0
+            );
+            if (response.aborted) return [];
+            customStats.lastPinyinMs = performance.now() - startedAt;
+            customStats.lastPinyinTiers = response.timings || [];
+            return matchesFromSqliteRows(response.rows || []);
+        } catch (error) {
+            console.error("SQLite pinyin search failed:", error);
+            return [];
+        }
+    };
     window.mergeCustomMatches = async (data, matches) => {
         await ready;
         if (matches && matches.length) await mergeImported(data, matches);
@@ -213,6 +328,12 @@
                 }
                 if (!db.objectStoreNames.contains("dictionaries")) {
                     db.createObjectStore("dictionaries", { keyPath: "id" });
+                }
+                if (!db.objectStoreNames.contains("imports")) {
+                    db.createObjectStore("imports", { keyPath: "id" });
+                }
+                if (!db.objectStoreNames.contains("import-files")) {
+                    db.createObjectStore("import-files", { keyPath: "id" });
                 }
                 let entries;
                 if (!db.objectStoreNames.contains("entries")) {
@@ -255,6 +376,18 @@
                 .objectStore(storeName)
                 .getAll();
             request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async function dbGet(storeName, key) {
+        const db = await openDb();
+        return new Promise((resolve, reject) => {
+            const request = db
+                .transaction(storeName, "readonly")
+                .objectStore(storeName)
+                .get(key);
+            request.onsuccess = () => resolve(request.result || null);
             request.onerror = () => reject(request.error);
         });
     }
@@ -324,33 +457,24 @@
                     ? IDBKeyRange.bound(bounds.first, bounds.last)
                     : IDBKeyRange.bound(after, bounds.last, true, false);
             const db = await openDb();
-            const batch = await new Promise((resolve, reject) => {
+            const readStarted = performance.now();
+            const rows = await new Promise((resolve, reject) => {
                 const request = db
                     .transaction("entries", "readonly")
                     .objectStore("entries")
-                    .openCursor(range, "next");
-                const rows = [];
-                let lastKey = null;
+                    .getAll(range, batchSize);
                 request.onerror = () => reject(request.error);
-                request.onsuccess = () => {
-                    const cursor = request.result;
-                    if (!cursor) {
-                        resolve({ rows, lastKey, done: true });
-                        return;
-                    }
-                    lastKey = cursor.primaryKey;
-                    if (cursor.value.dictId === dictId) rows.push(cursor.value);
-                    if (rows.length >= batchSize) {
-                        resolve({ rows, lastKey, done: false });
-                        return;
-                    }
-                    cursor.continue();
-                };
+                request.onsuccess = () => resolve(request.result || []);
             });
-            if (batch.rows.length) await callback(batch.rows, batch.lastKey);
-            if (batch.done) return;
-            if (batch.lastKey === null || batch.lastKey === after) return;
-            after = batch.lastKey;
+            const readMs = performance.now() - readStarted;
+            const lastKey = rows.length ? rows[rows.length - 1].key : null;
+            const matching = rows.filter((row) => row.dictId === dictId);
+            if (matching.length) {
+                await callback(matching, lastKey, readMs);
+            }
+            if (rows.length < batchSize) return;
+            if (lastKey === null || lastKey === after) return;
+            after = lastKey;
         }
     }
 
@@ -416,7 +540,8 @@
             throw new Error("SQLite search is unavailable");
         }
         // A worker that never sends its "ready" message (for example when OPFS
-        // is unavailable) must not hang the progress message forever.
+        // is unavailable) must not hang the progress message forever. Creating
+        // composite indexes on an existing index can take a while on a phone.
         await new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 sqliteWorkerFailed = true;
@@ -426,7 +551,7 @@
                 }
                 setBackfillStatus("");
                 reject(new Error("SQLite worker startup timed out"));
-            }, 15000);
+            }, 120000);
             sqliteWorkerReady.then(
                 () => {
                     clearTimeout(timer);
@@ -463,22 +588,70 @@
         });
     }
 
-    function customDictionaryFingerprint() {
-        return JSON.stringify([
-            CUSTOM_INDEX_VERSION,
-            ...dictionaries.map((dictionary) => [
+    function startSqliteSearchJob(job) {
+        searchQueue.active = job;
+        sqliteRequest(job.message)
+            .then(job.resolve, job.reject)
+            .finally(() => {
+                searchQueue.active = null;
+                const next = searchQueue.pending;
+                searchQueue.pending = null;
+                if (next) startSqliteSearchJob(next);
+            });
+    }
+
+    function queueSqliteSearch(message) {
+        return new Promise((resolve, reject) => {
+            const job = { message, resolve, reject };
+            if (searchQueue.active) {
+                if (searchQueue.pending) {
+                    searchQueue.pending.resolve({
+                        rows: [],
+                        timings: [],
+                        candidates: 0,
+                        superseded: true,
+                    });
+                }
+                searchQueue.pending = job;
+                return;
+            }
+            startSqliteSearchJob(job);
+        });
+    }
+
+    function buildableDictionaries() {
+        return dictionaries.filter(
+            (dictionary) => !dictionary.importing && !dictionary.incomplete
+        );
+    }
+
+    function customDictionaryEntriesFingerprint() {
+        return JSON.stringify(
+            buildableDictionaries().map((dictionary) => [
                 dictionary.id,
                 dictionary.termCount,
                 dictionary.createdAt,
                 Boolean(dictionary.converted),
-            ]),
+            ])
+        );
+    }
+
+    function customDictionaryFingerprint() {
+        return JSON.stringify([
+            CUSTOM_INDEX_VERSION,
+            ...JSON.parse(customDictionaryEntriesFingerprint()),
         ]);
     }
 
-    async function buildSqliteIndex(fingerprint, resumeState = null) {
-        // Each dictionary records how many entry rows it stored at import time,
-        // so the progress text can show a real total: 40k/360k.
-        const totalRows = dictionaries.reduce(
+    async function buildSqliteIndex(
+        fingerprint,
+        entriesFingerprint,
+        resumeState = null
+    ) {
+        // Each completed dictionary records how many entry rows it stored at
+        // import time, so the progress text can show a real total: 40k/360k.
+        const sourceDictionaries = buildableDictionaries();
+        const totalRows = sourceDictionaries.reduce(
             (sum, dictionary) => sum + (Number(dictionary.termCount) || 0),
             0
         );
@@ -495,6 +668,10 @@
                     : resumeState.afterKey;
             added = Number(resumeState.added) || 0;
         }
+        customStats.buildReadMs = 0;
+        customStats.buildInsertMs = 0;
+        customStats.buildBatches = 0;
+        acquireBuildWakeLock();
         setBackfillStatus(
             `Building custom search index: ` +
                 `${formatCount(added)}/${formatCount(totalRows)}` +
@@ -503,7 +680,15 @@
         try {
             if (!resuming) {
                 // Clear the old index only when this is a fresh build.
-                await sqliteRequest({ type: "beginBuild", fingerprint }, 0);
+                await sqliteRequest(
+                    {
+                        type: "beginBuild",
+                        fingerprint,
+                        entriesFingerprint,
+                        version: CUSTOM_INDEX_VERSION,
+                    },
+                    0
+                );
                 startDictIndex = 0;
                 startAfter = null;
                 added = 0;
@@ -516,23 +701,25 @@
             });
             for (
                 let dictIndex = startDictIndex;
-                dictIndex < dictionaries.length;
+                dictIndex < sourceDictionaries.length;
                 dictIndex += 1
             ) {
-                const dictionary = dictionaries[dictIndex];
+                const dictionary = sourceDictionaries[dictIndex];
                 const after = dictIndex === startDictIndex ? startAfter : null;
                 // Stream this dictionary in small batches so progress appears
                 // early and a huge import does not have to fit in memory.
                 await forEachEntryBatch(
                     dictionary.id,
-                    2000,
-                    async (chunk, lastKey) => {
+                    5000,
+                    async (chunk, lastKey, readMs) => {
+                        const insertStarted = performance.now();
                         await sqliteRequest(
                             {
                                 type: "addRows",
                                 rows: chunk.map((row) => ({
-                                    // The IndexedDB key makes inserts idempotent,
-                                    // so a resumed batch can be retried safely.
+                                    // IndexedDB's single autoIncrement store
+                                    // makes this key unique across dictionaries.
+                                    // It also makes resumed inserts idempotent.
                                     source_key: row.key,
                                     dict_id: row.dictId,
                                     term: row.term,
@@ -546,6 +733,10 @@
                             },
                             0
                         );
+                        customStats.buildReadMs += readMs || 0;
+                        customStats.buildInsertMs +=
+                            performance.now() - insertStarted;
+                        customStats.buildBatches += 1;
                         added += chunk.length;
                         saveBuildState({
                             fingerprint,
@@ -575,12 +766,98 @@
                     `${formatCount(added)}/${formatCount(Math.max(totalRows, added))} ` +
                     `(finalizing)`
             );
-            await sqliteRequest({ type: "endBuild", fingerprint }, 0);
+            const ended = await sqliteRequest(
+                {
+                    type: "endBuild",
+                    fingerprint,
+                    entriesFingerprint,
+                    version: CUSTOM_INDEX_VERSION,
+                },
+                0
+            );
+            customStats.entryCount = ended.count || 0;
+            if (customStats.entryCount !== totalRows) {
+                console.error(
+                    "Custom index row count mismatch: " +
+                        `${customStats.entryCount} stored, ` +
+                        `${totalRows} expected`
+                );
+            }
             clearBuildState();
             sqliteReady = true;
         } finally {
             // Never leave "Building..." on screen if the worker throws.
             setBackfillStatus("");
+            releaseBuildWakeLock();
+        }
+    }
+
+    // Backfill ngrams from the existing entries table. This is resumable and
+    // does not re-read IndexedDB. Searches use the LIKE path until it finishes.
+    async function migrateSqliteIndex(
+        fingerprint,
+        entriesFingerprint,
+        expectedCount
+    ) {
+        const token = ++migrationSeq;
+        customStats.migrating = true;
+        acquireBuildWakeLock();
+        const total = Number(expectedCount) || customStats.entryCount || 0;
+        setBackfillStatus(
+            `Upgrading custom search index: ` +
+                `0/${formatCount(total)}`
+        );
+        try {
+            const started = await sqliteRequest(
+                {
+                    type: "migrateStart",
+                    fingerprint,
+                    entriesFingerprint,
+                    version: CUSTOM_INDEX_VERSION,
+                },
+                0
+            );
+            if (token !== migrationSeq) return;
+            let cursor = Number(started.cursor) || 0;
+            setBackfillStatus(
+                `Upgrading custom search index: ` +
+                    `${formatCount(cursor)}/${formatCount(total)}`
+            );
+            while (true) {
+                if (token !== migrationSeq) return;
+                const chunk = await sqliteRequest(
+                    {
+                        type: "migrateChunk",
+                        fingerprint,
+                        entriesFingerprint,
+                        version: CUSTOM_INDEX_VERSION,
+                        batchSize: 5000,
+                    },
+                    0
+                );
+                if (token !== migrationSeq) return;
+                if (chunk.done) {
+                    customStats.entryCount =
+                        chunk.count || customStats.entryCount;
+                    break;
+                }
+                cursor = Number(chunk.cursor) || cursor;
+                setBackfillStatus(
+                    `Upgrading custom search index: ` +
+                        `${formatCount(cursor)}/${formatCount(total)}`
+                );
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            customStats.ngramsReady = true;
+        } catch (error) {
+            // Keep the LIKE path working if the migration cannot finish.
+            console.error("Custom index migration failed:", error);
+        } finally {
+            if (token === migrationSeq) {
+                customStats.migrating = false;
+                setBackfillStatus("");
+                releaseBuildWakeLock();
+            }
         }
     }
 
@@ -705,11 +982,34 @@
         if (sqliteIndexPromise) return sqliteIndexPromise;
         sqliteIndexPromise = (async () => {
             try {
+                migrationSeq += 1; // cancel any older migration
+                setBackfillStatus("Preparing custom search index...");
                 const fingerprint = customDictionaryFingerprint();
+                const entriesFingerprint =
+                    customDictionaryEntriesFingerprint();
+                const expectedEntries = dictionaries.reduce(
+                    (sum, dictionary) =>
+                        sum + (Number(dictionary.termCount) || 0),
+                    0
+                );
                 const init = await sqliteRequest({
                     type: "init",
                     fingerprint,
+                    entriesFingerprint,
+                    expectedEntries,
                 });
+                customStats.entryCount = init.count || 0;
+                customStats.ngramsReady = Boolean(init.ngramsReady);
+                if (
+                    !init.needsBuild &&
+                    !init.needsMigration &&
+                    init.count !== expectedEntries
+                ) {
+                    console.error(
+                        "Custom index row count mismatch: " +
+                            `${init.count} stored, ${expectedEntries} expected`
+                    );
+                }
                 if (init.needsBuild) {
                     // Resume only when the saved position belongs to this exact
                     // fingerprint and the worker still holds that partial build.
@@ -720,12 +1020,39 @@
                         init.buildFingerprint === fingerprint
                             ? saved
                             : null;
-                    await buildSqliteIndex(fingerprint, resume);
+                    await buildSqliteIndex(
+                        fingerprint,
+                        entriesFingerprint,
+                        resume
+                    );
+                    customStats.ngramsReady = true;
+                    sqliteReady = true;
+                    customStats.sqliteReady = true;
                 } else {
                     clearBuildState();
+                    // Entries are reusable. Make them searchable immediately;
+                    // the LIKE path is used until the ngram backfill finishes.
+                    sqliteReady = true;
+                    customStats.sqliteReady = true;
+                    if (init.needsMigration) {
+                        customStats.ngramsReady = false;
+                        migrateSqliteIndex(
+                            fingerprint,
+                            entriesFingerprint,
+                            init.count
+                        ).catch((error) =>
+                            console.error(
+                                "Custom index migration failed:",
+                                error
+                            )
+                        );
+                    } else {
+                        customStats.ngramsReady = Boolean(
+                            init.ngramsReady
+                        );
+                        setBackfillStatus("");
+                    }
                 }
-                sqliteReady = true;
-                customStats.sqliteReady = true;
                 return true;
             } catch (error) {
                 sqliteWorkerFailed = true;
@@ -742,8 +1069,13 @@
     }
 
     function invalidateSqliteSearch() {
+        migrationSeq += 1;
+        customStats.migrating = false;
+        customStats.ngramsReady = false;
         sqliteReady = false;
         customStats.sqliteReady = false;
+        setBackfillStatus("");
+        releaseBuildWakeLock();
     }
 
     function scheduleSqliteRebuild(delay = 1200) {
@@ -764,7 +1096,12 @@
         const state = window.state;
         if (!state) return [];
         return dictionaries
-            .filter((dictionary) => state.dicts.has(dictionary.anchor))
+            .filter(
+                (dictionary) =>
+                    !dictionary.importing &&
+                    !dictionary.incomplete &&
+                    state.dicts.has(dictionary.anchor)
+            )
             .map((dictionary) => dictionary.id);
     }
 
@@ -981,12 +1318,18 @@
         });
     }
 
-    async function addTermRows(rows) {
+    async function addTermRows(rows, onTransaction = null) {
         const db = await openDb();
         return new Promise((resolve, reject) => {
-            const tx = db.transaction("entries", "readwrite");
+            const tx = db.transaction(
+                onTransaction
+                    ? ["entries", "dictionaries", "imports"]
+                    : "entries",
+                "readwrite"
+            );
             const store = tx.objectStore("entries");
             for (const row of rows) store.add(row);
+            if (onTransaction) onTransaction(tx);
             tx.oncomplete = () => resolve();
             tx.onerror = () => reject(tx.error);
         });
@@ -1018,10 +1361,13 @@
 
     // Store the script variants with each imported row so searches do not have
     // to make a conversion request for every custom-only headword.
-    async function convertRowsInPlace(rows) {
+    async function convertRowsInPlace(rows, shouldStop = null) {
         const terms = [...new Set(rows.map((row) => row.term).filter(Boolean))];
         const converted = new Map();
         for (let offset = 0; offset < terms.length; offset += 200) {
+            if (shouldStop && shouldStop()) {
+                throw new ImportCancelled("Import cancelled");
+            }
             const chunk = terms.slice(offset, offset + 200);
             const results = await convertScripts(chunk);
             chunk.forEach((term, index) => {
@@ -1036,7 +1382,13 @@
         }
     }
 
-    async function addGramRows(dictId, size, grams, onProgress = null) {
+    async function addGramRows(
+        dictId,
+        size,
+        grams,
+        onProgress = null,
+        shouldStop = null
+    ) {
         const values = [...grams];
         if (!values.length) {
             if (onProgress) onProgress(0, 0);
@@ -1045,6 +1397,9 @@
         const db = await openDb();
         const chunkSize = 2000;
         for (let offset = 0; offset < values.length; offset += chunkSize) {
+            if (shouldStop && shouldStop()) {
+                throw new ImportCancelled("Import cancelled");
+            }
             const chunk = values.slice(offset, offset + chunkSize);
             await new Promise((resolve, reject) => {
                 const tx = db.transaction("grams", "readwrite");
@@ -1620,7 +1975,25 @@
         const text = document.createElement("span");
         text.className = "dict-loading-text";
         text.append(title, status);
-        row.append(toggle, text);
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "dict-cancel";
+        cancel.textContent = "×";
+        cancel.title = "Cancel import";
+        cancel.setAttribute("aria-label", "Cancel import");
+        cancel.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const dictId = row.dataset.dictId;
+            if (dictId) {
+                cancelImport(dictId, row);
+            } else {
+                row.dataset.cancelled = "true";
+                importCancelled = true;
+                status.textContent = "cancelling...";
+            }
+        });
+        row.append(toggle, text, cancel);
         items.append(row);
 
         // The panel is already revealed by the import plus, but keep the state
@@ -1632,7 +2005,15 @@
         return row;
     }
 
-    async function importZip(file, languageId, statusPrefix = "", placeholder = null) {
+    async function importZip(
+        file,
+        languageId,
+        statusPrefix = "",
+        placeholder = null,
+        resumeJob = null
+    ) {
+        let dictionary = null;
+        let job = resumeJob;
         const status = document.querySelector(".import-status");
         const setStatus = (text) => {
             if (status) status.textContent = statusPrefix + text;
@@ -1642,47 +2023,179 @@
             const node = placeholder.querySelector(".dict-loading-status");
             if (node) node.textContent = text;
         };
+        const shouldStop = () =>
+            importCancelled ||
+            (placeholder && placeholder.dataset.cancelled === "true") ||
+            (dictionary && cancelledImports.has(dictionary.id));
         try {
-            setStatus("Reading ZIP...");
+            setStatus(resumeJob ? "Resuming import..." : "Reading ZIP...");
             const buffer = await file.arrayBuffer();
             const zip = zipEntries(buffer);
-            const indexBytes = await zip.read("index.json");
-            if (!indexBytes) throw new Error("The ZIP has no index.json.");
-            const index = JSON.parse(new TextDecoder().decode(indexBytes));
-            const title = (index.title || file.name).trim();
-            const revision = index.revision || "";
-            if (placeholder) {
-                const placeholderTitle = placeholder.querySelector(".dict-loading-title");
-                if (placeholderTitle) placeholderTitle.textContent = title;
-            }
-            const normalizedTitle = normalizeDictionaryTitle(title);
-            const duplicate = dictionaries.some(
-                (dictionary) =>
-                    normalizeDictionaryTitle(dictionary.title) === normalizedTitle
-            );
-            if (duplicate) {
-                setStatus(`Skipped ${title}: already imported.`);
-                if (placeholder && placeholder.isConnected) placeholder.remove();
-                return "skipped";
-            }
-            const bankNames = zip.names
-                .filter((name) => /^term_bank_\d+\.json$/.test(name))
-                .sort();
-            if (!bankNames.length) {
-                throw new Error("The ZIP has no term_bank_*.json files.");
-            }
-
-            const dictId = `dict-${Date.now()}-${Math.random()
-                .toString(36)
-                .slice(2, 7)}`;
-            const anchor = `custom-${dictId}`;
+            let dictId;
+            let anchor;
+            let title;
+            let revision;
+            let bankNames;
+            let startBank = 0;
+            let termCount = 0;
+            let dataBytes = 0;
             const bigrams = new Set();
             const trigrams = new Set();
-            let dataBytes = 0;
-            let termCount = 0;
-            for (let b = 0; b < bankNames.length; b += 1) {
-                setStatus(`Reading ${bankNames[b]} (${b + 1}/${bankNames.length})...`);
-                setPlaceholderStatus(`loading (${b + 1}/${bankNames.length})`);
+
+            if (resumeJob) {
+                dictId = resumeJob.dictId;
+                anchor = resumeJob.anchor;
+                title = resumeJob.title;
+                revision = resumeJob.revision || "";
+                bankNames = resumeJob.bankNames || [];
+                startBank = Math.max(
+                    0,
+                    Math.min(
+                        bankNames.length,
+                        Number(resumeJob.nextBankIndex) || 0
+                    )
+                );
+                termCount = Number(resumeJob.termCount) || 0;
+                dataBytes = Number(resumeJob.dataBytes) || 0;
+                dictionary = dictionaries.find(
+                    (entry) => entry.id === dictId
+                );
+                if (!dictionary) {
+                    dictionary = {
+                        id: dictId,
+                        languageId: resumeJob.languageId || languageId,
+                        title,
+                        revision,
+                        anchor,
+                        termCount,
+                        dataBytes,
+                        indexed: false,
+                        bigramCount: 0,
+                        trigramCount: 0,
+                        bigramBytes: 0,
+                        trigramBytes: 0,
+                        totalBytes: 0,
+                        converted: false,
+                        importing: true,
+                        incomplete: false,
+                        importProgress: "",
+                        createdAt: resumeJob.createdAt || Date.now(),
+                    };
+                    dictionaries.push(dictionary);
+                } else {
+                    dictionary.importing = true;
+                    dictionary.incomplete = false;
+                }
+                job = resumeJob;
+                // Rebuild the gram sets from rows written before the reload.
+                const existingRows = await dbAllByIndex(
+                    "entries",
+                    "dictId",
+                    dictId
+                );
+                for (const row of existingRows) {
+                    addHanGrams(row.term || "", bigrams, trigrams);
+                    addHanGrams(row.reading || "", bigrams, trigrams);
+                    addHanGrams(row.gloss || "", bigrams, trigrams);
+                }
+            } else {
+                const indexBytes = await zip.read("index.json");
+                if (!indexBytes) {
+                    throw new Error("The ZIP has no index.json.");
+                }
+                const index = JSON.parse(
+                    new TextDecoder().decode(indexBytes)
+                );
+                title = (index.title || file.name).trim();
+                revision = index.revision || "";
+                if (placeholder) {
+                    const placeholderTitle = placeholder.querySelector(
+                        ".dict-loading-title"
+                    );
+                    if (placeholderTitle) {
+                        placeholderTitle.textContent = title;
+                    }
+                }
+                const normalizedTitle = normalizeDictionaryTitle(title);
+                const duplicate = dictionaries.some(
+                    (entry) =>
+                        normalizeDictionaryTitle(entry.title) ===
+                        normalizedTitle
+                );
+                if (duplicate) {
+                    setStatus(`Skipped ${title}: already imported.`);
+                    if (placeholder && placeholder.isConnected) {
+                        placeholder.remove();
+                    }
+                    return "skipped";
+                }
+                bankNames = zip.names
+                    .filter((name) => /^term_bank_\d+\.json$/.test(name))
+                    .sort();
+                if (!bankNames.length) {
+                    throw new Error(
+                        "The ZIP has no term_bank_*.json files."
+                    );
+                }
+                dictId = `dict-${Date.now()}-${Math.random()
+                    .toString(36)
+                    .slice(2, 7)}`;
+                anchor = `custom-${dictId}`;
+                dictionary = {
+                    id: dictId,
+                    languageId,
+                    title,
+                    revision,
+                    anchor,
+                    termCount: 0,
+                    dataBytes: 0,
+                    indexed: false,
+                    bigramCount: 0,
+                    trigramCount: 0,
+                    bigramBytes: 0,
+                    trigramBytes: 0,
+                    totalBytes: 0,
+                    converted: false,
+                    importing: true,
+                    incomplete: false,
+                    importProgress: "",
+                    createdAt: Date.now(),
+                };
+                await dbPut("dictionaries", dictionary);
+                dictionaries.push(dictionary);
+                job = {
+                    id: dictId,
+                    dictId,
+                    anchor,
+                    title,
+                    revision,
+                    languageId,
+                    bankNames,
+                    nextBankIndex: 0,
+                    termCount: 0,
+                    dataBytes: 0,
+                    createdAt: Date.now(),
+                };
+                await dbPut("import-files", { id: dictId, file });
+                await dbPut("imports", job);
+            }
+
+            if (placeholder) placeholder.dataset.dictId = dictId;
+            activeImportId = dictId;
+            if (shouldStop()) {
+                throw new ImportCancelled("Import cancelled");
+            }
+
+            for (let b = startBank; b < bankNames.length; b += 1) {
+                if (shouldStop()) {
+                    throw new ImportCancelled("Import cancelled");
+                }
+                setStatus(
+                    `Reading ${bankNames[b]} (${b + 1}/${bankNames.length})...`
+                );
+                setPlaceholderStatus(
+                    `loading (${b + 1}/${bankNames.length})`
+                );
                 const bytes = await zip.read(bankNames[b]);
                 const rows = JSON.parse(new TextDecoder().decode(bytes));
                 const batch = [];
@@ -1690,7 +2203,11 @@
                     if (!Array.isArray(row) || !row[0]) continue;
                     const term = String(row[0]).trim();
                     const reading = String(row[1] || "").trim();
-                    let gloss = stripGlossHeader(glossaryText(row[5]), term, reading);
+                    let gloss = stripGlossHeader(
+                        glossaryText(row[5]),
+                        term,
+                        reading
+                    );
                     if (!gloss) gloss = cleanGloss(glossaryText(row[5]));
                     if (!term || !gloss) continue;
                     addHanGrams(term, bigrams, trigrams);
@@ -1701,18 +2218,26 @@
                         utf8Length(reading) +
                         utf8Length(gloss) +
                         32;
-                    batch.push({
-                        dictId,
-                        term,
-                        reading,
-                        gloss,
-                    });
+                    batch.push({ dictId, term, reading, gloss });
                 }
-                if (batch.length) {
-                    await convertRowsInPlace(batch);
-                    await addTermRows(batch);
-                    termCount += batch.length;
+                if (shouldStop()) {
+                    throw new ImportCancelled("Import cancelled");
                 }
+                await convertRowsInPlace(batch, shouldStop);
+                const nextTermCount = termCount + batch.length;
+                dictionary.termCount = nextTermCount;
+                dictionary.dataBytes = dataBytes;
+                dictionary.importProgress = `${b + 1}/${bankNames.length}`;
+                job.nextBankIndex = b + 1;
+                job.termCount = nextTermCount;
+                job.dataBytes = dataBytes;
+                await addTermRows(batch, (transaction) => {
+                    transaction
+                        .objectStore("dictionaries")
+                        .put(dictionary);
+                    transaction.objectStore("imports").put(job);
+                });
+                termCount = nextTermCount;
                 const counts =
                     `${formatCount(termCount)} entries · ` +
                     `${formatCount(bigrams.size)} bigrams · ` +
@@ -1723,7 +2248,6 @@
                 setPlaceholderStatus(
                     `loading (${b + 1}/${bankNames.length}) · ${counts}`
                 );
-                // Let the page paint the progress text.
                 await new Promise((resolve) => setTimeout(resolve, 0));
             }
 
@@ -1731,86 +2255,200 @@
             const trigramTotal = formatCount(trigrams.size);
             setStatus(`Writing bigram index (0/${bigramTotal})...`);
             setPlaceholderStatus(`writing bigrams 0/${bigramTotal}`);
-            await addGramRows(dictId, "bi", bigrams, (done, total) => {
-                setStatus(
-                    `Writing bigram index (${formatCount(done)}/${formatCount(total)})...`
-                );
-                setPlaceholderStatus(
-                    `writing bigrams ${formatCount(done)}/${formatCount(total)}`
-                );
-            });
+            await addGramRows(
+                dictId,
+                "bi",
+                bigrams,
+                (done, total) => {
+                    setStatus(
+                        `Writing bigram index (${formatCount(done)}/${formatCount(total)})...`
+                    );
+                    setPlaceholderStatus(
+                        `writing bigrams ${formatCount(done)}/${formatCount(total)}`
+                    );
+                },
+                shouldStop
+            );
             setStatus(`Writing trigram index (0/${trigramTotal})...`);
             setPlaceholderStatus(`writing trigrams 0/${trigramTotal}`);
-            await addGramRows(dictId, "tri", trigrams, (done, total) => {
-                setStatus(
-                    `Writing trigram index (${formatCount(done)}/${formatCount(total)})...`
-                );
-                setPlaceholderStatus(
-                    `writing trigrams ${formatCount(done)}/${formatCount(total)}`
-                );
-            });
+            await addGramRows(
+                dictId,
+                "tri",
+                trigrams,
+                (done, total) => {
+                    setStatus(
+                        `Writing trigram index (${formatCount(done)}/${formatCount(total)})...`
+                    );
+                    setPlaceholderStatus(
+                        `writing trigrams ${formatCount(done)}/${formatCount(total)}`
+                    );
+                },
+                shouldStop
+            );
+            if (shouldStop()) {
+                throw new ImportCancelled("Import cancelled");
+            }
             setStatus("Saving dictionary...");
             setPlaceholderStatus("saving...");
             const bigramBytes = gramBytes(bigrams);
             const trigramBytes = gramBytes(trigrams);
-
-            const dictionary = {
-                id: dictId,
-                languageId,
-                title,
-                revision,
-                anchor,
-                termCount,
-                dataBytes,
-                indexed: true,
-                bigramCount: bigrams.size,
-                trigramCount: trigrams.size,
-                bigramBytes,
-                trigramBytes,
-                totalBytes: dataBytes + bigramBytes + trigramBytes,
-                converted: true,
-                createdAt: Date.now(),
-            };
+            dictionary.termCount = termCount;
+            dictionary.dataBytes = dataBytes;
+            dictionary.indexed = true;
+            dictionary.bigramCount = bigrams.size;
+            dictionary.trigramCount = trigrams.size;
+            dictionary.bigramBytes = bigramBytes;
+            dictionary.trigramBytes = trigramBytes;
+            dictionary.totalBytes =
+                dataBytes + bigramBytes + trigramBytes;
+            dictionary.converted = true;
+            dictionary.importing = false;
+            dictionary.incomplete = false;
+            dictionary.importProgress = "";
             await dbPut("dictionaries", dictionary);
-            dictionaries.push(dictionary);
+            await dbDelete("imports", dictId);
+            await dbDelete("import-files", dictId);
             invalidateTermIndex();
             invalidateSqliteSearch();
             resetScanWorker();
             scheduleSqliteRebuild();
-
             addDictionaryToLanguage(dictionary, false, placeholder);
-            // Reveal the dictionary panel, but leave the new dictionary's
-            // switch unchecked (gray) until the user enables it.
             window.state.customDicts = true;
-            const customToggle = document.getElementById("custom-dicts-toggle");
+            const customToggle = document.getElementById(
+                "custom-dicts-toggle"
+            );
             if (customToggle) customToggle.checked = true;
             window.entryDictState.clear();
             window.syncGroups();
             window.syncDictPanel();
             window.savePrefs();
             window.redraw();
-            setStatus(`Imported ${title} (${termCount.toLocaleString()} entries).`);
+            setStatus(
+                `Imported ${title} (${termCount.toLocaleString()} entries).`
+            );
             return "imported";
         } catch (error) {
+            const wasCancelled =
+                error instanceof ImportCancelled || shouldStop();
+            if (wasCancelled && dictionary) {
+                await cleanupImport(
+                    dictionary.id,
+                    dictionary,
+                    placeholder
+                );
+                setStatus("Import cancelled.");
+                return "cancelled";
+            }
             console.error(error);
             setStatus(`Import failed: ${error.message || error}`);
+            if (dictionary && dictionary.importing) {
+                dictionary.importing = false;
+                dictionary.incomplete = true;
+                dictionary.importProgress = "";
+                try {
+                    await dbPut("dictionaries", dictionary);
+                    await dbDelete("imports", dictionary.id);
+                    await dbDelete("import-files", dictionary.id);
+                    addDictionaryToLanguage(
+                        dictionary,
+                        false,
+                        placeholder
+                    );
+                } catch (saveError) {
+                    console.error(saveError);
+                }
+            }
             if (placeholder && placeholder.isConnected) {
                 const placeholderStatus = placeholder.querySelector(
                     ".dict-loading-status"
                 );
-                if (placeholderStatus) placeholderStatus.textContent = "failed";
+                if (placeholderStatus) {
+                    placeholderStatus.textContent = "failed";
+                }
                 placeholder.classList.add("dict-loading-error");
             }
             return "failed";
+        } finally {
+            activeImportId = null;
+            importCancelled = false;
+        }
+    }
+
+    async function cleanupImport(dictId, dictionary = null, placeholder = null) {
+        const target =
+            dictionary ||
+            dictionaries.find((entry) => entry.id === dictId);
+        if (target) forgetDictionary(target);
+        if (placeholder && placeholder.isConnected) placeholder.remove();
+        await deleteDictionaryData(dictId);
+        await dbDelete("imports", dictId);
+        await dbDelete("import-files", dictId);
+        cancelledImports.delete(dictId);
+        importCancelled = false;
+        activeImportId = null;
+        refreshAfterDictionaryChange();
+    }
+
+    function cancelImport(dictId, placeholder = null) {
+        importCancelled = true;
+        if (dictId) cancelledImports.add(dictId);
+        if (placeholder) {
+            placeholder.dataset.cancelled = "true";
+            const statusNode = placeholder.querySelector(
+                ".dict-loading-status"
+            );
+            if (statusNode) statusNode.textContent = "cancelling...";
+        }
+        const status = document.querySelector(".import-status");
+        if (status) status.textContent = "Cancelling import...";
+        if (!importing) {
+            const dictionary = dictId
+                ? dictionaries.find((entry) => entry.id === dictId)
+                : null;
+            cleanupImport(dictId, dictionary, placeholder).catch((error) =>
+                console.error(error)
+            );
+        }
+    }
+
+    async function resumeImports(jobs, filesById) {
+        importing = true;
+        importCancelled = false;
+        try {
+            for (const job of jobs) {
+                if (importCancelled) break;
+                const file = filesById.get(job.id);
+                if (!file) continue;
+                const placeholder = addLoadingDictionaryRow(
+                    { name: `${job.title}.zip` },
+                    job.languageId
+                );
+                if (placeholder) {
+                    placeholder.dataset.dictId = job.dictId;
+                }
+                await importZip(
+                    file,
+                    job.languageId,
+                    "",
+                    placeholder,
+                    job
+                );
+            }
+        } finally {
+            importing = false;
+            importCancelled = false;
         }
     }
 
     async function importFiles(files, languageId) {
         if (importing || !files.length) return;
         importing = true;
+        importCancelled = false;
+        cancelledImports.clear();
         let imported = 0;
         let skipped = 0;
         let failed = 0;
+        let cancelled = 0;
         try {
             const placeholders = files.map((file) =>
                 addLoadingDictionaryRow(file, languageId)
@@ -1828,17 +2466,31 @@
                 );
                 if (result === "imported") imported += 1;
                 else if (result === "skipped") skipped += 1;
-                else failed += 1;
+                else if (result === "cancelled") {
+                    cancelled += 1;
+                    for (
+                        let rest = index + 1;
+                        rest < placeholders.length;
+                        rest += 1
+                    ) {
+                        placeholders[rest]?.remove();
+                    }
+                    break;
+                } else failed += 1;
             }
             const status = document.querySelector(".import-status");
             if (status) {
                 const parts = [`${imported} imported`];
                 if (skipped) parts.push(`${skipped} skipped`);
                 if (failed) parts.push(`${failed} failed`);
+                if (cancelled) parts.push(`${cancelled} cancelled`);
                 status.textContent = `Finished: ${parts.join(", ")}.`;
             }
         } finally {
             importing = false;
+            importCancelled = false;
+            activeImportId = null;
+            cancelledImports.clear();
         }
     }
 
@@ -1951,16 +2603,40 @@
         removeDictionary.type = "button";
         removeDictionary.className = "dict-remove dict-remove-dict";
         removeDictionary.textContent = "×";
-        removeDictionary.title = `Delete ${dictionary.title}`;
-        removeDictionary.setAttribute("aria-label", `Delete ${dictionary.title}`);
-        removeDictionary.addEventListener("click", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            deleteDictionary(dictionary);
-        });
+        if (dictionary.importing) {
+            removeDictionary.title = `Cancel import of ${dictionary.title}`;
+            removeDictionary.setAttribute(
+                "aria-label",
+                `Cancel import of ${dictionary.title}`
+            );
+            removeDictionary.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                cancelImport(dictionary.id, placeholder);
+            });
+        } else {
+            removeDictionary.title = `Delete ${dictionary.title}`;
+            removeDictionary.setAttribute(
+                "aria-label",
+                `Delete ${dictionary.title}`
+            );
+            removeDictionary.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                deleteDictionary(dictionary);
+            });
+        }
         const name = document.createElement("span");
         name.className = "dict-name-label";
         name.textContent = dictionary.title;
+        if (dictionary.importing || dictionary.incomplete) {
+            const badge = document.createElement("span");
+            badge.className = "dict-badge";
+            badge.textContent = dictionary.importing
+                ? "importing"
+                : "incomplete";
+            name.append(" ", badge);
+        }
         label.append(toggle, name, removeDictionary);
         if (placeholder && placeholder.parentElement === items) {
             items.insertBefore(label, placeholder);
@@ -1973,6 +2649,11 @@
         window.anchorLang.set(dictionary.anchor, dictionary.languageId);
         toggle.checked = select || window.state.dicts.has(dictionary.anchor);
         if (toggle.checked) window.state.dicts.add(dictionary.anchor);
+        if (dictionary.importing || dictionary.incomplete) {
+            toggle.checked = false;
+            toggle.disabled = true;
+            window.state.dicts.delete(dictionary.anchor);
+        }
         toggle.addEventListener("change", () => {
             if (toggle.checked) window.state.dicts.add(dictionary.anchor);
             else window.state.dicts.delete(dictionary.anchor);
@@ -2233,7 +2914,13 @@
         const state = window.state;
         const activeIds = new Set(
             dictionaries
-                .filter((dictionary) => state && state.dicts.has(dictionary.anchor))
+                .filter(
+                    (dictionary) =>
+                        !dictionary.importing &&
+                        !dictionary.incomplete &&
+                        state &&
+                        state.dicts.has(dictionary.anchor)
+                )
                 .map((dictionary) => dictionary.id)
         );
         // Nothing selected: do not touch the entries store at all. This avoids
@@ -2584,23 +3271,10 @@
                 });
             }
         }
-        if (data.total == null) {
-            for (const entry of customOnly) entries.push(entry);
-            return;
-        }
-        // Wildcard paging: official results come first, then imported ones.
-        const size = data.page_size || 50;
-        const offset = data.offset || 0;
-        const officialTotal = data.total;
-        const importedStart = Math.max(0, offset - officialTotal);
-        const importedEnd = Math.min(
-            customOnly.length,
-            offset + size - officialTotal
-        );
-        for (let index = importedStart; index < importedEnd; index += 1) {
-            entries.push(customOnly[index]);
-        }
-        data.total = officialTotal + customOnly.length;
+        // Imported rows are always appended after the server rows. Wildcard
+        // paging is handled by the caller, which requests the right custom
+        // page and updates the total itself.
+        for (const entry of customOnly) entries.push(entry);
     }
 
     // --- Storage report ----------------------------------------------------
@@ -2853,7 +3527,9 @@
 
     async function backfillConversions() {
         if (backfillPromise) return backfillPromise;
-        const pending = dictionaries.filter((dictionary) => !dictionary.converted);
+        const pending = buildableDictionaries().filter(
+            (dictionary) => !dictionary.converted
+        );
         if (!pending.length) return;
         backfillPromise = (async () => {
             try {
@@ -2924,6 +3600,40 @@
         await openDb();
         languages = await dbAll("languages");
         dictionaries = await dbAll("dictionaries");
+        const importJobs = await dbAll("imports");
+        const importFiles = await dbAll("import-files");
+        const jobsById = new Map(
+            importJobs.map((job) => [job.id, job])
+        );
+        const filesById = new Map(
+            importFiles.map((entry) => [entry.id, entry.file])
+        );
+        const resumeJobs = [];
+        // Resume imports whose ZIP was saved. Anything else is marked
+        // incomplete so the user can delete or re-import it.
+        for (const dictionary of dictionaries) {
+            if (!dictionary.importing) continue;
+            const job = jobsById.get(dictionary.id);
+            const file = filesById.get(dictionary.id);
+            if (job && file) {
+                resumeJobs.push(job);
+            } else {
+                dictionary.importing = false;
+                dictionary.incomplete = true;
+                dictionary.importProgress = "";
+                await dbPut("dictionaries", dictionary);
+            }
+        }
+        // Remove jobs whose dictionary was deleted or already finished.
+        for (const job of importJobs) {
+            const dictionary = dictionaries.find(
+                (entry) => entry.id === job.id
+            );
+            if (!dictionary || !dictionary.importing) {
+                await dbDelete("imports", job.id);
+                await dbDelete("import-files", job.id);
+            }
+        }
         const storageClose = document.getElementById("storage-close");
         if (storageClose) {
             storageClose.addEventListener("click", () => {
@@ -2939,6 +3649,8 @@
             addLanguageColumn(language);
         }
         for (const dictionary of dictionaries) {
+            // Importing dictionaries are shown by the resume loading row.
+            if (dictionary.importing) continue;
             addDictionaryToLanguage(dictionary, false);
         }
         // Load the imported term index lazily on the first custom search.
@@ -2946,11 +3658,15 @@
         window.setupDictionaryOrdering?.();
         window.enforceSingleOpenDictColumn?.();
         window.syncGroups();
-        if (dictionaries.length) {
+        if (buildableDictionaries().length) {
             sqlitePreparing = true;
             setTimeout(async () => {
                 try {
-                    if (dictionaries.some((dictionary) => !dictionary.converted)) {
+                    if (
+                        buildableDictionaries().some(
+                            (dictionary) => !dictionary.converted
+                        )
+                    ) {
                         await backfillConversions();
                     }
                     await initializeSqliteSearch();
@@ -2960,6 +3676,11 @@
                     sqlitePreparing = false;
                 }
             }, 800);
+        }
+        if (resumeJobs.length) {
+            resumeImports(resumeJobs, filesById).catch((error) =>
+                console.error(error)
+            );
         }
     }
 

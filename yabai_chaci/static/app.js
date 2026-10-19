@@ -1735,6 +1735,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         const matches = Array.isArray(customResult)
             ? customResult
             : customResult.matches || [];
+        const allHeadwordMatches = [...matches];
         const fastKeys = new Set(matches.map(customMatchKey));
         if (matches.length) {
             await applyCustomMatches(full, matches);
@@ -1756,6 +1757,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             if (seq !== searchSeq) return 0;
             const extra = slow.filter((match) => !fastKeys.has(customMatchKey(match)));
             if (extra.length) {
+                allHeadwordMatches.push(...extra);
                 await applyCustomMatches(full, extra);
                 if (seq !== searchSeq) return 0;
                 entryDictState.clear();
@@ -1770,6 +1772,47 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
                 updateHint(query, full.pinyin_match, full.english_match);
                 applyPagerScroll(scrollMode);
             }
+        }
+
+        // Add chunked pinyin and definition matches below the headword rows,
+        // without moving the existing rows.
+        const pinyin = await appendCustomChunked(
+            full,
+            query,
+            allHeadwordMatches,
+            seq,
+            "pinyin"
+        );
+        if (seq !== searchSeq) return 0;
+        if (pinyin.matches.length) {
+            allHeadwordMatches.push(...pinyin.matches);
+        }
+        if (pinyin.added) {
+            repaintMergedRows(
+                full,
+                query,
+                recordTiming,
+                startedAt,
+                scrollMode
+            );
+        }
+
+        const definitions = await appendCustomChunked(
+            full,
+            query,
+            allHeadwordMatches,
+            seq,
+            "defs"
+        );
+        if (seq !== searchSeq) return 0;
+        if (definitions.added) {
+            repaintMergedRows(
+                full,
+                query,
+                recordTiming,
+                startedAt,
+                scrollMode
+            );
         }
         return full.results.length;
     }
@@ -1915,6 +1958,76 @@ async function applyCustomMatches(data, matches) {
     } catch (error) {
         console.error("Custom dictionary merge failed:", error);
     }
+}
+
+function repaintMergedRows(data, query, recordTiming, startedAt, scrollMode) {
+    entryDictState.clear();
+    currentEntries = data.results;
+    currentQuery = query;
+    if (recordTiming) {
+        lastSearchMs = Math.round(performance.now() - startedAt);
+    }
+    render(data.results, query);
+    renderFuzzy(data.fuzzy);
+    renderPagination(query, data);
+    updateHint(query, data.pinyin_match, data.english_match);
+    applyPagerScroll(scrollMode);
+}
+
+// Fill the remaining result slots with chunked custom matches. Headword rows
+// stay where they are; pinyin and definition rows are appended below them.
+async function appendCustomChunked(
+    data,
+    query,
+    headwordMatches,
+    seq,
+    mode
+) {
+    const fetcher =
+        mode === "pinyin"
+            ? window.customDictionaryPinyinMatches
+            : window.customDictionaryDefinitionMatches;
+    if (!fetcher) return { added: false, matches: [] };
+    // The SQLite pinyin path does not understand tones, wildcards or spaces;
+    // those queries go through the IndexedDB path instead.
+    if (
+        mode === "pinyin" &&
+        (/\p{Script=Han}/u.test(query) ||
+            query.includes("*") ||
+            /[1-5]/.test(query) ||
+            /\s/.test(query.trim()))
+    ) {
+        return { added: false, matches: [] };
+    }
+    const remaining = Math.max(0, RESULTS_PAGE_SIZE - headwordMatches.length);
+    if (!remaining) return { added: false, matches: [] };
+    const skipKeys = headwordMatches.map(customMatchKey);
+    const matches = await fetcher(query, skipKeys, remaining);
+    if (seq !== searchSeq || !matches.length) {
+        return { added: false, matches: [] };
+    }
+    const temp = {
+        results: [],
+        total: null,
+        page_size: RESULTS_PAGE_SIZE,
+        offset: 0,
+    };
+    await applyCustomMatches(temp, matches);
+    if (seq !== searchSeq || !temp.results.length) {
+        return { added: false, matches };
+    }
+    const existing = new Set(
+        data.results.map((entry) => `${entry.simplified}|${entry.traditional}`)
+    );
+    let added = false;
+    for (const entry of temp.results) {
+        const key = `${entry.simplified}|${entry.traditional}`;
+        if (existing.has(key)) continue;
+        existing.add(key);
+        data.results.push(entry);
+        added = true;
+    }
+    return { added, matches };
 }
 
 // Show prev/next paging above and below a "*" (all-headwords) search. When there
@@ -2660,7 +2773,10 @@ function syncMobileSearchOptionsToggle(panel) {
     );
 }
 
-function setOptionPanelOpen(panel, open, save = true) {
+// On phones the two disclosures behave like an accordion.
+const narrowOptionsQuery = window.matchMedia("(max-width: 600px)");
+
+function applyOptionPanelState(panel, open, save = true) {
     panel.classList.toggle("open", open);
     const toggle = panel.querySelector(".options-toggle");
     if (toggle) {
@@ -2677,6 +2793,77 @@ function setOptionPanelOpen(panel, open, save = true) {
         }
     }
     syncMobileSearchOptionsToggle(panel);
+}
+
+// Switch the two panels in one height transition. The inner disclosures snap
+// to their final state, then the whole search panel grows or shrinks smoothly.
+function switchOptionPanel(panel, others, searchPanel, save) {
+    if (searchPanel._accordionCleanup) {
+        searchPanel._accordionCleanup();
+    }
+    const startHeight = searchPanel.getBoundingClientRect().height;
+    panel.classList.add("accordion-instant");
+    for (const other of others) other.classList.add("accordion-instant");
+    applyOptionPanelState(panel, true, save);
+    for (const other of others) applyOptionPanelState(other, false, save);
+    const endHeight = searchPanel.getBoundingClientRect().height;
+    if (Math.abs(startHeight - endHeight) < 1) {
+        panel.classList.remove("accordion-instant");
+        for (const other of others) other.classList.remove("accordion-instant");
+        return;
+    }
+
+    let timer = null;
+    const cleanup = () => {
+        searchPanel.removeEventListener("transitionend", onEnd);
+        if (timer) clearTimeout(timer);
+        searchPanel.style.transition = "";
+        searchPanel.style.height = "";
+        searchPanel.style.overflow = "";
+        searchPanel.style.boxSizing = "";
+        panel.classList.remove("accordion-instant");
+        for (const other of others) other.classList.remove("accordion-instant");
+        searchPanel._accordionCleanup = null;
+    };
+    const onEnd = (event) => {
+        if (event.target !== searchPanel || event.propertyName !== "height") {
+            return;
+        }
+        cleanup();
+    };
+
+    searchPanel.style.transition = "none";
+    searchPanel.style.boxSizing = "border-box";
+    searchPanel.style.height = `${startHeight}px`;
+    searchPanel.style.overflow = "hidden";
+    void searchPanel.offsetHeight; // commit the starting height
+    searchPanel.style.transition = "height 200ms ease";
+    searchPanel.style.height = `${endHeight}px`;
+    searchPanel.addEventListener("transitionend", onEnd);
+    timer = setTimeout(cleanup, 260);
+    searchPanel._accordionCleanup = cleanup;
+}
+
+function setOptionPanelOpen(panel, open, save = true) {
+    if (open && narrowOptionsQuery.matches) {
+        const others = [
+            ...document.querySelectorAll(".options.open"),
+        ].filter((other) => other !== panel);
+        const searchPanel = panel.closest(".search-panel");
+        if (searchPanel && others.length) {
+            if (save) {
+                switchOptionPanel(panel, others, searchPanel, save);
+            } else {
+                // Restoring saved state on load: do not animate.
+                applyOptionPanelState(panel, true, save);
+                for (const other of others) {
+                    applyOptionPanelState(other, false, save);
+                }
+            }
+            return;
+        }
+    }
+    applyOptionPanelState(panel, open, save);
 }
 
 for (const panel of document.querySelectorAll(".options")) {
@@ -2703,7 +2890,19 @@ if (mobileSearchOptionsToggle) {
             ?.closest(".options");
         if (!panel) return;
         setOptionPanelOpen(panel, !panel.classList.contains("open"));
-        if (panel.classList.contains("open")) setLangOpen(false);
+        if (panel.classList.contains("open")) {
+            setLangOpen(false);
+            // The gear is the only way to reveal the dictionaries section in
+            // the compact stuck-to-top panel.
+            const searchPanel = panel.closest(".search-panel");
+            if (
+                searchPanel &&
+                searchPanel.classList.contains("pulled") &&
+                !searchPanel.classList.contains("docked")
+            ) {
+                searchPanel.classList.add("show-dictionaries");
+            }
+        }
     });
     const panel = document.getElementById("search-options")?.closest(".options");
     if (panel) syncMobileSearchOptionsToggle(panel);
@@ -2876,12 +3075,17 @@ function placePulledPanel() {
     searchPanel.style.setProperty("--pulled-width", `${rect.width}px`);
     const top = Math.max(0, rect.top);
     searchPanel.style.top = `${top}px`;
+    const wasDocked = searchPanel.classList.contains("docked");
     const docked = top > 0;
     searchPanel.classList.toggle("docked", docked);
     // While docked in its normal place, keep the reserved space in sync with
     // the panel's current height. When stuck at the top, leave it alone so
     // growing the panel never moves the page.
-    if (docked) reservePanelSpace();
+    if (docked) {
+        // A new stuck session starts with the dictionaries section hidden.
+        if (!wasDocked) searchPanel.classList.remove("show-dictionaries");
+        reservePanelSpace();
+    }
 }
 
 // Briefly disable the search-row transition so opening the stuck panel switches
@@ -2923,9 +3127,17 @@ function setPulled(open) {
         searchPanel.classList.add("closing");
         pullArrow.setAttribute("aria-expanded", "false");
         savePulled(false);
+        // Closing the pop-out tab also puts the search options and
+        // dictionaries menus away.
+        collapseOptionPanels();
         closeTimer = setTimeout(() => {
             closeTimer = null;
-            searchPanel.classList.remove("closing", "pulled", "docked");
+            searchPanel.classList.remove(
+                "closing",
+                "pulled",
+                "docked",
+                "show-dictionaries"
+            );
             searchPanel.style.removeProperty("--pulled-left");
             searchPanel.style.removeProperty("--pulled-width");
             searchPanel.style.removeProperty("top");

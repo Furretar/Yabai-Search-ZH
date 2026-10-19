@@ -356,7 +356,21 @@ body:has(.search-panel:focus-within) .pull-arrow {
    docked in its normal place it matches the normal panel exactly. */
 .search-panel.pulled:not(.docked) .option-rows {
     align-items: center;
-    padding-top: .25rem;
+    grid-template-rows: none;
+    row-gap: .4rem;
+    padding: .2rem .5rem .5rem;
+}
+
+/* Tighten the buttons themselves in the compact stuck-to-top panel. */
+.search-panel.pulled:not(.docked) .quick-pair,
+.search-panel.pulled:not(.docked) .quick-toggle {
+    height: 1.7rem;
+}
+
+.search-panel.pulled:not(.docked) .quick-pair .quick-square,
+.search-panel.pulled:not(.docked) .quick-toggle {
+    padding-top: .15rem;
+    padding-bottom: .15rem;
 }
 
 /* While the popped-out bar is stuck at the top edge, the descriptions fade
@@ -364,6 +378,8 @@ body:has(.search-panel:focus-within) .pull-arrow {
 .search-panel.pulled:not(.docked) .option-row {
     gap: 0;
 }
+
+
 
 .search-panel.pulled:not(.docked) .option-description {
     max-height: 0;
@@ -433,23 +449,24 @@ body:has(.search-panel:focus-within) .pull-arrow {
 /* While the popped-out bar is stuck to the top edge, the row returns to the
    compact size. */
 .search-panel.pulled:not(.docked) form {
-    min-height: 2.2rem;
+    min-height: 2.85rem;
 }
 
 .search-panel.pulled:not(.docked) input {
-    font-size: inherit;
-    padding: .2rem .5rem;
+    font-size: 1.3rem;
+    padding: .3rem .55rem;
 }
 
 .search-panel.pulled:not(.docked) .lang-button,
-.search-panel.pulled:not(.docked) .search-button {
-    font-size: inherit;
+.search-panel.pulled:not(.docked) .search-button,
+.search-panel.pulled:not(.docked) .mobile-search-options-toggle {
+    font-size: 1.3rem;
     padding-top: .2rem;
     padding-bottom: .2rem;
 }
 
 .search-panel.pulled:not(.docked) .clear-button {
-    font-size: 1.1rem;
+    font-size: 1.43rem;
 }
 
 /* Briefly applied when the panel opens so the row switches straight to the
@@ -604,6 +621,8 @@ body:has(.search-panel:focus-within) .pull-arrow {
 /* Collapsible "Search options" disclosure, under the search row on the panel. */
 .options {
     border-top: 1px solid var(--options-divider);
+    /* Let the quick-control layout switch based on its actual panel width. */
+    container-type: inline-size;
 }
 
 /* Both disclosure rows are centered. */
@@ -654,6 +673,15 @@ body:has(.search-panel:focus-within) .pull-arrow {
     max-height: 24rem;
 }
 
+/* The accordion closes the previously open panel immediately so the two
+   height animations do not fight each other. */
+.options.accordion-instant .options-collapse,
+.options.accordion-instant .toggles,
+.options.accordion-instant .dict-body,
+.options.accordion-instant .option-rows {
+    transition: none;
+}
+
 /* The collapsing child must be border-box and free to shrink to 0, so its own
    padding doesn't poke out below the search bar while the panel is collapsed. */
 .options-collapse > * {
@@ -677,17 +705,17 @@ body:has(.search-panel:focus-within) .pull-arrow {
     transition-delay: 90ms;
 }
 
-/* The four quick controls, side by side with each description underneath. */
+/* Default: the four controls on one line, Custom Dictionaries below. */
 .option-rows {
-    display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: .4rem 1rem;
+    display: grid;
+    grid-template-columns: repeat(4, max-content);
+    align-items: start;
+    /* Spread the four controls evenly instead of bunching them in the center. */
+    justify-content: space-evenly;
+    gap: .4rem .35rem;
     /* Equal space above the controls (below "Search Options") and a little
        more below them (above the Dictionaries separator). */
-    padding: .35rem .75rem .6rem;
+    padding: .35rem .5rem .6rem;
     opacity: 0;
     transition: opacity 100ms ease;
 }
@@ -708,33 +736,49 @@ body:has(.search-panel:focus-within) .pull-arrow {
     transition: gap 180ms ease;
 }
 
-/* The Custom Dictionaries chip shares the row but has no description, so it
-   keeps its own width and lines up with the buttons. */
+/* Custom Dictionaries always starts on its own centered row. */
 .option-rows > .custom-dicts-button {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: center;
     width: auto;
 }
 
-/* When the chip wraps onto its own line, center it. */
-@media (max-width: 748px) {
-    .option-rows > .custom-dicts-button {
-        margin-left: auto;
-        margin-right: auto;
-    }
-}
-
-/* Once the fourth control would wrap, drop the descriptions so the four
-   controls stay on one row. */
-@media (max-width: 556px) {
-    .option-description {
-        display: none;
-    }
-}
-
-/* On very narrow screens the quick controls wrap onto three rows. Center each
-   row instead of spreading the controls to the edges. */
-@media (max-width: 390px) {
+/* When the four controls do not fit on one line, use two per row and put
+   Custom Dictionaries on a third row. The container is the options panel. */
+@container (max-width: 470px) {
     .option-rows {
-        justify-content: center;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: repeat(3, minmax(3.25rem, auto));
+        grid-template-areas:
+            "script tone"
+            "phonetic region"
+            "custom custom";
+        align-items: center;
+        justify-items: center;
+        gap: .5rem 1rem;
+    }
+
+    .option-row:nth-child(1) {
+        grid-area: script;
+    }
+
+    .option-row:nth-child(2) {
+        grid-area: tone;
+    }
+
+    .option-row:nth-child(3) {
+        grid-area: phonetic;
+    }
+
+    .option-row:nth-child(4) {
+        grid-area: region;
+    }
+
+    .option-rows > .custom-dicts-button {
+        grid-column: 1 / -1;
+        grid-row: 3;
+        justify-self: center;
     }
 }
 
@@ -790,8 +834,9 @@ body:has(.search-panel:focus-within) .pull-arrow {
     color: var(--accent);
 }
 
-/* The quick controls keep their previous dark-chip design. Each individual
-   square is as wide as the EN/ZH/TW language button (3.07rem). */
+/* The quick controls keep their previous dark-chip design. The squares are
+   slightly narrower than the EN/ZH/TW language button so the four controls
+   fit more easily on one row. */
 .quick-pair {
     position: relative;
     /* Keep the sliding highlight behind the square text. */
@@ -816,7 +861,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
     top: 0;
     bottom: 0;
     left: 0;
-    width: 3.07rem;
+    width: 2.6rem;
     background: var(--accent);
     border-radius: .35rem 0 0 .35rem;
     transform: translateX(0);
@@ -834,7 +879,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
     align-items: center;
     justify-content: center;
     box-sizing: border-box;
-    width: 3.07rem;
+    width: 2.6rem;
     padding: .2rem .35rem;
     border: none;
     /* Square by default; the outer corners are rounded below. This also resets
@@ -895,6 +940,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
 /* The Custom dictionaries label is yellow when on and gray when off. */
 .custom-dicts-button {
     color: var(--accent);
+    font-size: 1rem;
 }
 
 .custom-dicts-button[aria-pressed="false"] {
@@ -937,7 +983,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
 
 /* Match the width of one two-square quick pair. */
 #quick-tone {
-    width: calc(3.07rem * 2 + 2px);
+    width: calc(2.6rem * 2 + 2px);
 }
 
 /* The tone sample is a four-character phrase in red, yellow, green, blue. */
@@ -2021,6 +2067,37 @@ body:has(.search-panel:focus-within) .pull-arrow {
     color: var(--tone1);
 }
 
+/* Cancel control for an in-progress import. */
+.dict-cancel {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 1.1rem;
+    height: 1.1rem;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.dict-cancel:hover {
+    color: var(--tone1);
+}
+
+/* "importing" / "incomplete" marker on a dictionary row. */
+.dict-badge {
+    margin-left: .35rem;
+    color: var(--muted);
+    font-size: .7rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+}
+
 /* Per-dictionary storage breakdown. */
 .storage-dialog {
     width: min(34rem, calc(100% - 2rem));
@@ -2481,6 +2558,16 @@ body:has(.search-panel.pulled.docked) #parsed {
 
     .mobile-search-options-toggle {
         display: inline-flex;
+    }
+
+    /* In the compact stuck-to-top panel, keep the Dictionaries dropdown out
+       of the way until the gear reveals it. */
+    .search-panel.pulled:not(.docked) .options.dictionaries {
+        display: none;
+    }
+
+    .search-panel.pulled:not(.docked).show-dictionaries .options.dictionaries {
+        display: block;
     }
 
     .lang-select {
