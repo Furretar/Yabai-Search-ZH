@@ -21,7 +21,8 @@
     <!-- Page title / heading. -->
     <h1>
         <a id="home-link" href="/">牙白查词</a>
-        <span class="site-subtitle">Yabai Search ZH</span>
+        <span class="site-subtitle">Yabai Search<span class="site-meta"><span
+                    class="site-zh">ZH</span><span class="site-version">BETA v0.1</span></span></span>
     </h1>
     <!-- Search bar and its options share one surface, so the expanded options
        look like a dropdown connected to the search bar. Wired up by app.js. -->
@@ -41,6 +42,10 @@
                     <li role="option" data-value="JP" aria-selected="false">JP - Japanese</li>
                 </ul>
             </div>
+            <button type="button" class="mobile-search-options-toggle" aria-expanded="false"
+                aria-controls="search-options" aria-label="Search options" title="Search options"><span
+                    class="mobile-options-gear" aria-hidden="true">⚙</span><span class="mobile-options-arrow"
+                    aria-hidden="true">▾</span></button>
             <input type="search" id="q" name="q" placeholder="Seach with English, Chinese, or Pinyin">
             <!-- Clear the box and bring the mobile keyboard back (wired in app.js). -->
             <button type="button" id="clear-button" class="clear-button" aria-label="Clear search"
@@ -49,6 +54,9 @@
         </form>
         <!-- Collapsed by default; the button toggles the panel (animated in CSS). -->
         <div class="options">
+            <!-- Sits at the top so it stays put while the options open below. -->
+            <button type="button" class="options-toggle search-options-toggle" aria-expanded="false"
+                aria-controls="search-options"><span class="options-label">Search Options</span></button>
             <div id="search-options" class="options-collapse">
                 <!-- The four quick controls, side by side with a description underneath. -->
                 <div class="option-rows">
@@ -105,30 +113,46 @@
                 <input type="checkbox" id="taiwan-toggle" hidden>
                 <input type="checkbox" id="custom-dicts-toggle" hidden>
             </div>
-            <!-- Sits at the bottom of the panel, so it moves down when expanded. -->
-            <button type="button" class="options-toggle search-options-toggle" aria-expanded="false"
-                aria-controls="search-options"><span class="options-label">Search Options</span></button>
         </div>
         <!-- Dictionaries: pick which dictionaries to use, grouped by language.
            Unselected ones are used as backup (see app.js). -->
         <div class="options dictionaries">
+            <!-- Sits at the top so it stays put while the dictionaries open below. -->
+            <div class="dictionaries-header">
+                <button type="button" class="options-toggle dictionaries-toggle" aria-expanded="false"
+                    aria-controls="dictionary-options">Dictionaries</button>
+                <button type="button" id="dict-storage-link" class="dict-storage-link">Check Storage</button>
+                <div class="dict-mode" role="group" aria-label="Definition detail">
+                    <span class="dict-mode-group">
+                        <button type="button" class="dict-mode-option" data-mode="compact"
+                            aria-pressed="false">Compact</button>
+                        <span class="dict-mode-separator" aria-hidden="true">/</span>
+                    </span>
+                    <span class="dict-mode-group">
+                        <button type="button" class="dict-mode-option" data-mode="detailed"
+                            aria-pressed="true">Detailed</button>
+                        <span class="dict-mode-info" tabindex="0" role="button" aria-expanded="false"
+                            aria-label="Compact mode information" aria-describedby="dict-mode-help">i<span
+                                id="dict-mode-help" class="dict-mode-help" role="tooltip">Compact mode will
+                                only display 1 definition per language. Priority is decided by
+                                dictionary order.</span></span>
+                    </span>
+                </div>
+            </div>
             <div id="dictionary-options" class="options-collapse">
                 <div class="dict-body">
-                    <p class="dict-compact-hint">Toggling a language will automatically choose 1 dictionary per entry.</p>
                     <div class="dict-columns">
                         {% for lang, name in [('english', 'English'), ('mainland', 'Mainland'), ('taiwan', 'Taiwan'), ('japanese', 'Japanese')] %}
                         <div class="dict-column" data-lang="{{ lang }}">
                             <div class="dict-column-head">
-                                <label class="dict-head-label">
-                                    <input type="checkbox" class="dict-group" data-lang="{{ lang }}"> <span
-                                        class="dict-name">{{ name }}</span>
-                                </label>
+                                <span class="dict-name">{{ name }}</span>
                                 <button type="button" class="dict-disclosure" aria-expanded="false"
                                     aria-label="Show {{ name }} dictionaries"><span class="dict-caret"></span></button>
                             </div>
                             <div class="dict-items">
                                 {% for d in dictionaries if d.lang == lang %}
-                                <label><input type="checkbox" class="dict-toggle" data-anchor="{{ d.anchor }}"> {{ d.label }}</label>
+                                <label><input type="checkbox" class="dict-toggle" data-anchor="{{ d.anchor }}"><span
+                                        class="dict-name-label">{{ d.label }}</span></label>
                                 {% endfor %}
                             </div>
                         </div>
@@ -136,9 +160,6 @@
                     </div>
                 </div>
             </div>
-            <!-- Sits at the bottom of the panel, so it moves down when expanded. -->
-            <button type="button" class="options-toggle dictionaries-toggle" aria-expanded="false"
-                aria-controls="dictionary-options">Dictionaries <span class="dictionaries-hint">- Toggling a language will automatically choose 1 dictionary per entry.</span></button>
         </div>
     </div>
     </div>
@@ -173,10 +194,49 @@
         <p id="result-timing" class="result-timing"></p>
         <footer>
             <a href="/about">About</a>
+            <button type="button" id="copy-log-button" class="copy-log-button"
+                title="Copy the current search state and any error stack to the clipboard.">Copy debug log</button>
         </footer>
     </div>
+    <!-- In-page dialogs, so browser dialog blocking never affects imports. -->
+    <dialog id="add-language-dialog" class="custom-dialog">
+        <form id="add-language-form">
+            <h2>Add language</h2>
+            <label class="dialog-field">Language name
+                <input id="add-language-name" type="text" autocomplete="off">
+            </label>
+            <p id="add-language-error" class="dialog-error" hidden>Enter a language name.</p>
+            <div class="dialog-actions">
+                <button type="button" class="dialog-cancel" id="add-language-cancel">Cancel</button>
+                <button type="submit" class="dialog-submit">Add</button>
+            </div>
+        </form>
+    </dialog>
+    <dialog id="confirm-dialog" class="custom-dialog">
+        <form method="dialog">
+            <h2>Confirm</h2>
+            <p id="confirm-message"></p>
+            <div class="dialog-actions">
+                <button value="cancel" class="dialog-cancel">Cancel</button>
+                <button value="delete" class="dialog-submit dialog-danger">Delete</button>
+            </div>
+        </form>
+    </dialog>
+    <dialog id="storage-dialog" class="custom-dialog storage-dialog">
+        <h2>Dictionary storage</h2>
+        <div id="storage-list" class="storage-list"></div>
+        <p id="storage-total" class="storage-total"></p>
+        <div class="dialog-actions">
+            <button type="button" class="dialog-cancel" id="storage-close">Close</button>
+        </div>
+    </dialog>
+    <!-- Browser-side dictionary imports (IndexedDB). Load before app.js so the
+       search hook can wait for the imported term index. -->
+    <script src="/static/custom_dicts.js?v={{ asset_version }}"></script>
     <!-- Front-end script served from the /static mount (static/app.js). -->
     <script src="/static/app.js?v={{ asset_version }}"></script>
+    <!-- Local scanner: moves inline pinyin in definition text into furigana. -->
+    <script src="/static/inline_furigana.js?v={{ asset_version }}"></script>
 </body>
 
 </html>

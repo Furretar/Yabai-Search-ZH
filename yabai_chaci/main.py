@@ -24,6 +24,10 @@ BASE = Path(__file__).resolve().parent
 # Directory holding the static assets served under /static/.
 _STATIC_DIR = BASE / "static"
 
+# Normal (non-wildcard) searches are paged as well. Fetch up to this many
+# matches so the total and the requested page can be computed in one pass.
+_MAX_NORMAL_RESULTS = 5000
+
 
 def asset_version() -> str:
     """A cache-busting tag for the static assets: the newest mtime in static/.
@@ -239,7 +243,7 @@ def api_search(
             fuzzy = []
             english_match = db.has_english_match(q.strip()) if pinyin_match else False
         else:
-            entries, pinyin_match = db.search(q, limit, taiwan)
+            entries, pinyin_match = db.search(q, _MAX_NORMAL_RESULTS, taiwan)
             results = _expand_variants(entries)
             fuzzy = []
             variant = db.tonal_variant(q)
@@ -283,6 +287,10 @@ def api_search(
             english_match = False
             if pinyin_match:
                 english_match = db.has_english_match(q.strip())
+            # Normal searches are paged like wildcard searches: the full match
+            # list gives the total, and the requested page is a slice of it.
+            total = len(results)
+            results = results[offset : offset + limit]
     finally:
         statements = db.end_log()
     if total is None:
@@ -305,6 +313,50 @@ def api_search(
 
 class AnnotateRequest(BaseModel):
     text: str = ""
+
+
+class ConvertBatchRequest(BaseModel):
+    texts: list[str] = []
+
+
+@app.get("/api/convert")
+def api_convert(text: str = Query("", max_length=128)):
+    """Return OpenCC simplified/traditional forms for a word.
+
+    Used by the browser-side imported dictionaries, which only store one script
+    form, so their headwords can follow the front-end script toggle.
+    """
+    text = text.strip()
+    if not text:
+        return {"simplified": "", "traditional": ""}
+    return {
+        "simplified": db.to_simplified(text),
+        "traditional": db.to_traditional(text),
+    }
+
+
+@app.post("/api/convert-batch")
+def api_convert_batch(request: ConvertBatchRequest):
+    """Convert several imported-dictionary headwords in one request.
+
+    A custom dictionary search can surface dozens of headwords at once; doing
+    one /api/convert round-trip per headword made those searches wait on many
+    small requests. Keep the batch bounded so a stray client cannot send an
+    unbounded body.
+    """
+    texts = [text.strip()[:128] for text in request.texts[:200]]
+    return {
+        "results": [
+            {
+                "simplified": db.to_simplified(text),
+                "traditional": db.to_traditional(text),
+            }
+            if text
+            else {"simplified": "", "traditional": ""}
+            for text in texts
+        ]
+    }
+
 
 
 @app.post("/api/annotate")

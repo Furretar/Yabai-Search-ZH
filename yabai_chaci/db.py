@@ -286,6 +286,7 @@ _SOURCE_QUERIES = [
         "pinyin_sql": "SELECT pinyin FROM moe WHERE word = ? AND pinyin <> '' LIMIT 1",
         "pinyin_batch_sql": "SELECT word, pinyin FROM moe "
                             "WHERE word IN ({ph}) AND pinyin <> ''",
+        "pinyin_rows_sql": "SELECT word, pinyin FROM moe WHERE pinyin <> ''",
         "count_sql": "SELECT COUNT(*) FROM moe",
     },
     {
@@ -351,10 +352,12 @@ _SOURCE_QUERIES = [
                       "WHERE word = ? AND pinyin <> '' LIMIT 1",
         "pinyin_batch_sql": "SELECT word, pinyin FROM headwords "
                             "WHERE word IN ({ph}) AND pinyin <> ''",
+        "pinyin_rows_sql": "SELECT word, simplified, pinyin FROM headwords "
+                           "WHERE pinyin <> ''",
         "count_sql": "SELECT COUNT(*) FROM headwords",
     },
     {
-        "label": "日本語",
+        "label": "ウィクショナリー",
         "anchor": "jpwiktionary",
         "lang": "japanese",
         "database": JPWIKTIONARY_DB_PATH,
@@ -369,6 +372,8 @@ _SOURCE_QUERIES = [
                       "WHERE word = ? AND pinyin <> '' LIMIT 1",
         "pinyin_batch_sql": "SELECT word, pinyin FROM headwords "
                             "WHERE word IN ({ph}) AND pinyin <> ''",
+        "pinyin_rows_sql": "SELECT word, simplified, pinyin FROM headwords "
+                           "WHERE pinyin <> ''",
         "split_pinyin": True,
         "count_sql": "SELECT COUNT(*) FROM headwords",
     },
@@ -1854,6 +1859,52 @@ def _source_only_entries(
     ]
 
 
+# Pinyin rows from the source headword tables, cached until a database changes.
+_source_pinyin_rows_cache: tuple[tuple, list[tuple[str, str, str, str, str]]] | None = None
+
+
+def _source_pinyin_rows() -> list[tuple[str, str, str, str, str]]:
+    """(word, simplified, marked, toneless, numeric) for every source reading."""
+    global _source_pinyin_rows_cache
+    sources = [source for source in _SOURCE_QUERIES if source.get("pinyin_rows_sql")]
+    stamp = tuple(
+        (
+            source["anchor"],
+            source["database"].stat().st_mtime
+            if source["database"].exists()
+            else None,
+        )
+        for source in sources
+    )
+    if _source_pinyin_rows_cache is not None and _source_pinyin_rows_cache[0] == stamp:
+        return _source_pinyin_rows_cache[1]
+    rows: list[tuple[str, str, str, str, str]] = []
+    for source in sources:
+        if not source["database"].exists():
+            continue
+        connection = _connect(source["database"])
+        try:
+            for record in connection.execute(source["pinyin_rows_sql"]):
+                word = record[0]
+                simplified = record[1] if len(record) > 2 else to_simplified(word)
+                pinyin = record[-1]
+                if not word or not simplified or not pinyin:
+                    continue
+                marked = (
+                    _split_pinyin(pinyin)
+                    if source.get("split_pinyin")
+                    else pinyin
+                )
+                toneless = to_toneless(marked)
+                if not toneless:
+                    continue
+                rows.append((word, simplified, marked, toneless, to_numeric(marked)))
+        finally:
+            connection.close()
+    _source_pinyin_rows_cache = (stamp, rows)
+    return rows
+
+
 def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
     """Source-only entries whose reading matches a pinyin query.
 
@@ -1873,6 +1924,17 @@ def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
     if not letters:
         return []
     pattern = _like_pattern(f"*{letters}*")
+    # A pinyin wildcard is matched against the source readings with the same
+    # zero-or-more-character segments as the SQL LIKE search.
+    wildcard_re = None
+    if "*" in text:
+        wildcard_re = re.compile(
+            "^"
+            + ".*".join(
+                re.escape(to_toneless(part)) for part in text.split("*")
+            )
+            + "$"
+        )
     known = _cedict_heads()
     # (rank key, word, marked reading, simplified word)
     found: list[tuple[tuple, str, str, str]] = []
@@ -1891,7 +1953,15 @@ def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
             if rank is None:
                 return
         elif rank is None:
-            rank = 0 if to_toneless(marked) == letters else 1
+            # A plain reading search matches readings that start with the
+            # query; a wildcard uses its own segment pattern.
+            key = to_toneless(marked)
+            if wildcard_re is not None:
+                if not wildcard_re.fullmatch(key):
+                    return
+            elif not key.startswith(letters):
+                return
+            rank = 0 if key == letters else 1
         found.append(((rank, len(marked), word), word, marked, simplified))
 
     if WIKTIONARY_DB_PATH.exists():
@@ -1920,8 +1990,7 @@ def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
                 marked = spaced or _split_pinyin(pinyin)
                 numeric = numeric or to_numeric(marked)
                 simplified = simplified or to_simplified(word)
-                rank = None if parsed else (0 if toneless == letters else 1)
-                consider(word, marked, numeric, simplified, rank)
+                consider(word, marked, numeric, simplified)
 
             if parsed:
                 # Tone/boundary ranking depends on the query, so keep it in
@@ -1973,6 +2042,13 @@ def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
                     process(row)
         finally:
             connection.close()
+
+    # MOE, zh.wiktionary and ja.wiktionary headword readings. These tables have
+    # no precomputed toneless column, so the list is built once and cached.
+    for word, simplified, marked, toneless, numeric in _source_pinyin_rows():
+        if simplified in known:
+            continue
+        consider(word, marked, numeric, simplified)
 
     found.sort(key=lambda item: item[0])
     seen: set[tuple[str, str]] = set()
@@ -2677,6 +2753,42 @@ def _all_headwords_list() -> list[str]:
                     "WHERE gloss IS NOT NULL"
                 )
             )
+        if ZHWIKTIONARY_DB_PATH.exists():
+            connection.execute(
+                "ATTACH DATABASE ? AS zhwikt", (str(ZHWIKTIONARY_DB_PATH),)
+            )
+            # Chinese Wiktionary headwords, plus their readings and definitions.
+            parts.append("SELECT DISTINCT word FROM zhwikt.headwords WHERE word <> ''")
+            has_reading.update(
+                to_simplified(row[0])
+                for row in connection.execute(
+                    "SELECT word FROM zhwikt.headwords WHERE pinyin <> ''"
+                )
+            )
+            def_words.update(
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT word FROM zhwikt.senses WHERE text <> ''"
+                )
+            )
+        if JPWIKTIONARY_DB_PATH.exists():
+            connection.execute(
+                "ATTACH DATABASE ? AS jpwikt", (str(JPWIKTIONARY_DB_PATH),)
+            )
+            # Japanese Wiktionary headwords, plus their readings and definitions.
+            parts.append("SELECT DISTINCT word FROM jpwikt.headwords WHERE word <> ''")
+            has_reading.update(
+                to_simplified(row[0])
+                for row in connection.execute(
+                    "SELECT word FROM jpwikt.headwords WHERE pinyin <> ''"
+                )
+            )
+            def_words.update(
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT word FROM jpwikt.senses WHERE text <> ''"
+                )
+            )
         union = " UNION ".join(parts)
         rows = connection.execute(f"SELECT DISTINCT headword FROM ({union})").fetchall()
     finally:
@@ -2786,6 +2898,7 @@ def wildcard_search(
         return [], 0, False
     literal = to_simplified(text).replace("*", "")
     is_chinese = has_cjk(literal)
+    source_page: list[dict] = []
     connection = connect()
     try:
         freq = _freq_order()
@@ -2801,14 +2914,28 @@ def wildcard_search(
                 f"{freq_clause}, length(simplified), id"
             )
             order_params = (literal, _like_pattern(f"{literal}*"))
-            total = connection.execute(
+            cedict_total = connection.execute(
                 f"SELECT COUNT(*) FROM entries WHERE {where}", count_params
             ).fetchone()[0]
-            rows = connection.execute(
-                "SELECT simplified, traditional, pinyin, english, english_normalized "
-                f"FROM entries WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
-                (*count_params, *order_params, limit, offset),
-            ).fetchall()
+            # Source-only headwords matching the same wildcard are appended
+            # after the CEDICT matches (one combined paged list).
+            source_entries = _source_only_entries(text, limit=500)
+            total = cedict_total + len(source_entries)
+            if offset < cedict_total:
+                rows = connection.execute(
+                    "SELECT simplified, traditional, pinyin, english, english_normalized "
+                    f"FROM entries WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                    (*count_params, *order_params, limit, offset),
+                ).fetchall()
+                source_start = 0
+            else:
+                rows = []
+                source_start = offset - cedict_total
+            source_take = limit - len(rows)
+            if source_take > 0:
+                source_page = source_entries[
+                    source_start : source_start + source_take
+                ]
             pinyin_match = False
         else:
             pinyin_key = to_toneless(text)
@@ -2845,6 +2972,14 @@ def wildcard_search(
         if not has_cjk(entry["simplified"]):
             continue
         key = (entry["traditional"], entry["pinyin"])
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(entry)
+    for entry in source_page:
+        if not has_cjk(entry["simplified"]):
+            continue
+        key = (entry["traditional"], entry.get("pinyin"))
         if key in seen:
             continue
         seen.add(key)

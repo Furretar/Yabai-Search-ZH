@@ -29,8 +29,7 @@ const dialectDescription = document.getElementById("dialect-description");
 const taiwanToggle = document.getElementById("taiwan-toggle");
 const customDictsToggle = document.getElementById("custom-dicts-toggle");
 const customDictsButton = document.getElementById("custom-dicts-button");
-// Dictionaries panel: group switches (English/Mainland/Taiwan) and per-dict.
-const dictGroupToggles = [...document.querySelectorAll(".dict-group")];
+// Dictionaries panel: one switch per dictionary.
 const dictToggles = [...document.querySelectorAll(".dict-toggle")];
 // Anchor -> language group, from the Dictionaries panel markup.
 const anchorLang = new Map(dictToggles.map((toggle) => [toggle.dataset.anchor, groupFor(toggle)]));
@@ -44,11 +43,33 @@ const langMenu = langSelect.querySelector(".lang-menu");
 // Default dictionaries per language (from default_dictionaries.py).
 const langDefaults = JSON.parse(langSelect.dataset.defaults || "{}");
 
+// Compact mode shows one definition per language, chosen by the user's
+// dictionary order. Detailed mode shows every selected dictionary.
+const DICT_ORDER_KEY = "yabai-chaci-dict-order";
+let dictOrder = {};
+
+function loadDictOrder() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(DICT_ORDER_KEY) || "{}");
+        dictOrder = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+    } catch (error) {
+        dictOrder = {};
+    }
+}
+
+function saveDictOrder() {
+    try {
+        localStorage.setItem(DICT_ORDER_KEY, JSON.stringify(dictOrder));
+    } catch (error) {
+        // localStorage unavailable - ordering is session-only.
+    }
+}
+
 // Display options. script: "simplified" | "traditional"; toneColoring: on/off;
 // phonetic: "pinyin" | "zhuyin"; taiwan: use the Taiwan reading when listed;
 // customDicts: show the Dictionaries picker; dicts: the selected dictionaries;
-// langs: language groups enabled without a specific dictionary (priority
-// definitions); lang: the selected search language (EN / ZH / TW / JP).
+// compact: one definition per language, by dictionary order; lang: the selected
+// search language (EN / ZH / TW / JP).
 const state = {
     script: "simplified",
     toneColoring: true,
@@ -56,7 +77,7 @@ const state = {
     taiwan: false,
     customDicts: false,
     dicts: new Set(), // selected dictionary anchors
-    langs: new Set(), // enabled language groups (priority definitions)
+    compact: false,
     lang: "EN",
 };
 
@@ -71,6 +92,179 @@ let currentQuery = "";
 // The parsed words from the last multi-word input, so a display toggle (e.g.
 // Zhuyin) can re-render them without re-annotating.
 let currentTokens = [];
+
+// --- Copyable debug log ------------------------------------------------
+// A small in-memory log for the "Copy debug log" footer button. It collects
+// search milestones and every console.error (including the stack), so a bug
+// report can show the current state and the traceback that led to it.
+const DEBUG_EVENT_LIMIT = 200;
+const debugEvents = [];
+let currentDebugSearch = null;
+// Counts for the "*" pager's shortcut to the imported-dictionary results.
+let lastWildcardCustom = null;
+
+function debugErrorText(error) {
+    if (!error) return "";
+    if (error.stack) return String(error.stack);
+    if (error.message) return `${error.name || "Error"}: ${error.message}`;
+    return String(error);
+}
+
+// Record one event. While a search is active it is also attached to that
+// search, which is what "traceback from the current search" reports.
+function recordDebug(level, message, error = null) {
+    const entry = {
+        at: new Date().toISOString(),
+        level,
+        message: String(message),
+    };
+    if (error) entry.stack = debugErrorText(error);
+    if (currentDebugSearch) {
+        entry.query = currentDebugSearch.query;
+        entry.offset = currentDebugSearch.offset;
+        currentDebugSearch.events.push(entry);
+        if (currentDebugSearch.events.length > DEBUG_EVENT_LIMIT) {
+            currentDebugSearch.events.shift();
+        }
+    }
+    debugEvents.push(entry);
+    if (debugEvents.length > DEBUG_EVENT_LIMIT) debugEvents.shift();
+}
+
+// Capture all existing console.error calls (the custom dictionary code logs
+// failures that way) without changing what the browser console shows.
+const nativeConsoleError = console.error.bind(console);
+console.error = (...args) => {
+    const error = args.find((arg) => arg instanceof Error) || null;
+    const message = args
+        .map((arg) =>
+            arg instanceof Error
+                ? `${arg.name || "Error"}: ${arg.message || String(arg)}`
+                : String(arg)
+        )
+        .join(" ");
+    recordDebug("error", message, error);
+    nativeConsoleError(...args);
+};
+
+// Uncaught errors and rejected promises also get a stack in the log.
+window.addEventListener("error", (event) => {
+    recordDebug("error", event.message || "Window error", event.error || null);
+});
+window.addEventListener("unhandledrejection", (event) => {
+    recordDebug("error", "Unhandled promise rejection", event.reason || null);
+});
+
+function beginSearchDebug(query, offset, seq) {
+    currentDebugSearch = {
+        query: String(query),
+        offset,
+        seq,
+        startedAt: new Date().toISOString(),
+        official: null,
+        custom: null,
+        events: [],
+    };
+    recordDebug("search", "Search started");
+}
+
+// Do not call this customDictionaryDebugInfo: a top-level function declaration
+// becomes a window property and would overwrite (and then recurse into) the
+// function that custom_dicts.js installs under that name.
+function readCustomDictionaryDebugInfo() {
+    try {
+        return window.customDictionaryDebugInfo
+            ? window.customDictionaryDebugInfo()
+            : null;
+    } catch (error) {
+        return { error: debugErrorText(error) };
+    }
+}
+
+function debugSnapshot() {
+    const currentState = {
+        script: state.script,
+        toneColoring: state.toneColoring,
+        phonetic: state.phonetic,
+        taiwan: state.taiwan,
+        customDicts: state.customDicts,
+        selectedDictionaries: [...state.dicts].sort(),
+        compact: state.compact,
+        lang: state.lang,
+        currentQuery,
+        renderedResults: currentEntries.length,
+        fuzzyResults: currentFuzzy.length,
+        lastSearchMs,
+        firstSearchMs,
+        activeSearchSeq: searchSeq,
+    };
+    const currentSearch = currentDebugSearch
+        ? {
+              query: currentDebugSearch.query,
+              offset: currentDebugSearch.offset,
+              seq: currentDebugSearch.seq,
+              startedAt: currentDebugSearch.startedAt,
+              official: currentDebugSearch.official,
+              custom: currentDebugSearch.custom,
+              events: currentDebugSearch.events,
+          }
+        : null;
+    const info = {
+        generatedAt: new Date().toISOString(),
+        url: location.href,
+        userAgent: navigator.userAgent,
+        currentState,
+        customDictionaries: readCustomDictionaryDebugInfo(),
+        customDictionaryStats: window.customDictsStats || null,
+        currentSearch,
+        recentEvents: debugEvents.slice(-50),
+    };
+    return "Yabai-Chaci debug log\n" + JSON.stringify(info, null, 2) + "\n";
+}
+
+// Fallback for browsers where the async clipboard API is unavailable.
+function copyTextFallback(text) {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    let copied = false;
+    try {
+        copied = document.execCommand("copy");
+    } catch (error) {
+        recordDebug("error", "Clipboard fallback failed", error);
+    }
+    area.remove();
+    return copied;
+}
+
+async function copyDebugLog() {
+    const button = document.getElementById("copy-log-button");
+    const text = debugSnapshot();
+    let copied = false;
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            copied = true;
+        }
+    } catch (error) {
+        recordDebug("error", "Clipboard write failed", error);
+    }
+    if (!copied) copied = copyTextFallback(text);
+    if (!button) return;
+    button.textContent = copied ? "Copied" : "Copy failed";
+    button.classList.toggle("copied", copied);
+    window.setTimeout(() => {
+        button.textContent = "Copy debug log";
+        button.classList.remove("copied");
+    }, 1500);
+}
+
+const copyLogButton = document.getElementById("copy-log-button");
+if (copyLogButton) copyLogButton.addEventListener("click", copyDebugLog);
 
 // Tone-marked forms for each base vowel (index 0 = tone 1 ... 3 = tone 4).
 const TONE_MARKS = {
@@ -106,7 +300,7 @@ function toneOf(syllable) {
 
 // Add the tone mark to one numeric syllable, e.g. "guo2" -> "guó".
 function markSyllable(syllable) {
-    const m = syllable.match(/^([A-Za-zü:]+)([1-5])?$/);
+    const m = syllable.match(/^([A-Za-zü:ê]+)([1-5])?$/);
     if (!m) return syllable;
     const body = m[1].replace(/u:/g, "ü").replace(/v/g, "ü").replace(/V/g, "Ü");
     const tone = m[2];
@@ -155,6 +349,8 @@ const ZHUYIN_FINALS = {
     u: "ㄨ", ua: "ㄨㄚ", uo: "ㄨㄛ", uai: "ㄨㄞ", ui: "ㄨㄟ",
     uan: "ㄨㄢ", un: "ㄨㄣ", uang: "ㄨㄤ", ong: "ㄨㄥ", ueng: "ㄨㄥ",
     "ü": "ㄩ", "üe": "ㄩㄝ", "üan": "ㄩㄢ", "ün": "ㄩㄣ",
+    // "jue/que/xue" are written with u rather than ü in pinyin.
+    ue: "ㄩㄝ",
 };
 
 // Leading y/w are written as the underlying finals in zhuyin.
@@ -192,9 +388,130 @@ function toToneless(text) {
         .replace(/[^a-zü]/g, "");
 }
 
+// Every standard Hanyu Pinyin syllable can be validated from the zhuyin
+// tables above, without carrying a separate 400-entry list. Some imported
+// dictionaries write readings without spaces ("guàishēngguàiqì") or with
+// separators ("huà//yā", "yí・ge"); the dynamic-programming splitter below
+// finds the fewest valid syllables in each run.
+const PINYIN_INITIALS = [
+    "zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l",
+    "g", "k", "h", "j", "q", "x", "r", "z", "c", "s",
+];
+const PINYIN_FINALS = new Set([...Object.keys(ZHUYIN_FINALS), "ue", "ê"]);
+const PINYIN_ZERO = new Set([
+    "a", "o", "e", "ai", "ei", "ao", "ou", "an", "en", "ang", "eng",
+    "er", "yo", "ê",
+]);
+const PINYIN_EXTRA = new Set(["r", "m", "n", "ng", "hm", "hng", "ê"]);
+const PINYIN_ANNOTATION_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
+
+function pinyinBase(syllable) {
+    return plainSyllable(String(syllable || ""))
+        .replace(/u:/g, "ü")
+        .replace(/v/g, "ü")
+        .replace(/[ńňǹ]/g, "n")
+        .replace(/ḿ/g, "m")
+        .replace(/[0-9]/g, "");
+}
+
+// True for a standard pinyin syllable (including erhua "r" and the syllabic
+// nasals/interjections), with or without tone marks.
+function isPinyinSyllable(syllable) {
+    const base = pinyinBase(syllable);
+    if (!base) return false;
+    if (PINYIN_EXTRA.has(base)) return true;
+    if (base in PINYIN_Y || base in PINYIN_W) return true;
+    if (PINYIN_ZERO.has(base)) return true;
+    for (const initial of PINYIN_INITIALS) {
+        if (
+            base.startsWith(initial) &&
+            PINYIN_FINALS.has(base.slice(initial.length))
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Split a run-together pinyin chunk into the fewest valid syllables. Returns
+// null when the chunk is not wholly pinyin (an annotation or romanization).
+function splitPinyinChunk(chunk) {
+    const length = chunk.length;
+    const best = new Array(length + 1).fill(null);
+    best[0] = [];
+    for (let start = 0; start < length; start += 1) {
+        if (!best[start]) continue;
+        const maxEnd = Math.min(start + 7, length);
+        for (let end = start + 1; end <= maxEnd; end += 1) {
+            const piece = chunk.slice(start, end);
+            if (!isPinyinSyllable(piece)) continue;
+            const candidate = best[start].concat(piece);
+            if (!best[end] || candidate.length < best[end].length) {
+                best[end] = candidate;
+            }
+        }
+    }
+    return best[length];
+}
+
+function normalizePinyinScan(text) {
+    return [...String(text || "")]
+        .map((char) => {
+            const code = char.codePointAt(0);
+            if (code >= 0xff01 && code <= 0xff5e) {
+                return String.fromCodePoint(code - 0xfee0);
+            }
+            if (code === 0x3000) return " ";
+            return char;
+        })
+        .join("");
+}
+
+// Turn any dictionary reading into display tokens. Pinyin runs are split into
+// syllables; separators are dropped, while CJK/kana annotations are kept so
+// nothing from the source is lost. Run this before converting to zhuyin.
+function pinyinSyllables(text) {
+    const source = normalizePinyinScan(text);
+    const tokens = [];
+    let cursor = 0;
+    const pushAnnotation = (value) => {
+        const cleaned = value
+            .replace(/^[\s\p{P}\p{S}]+|[\s\p{P}\p{S}]+$/gu, "")
+            .replace(/\s+/g, " ")
+            .trim();
+        if (cleaned && PINYIN_ANNOTATION_RE.test(cleaned)) {
+            tokens.push(cleaned);
+        }
+    };
+    for (const match of source.matchAll(/[\p{Script=Latin}:]+[0-9]?/gu)) {
+        pushAnnotation(source.slice(cursor, match.index));
+        cursor = match.index + match[0].length;
+        const raw = match[0];
+        const toneMatch = raw.match(/^(.*?)([1-5])$/);
+        const letters = (toneMatch ? toneMatch[1] : raw).replace(/u:/g, "ü");
+        const tone = toneMatch ? toneMatch[2] : "";
+        const parts = splitPinyinChunk(letters);
+        if (!parts) {
+            tokens.push(raw);
+            continue;
+        }
+        parts.forEach((part, index) => {
+            if (tone && index === parts.length - 1) {
+                tokens.push(markSyllable(part + tone));
+            } else {
+                tokens.push(part);
+            }
+        });
+    }
+    pushAnnotation(source.slice(cursor));
+    return tokens.filter(Boolean);
+}
+
 // Convert one marked pinyin syllable to zhuyin, e.g. "hǎo" -> "ㄏㄠˇ".
 function toZhuyin(syllable) {
-    let base = plainSyllable(syllable);
+    const marked = markSyllable(syllable);
+    if (!isPinyinSyllable(marked)) return syllable;
+    let base = plainSyllable(marked);
     if (base === "r") base = "er"; // the erhua suffix
 
     if (PINYIN_Y[base]) base = PINYIN_Y[base];
@@ -212,14 +529,14 @@ function toZhuyin(syllable) {
 
     if (final === "i" && ["zh", "ch", "sh", "r", "z", "c", "s"].includes(initial)) {
         // zhi/chi/shi/ri/zi/ci/si: the "i" is not written in zhuyin.
-        return ZHUYIN_INITIALS[initial] + ZHUYIN_TONES[toneOf(syllable) - 1];
+        return ZHUYIN_INITIALS[initial] + ZHUYIN_TONES[toneOf(marked) - 1];
     }
     // After j/q/x, a written "u" is actually ü.
     if (["j", "q", "x"].includes(initial) && final.startsWith("u")) {
         final = "ü" + final.slice(1);
     }
     const body = (ZHUYIN_INITIALS[initial] || "") + (ZHUYIN_FINALS[final] || final);
-    return body + ZHUYIN_TONES[toneOf(syllable) - 1];
+    return body + ZHUYIN_TONES[toneOf(marked) - 1];
 }
 
 // One cell of the furigana grid: kind is "reading" (top row) or "char" (bottom
@@ -347,9 +664,9 @@ function trailingTones(chars, syllables) {
 
 function furigana(text, pinyin, allowTones = true) {
     const chars = [...text];
-    const syllables = pinyin
-        .split(/\s+/)
-        .filter((syllable) => syllable && !PUNCT_TOKEN_RE.test(syllable));
+    const syllables = pinyinSyllables(pinyin).filter(
+        (syllable) => syllable && !PUNCT_TOKEN_RE.test(syllable)
+    );
     // The readings in the chosen phonetic system.
     const readings = syllables.map((s) => (state.phonetic === "zhuyin" ? toZhuyin(s) : s));
     const node = document.createElement("span");
@@ -367,34 +684,44 @@ function furigana(text, pinyin, allowTones = true) {
     // most digits white and colours the characters after the number.
     const leadingDigits = (text.match(/^\d+/) || [""])[0];
     if (!leadingDigits && spoken.length === syllables.length) {
+        // One wrapper per character keeps its reading directly above it. The
+        // wrappers are flex items, so a long headword can wrap between
+        // characters on a narrow screen.
+        const readingCells = new Array(chars.length);
         let index = 0;
-        // Readings first, then characters, so a DOM range over one kind stays
-        // contiguous (the double-click handler relies on that).
         chars.forEach((char, i) => {
             if (PUNCT_CHAR_RE.test(char)) return;
             const tone = colored ? toneOf(syllables[index]) : 0;
-            node.append(gridCell("reading", readings[index], String(i + 1), tone));
+            readingCells[i] = gridCell(
+                "reading",
+                readings[index],
+                String(i + 1),
+                tone
+            );
             index += 1;
         });
         index = 0;
         chars.forEach((char, i) => {
+            const column = document.createElement("span");
+            column.className = "furi-col";
+            if (readingCells[i]) column.append(readingCells[i]);
             const punctuation = PUNCT_CHAR_RE.test(char);
             const tone = !punctuation && colored ? toneOf(syllables[index]) : 0;
-            node.append(gridCell("char", char, String(i + 1), tone));
+            column.append(gridCell("char", char, String(i + 1), tone));
             if (!punctuation) index += 1;
+            node.append(column);
         });
     } else {
         // Counts differ: put the whole reading above the whole word (still colored).
+        const column = document.createElement("span");
+        column.className = "furi-col";
+
         const reading = document.createElement("span");
         reading.className = "reading";
-        reading.style.gridRow = "1";
-        reading.style.gridColumn = "1 / -1";
         reading.append(readingContent(readings, syllables, colored));
 
         const char = document.createElement("span");
         char.className = "char";
-        char.style.gridRow = "2";
-        char.style.gridColumn = "1 / -1";
         // Numbers often have more characters than syllables (10000 = yī wàn),
         // so give each digit the tone of the syllable that reads it.
         let tones = colored ? numberTones(chars, syllables) : null;
@@ -413,7 +740,8 @@ function furigana(text, pinyin, allowTones = true) {
             char.textContent = text;
         }
 
-        node.append(reading, char);
+        column.append(reading, char);
+        node.append(column);
     }
     return node;
 }
@@ -615,9 +943,7 @@ function updateHint(query, pinyinMatch, englishMatch) {
 // The copied reading follows the Pinyin/Bopomofo display toggle.
 function copyReading(pinyin) {
     if (!pinyin || state.phonetic !== "zhuyin") return pinyin || "";
-    return pinyin
-        .split(/\s+/)
-        .filter(Boolean)
+    return pinyinSyllables(pinyin)
         .map((syllable) => toZhuyin(syllable))
         .join(" ");
 }
@@ -701,7 +1027,7 @@ function definitionBody(source, taiwanRefs, copy) {
         if (showReadings && group.pinyin) {
             const head = document.createElement("div");
             head.className = "def-reading";
-            const syllables = group.pinyin.split(/\s+/).filter(Boolean);
+            const syllables = pinyinSyllables(group.pinyin);
             const readings = syllables.map((s) => (state.phonetic === "zhuyin" ? toZhuyin(s) : s));
             head.append(readingContent(readings, syllables, state.toneColoring));
             body.append(head);
@@ -777,6 +1103,11 @@ const WIKTIONARY_PAGE = "https://en.wiktionary.org/wiki/";
 function definitionsBlock(source, taiwanRefs, word, reading) {
     const block = document.createElement("div");
     block.className = "def-source";
+    // Imported dictionaries preserve their source line breaks; official
+    // definitions keep the previous whitespace behavior.
+    if (String(source.anchor || "").startsWith("custom-")) {
+        block.classList.add("custom-source");
+    }
     const name = document.createElement("a");
     name.className = "def-source-name";
     if (source.anchor === "cedict") {
@@ -793,6 +1124,9 @@ function definitionsBlock(source, taiwanRefs, word, reading) {
             encodeURIComponent(source.headword || word);
         name.target = "_blank";
         name.rel = "noopener";
+    } else if (source.anchor.startsWith("custom-")) {
+        // Browser-imported dictionaries have no About page entry.
+        name.removeAttribute("href");
     } else {
         name.href = `/about#${encodeURIComponent(source.anchor)}`;
     }
@@ -813,82 +1147,60 @@ function entryDicts(entry) {
     const key = entryKey(entry);
     let enabled = entryDictState.get(key);
     if (!enabled) {
-        enabled = new Set(state.dicts);
-        // A language switched on without a specific dictionary uses the
-        // priority pick within that language (one source per entry).
-        for (const lang of state.langs) {
-            const hasSelection = [...enabled].some(
-                (anchor) => anchorLang.get(anchor) === lang
-            );
-            if (hasSelection) continue;
-            const source = prioritySource(entry, lang);
-            if (source) enabled.add(source.anchor);
-        }
+        enabled = initialDictSelection(entry);
         entryDictState.set(key, enabled);
     }
     return enabled;
 }
 
-// Source priority when "Custom dictionaries" is off: English first (CC-CEDICT
-// before Wiktionary), then Mainland, then Taiwan. Each headword shows only the
-// highest-priority source that has a definition for it.
-const LANG_PRIORITY = { english: 0, mainland: 1, taiwan: 2, japanese: 3 };
-const SOURCE_PRIORITY = ["cedict", "wiktionary", "moe", "zhwiktionary", "jpwiktionary"];
-// Language code -> the definition language it selects.
+// The initial dictionaries for a result. Detailed mode uses every selected
+// dictionary; compact mode keeps only the highest-ordered dictionary in each
+// language that actually has a definition for the entry.
+function initialDictSelection(entry) {
+    const selected = new Set(state.dicts);
+    if (!state.compact) return selected;
+    const byLang = new Map();
+    for (const source of entry.definitions || []) {
+        if (!selected.has(source.anchor)) continue;
+        const lang = source.lang || anchorLang.get(source.anchor) || "";
+        if (!byLang.has(lang)) byLang.set(lang, []);
+        byLang.get(lang).push(source.anchor);
+    }
+    const result = new Set();
+    for (const [lang, anchors] of byLang) {
+        const order = Array.isArray(dictOrder[lang]) ? dictOrder[lang] : [];
+        anchors.sort((a, b) => {
+            const ia = order.indexOf(a);
+            const ib = order.indexOf(b);
+            return (
+                (ia < 0 ? Number.MAX_SAFE_INTEGER : ia) -
+                (ib < 0 ? Number.MAX_SAFE_INTEGER : ib)
+            );
+        });
+        result.add(anchors[0]);
+    }
+    return result;
+}
+
+// Language code -> the definition language it selects (used for ordering).
 const LANG_GROUP = { EN: "english", ZH: "mainland", TW: "taiwan", JP: "japanese" };
 
 function selectedLangGroup() {
     return LANG_GROUP[state.lang] || "english";
 }
 
-function prioritySource(entry, group = null) {
-    let best = null;
-    let bestRank = Infinity;
-    for (const source of entry.definitions || []) {
-        if (group && source.lang !== group) continue;
-        const rank =
-            (LANG_PRIORITY[source.lang] ?? 9) * 100 +
-            (SOURCE_PRIORITY.indexOf(source.anchor) + 1 || 99);
-        if (rank < bestRank) {
-            bestRank = rank;
-            best = source;
-        }
-    }
-    return best;
+// Position of a dictionary inside its language column. Compact mode uses this
+// to pick one dictionary; detailed mode uses it to order the definition blocks.
+function dictRank(anchor, lang) {
+    const order = Array.isArray(dictOrder[lang]) ? dictOrder[lang] : [];
+    const index = order.indexOf(anchor);
+    return index < 0 ? Number.MAX_SAFE_INTEGER : index;
 }
 
-// Which dictionaries to render for a result. With custom dictionaries on this is
-// the per-entry selection. With it off, the selected language is tried first;
-// entries that only exist in other languages fall back to the global priority
-// and are rendered in the "Other Dictionaries" section.
+// Which dictionaries to render for a result. Compact/detailed mode and the
+// per-entry chip toggles decide this.
 function visibleDicts(entry) {
-    if (state.customDicts) return entryDicts(entry);
-    const source = prioritySource(entry, selectedLangGroup()) || prioritySource(entry);
-    return source ? new Set([source.anchor]) : new Set();
-}
-
-// Remember where the chips are, so they can be animated after a re-order.
-function chipPositions(row) {
-    const positions = new Map();
-    for (const chip of row.querySelectorAll(".source")) {
-        positions.set(chip.dataset.anchor, chip.getBoundingClientRect().left);
-    }
-    return positions;
-}
-
-function animateChips(row, before) {
-    for (const chip of row.querySelectorAll(".source")) {
-        const old = before.get(chip.dataset.anchor);
-        if (old === undefined) continue;
-        const dx = old - chip.getBoundingClientRect().left;
-        if (!dx) continue;
-        chip.style.transition = "none";
-        chip.style.transform = `translateX(${dx}px)`;
-        requestAnimationFrame(() => {
-            chip.style.transition = "";
-            chip.style.transform = "";
-        });
-    }
+    return entryDicts(entry);
 }
 
 // Toggle one dictionary's definitions for a single result row (not globally).
@@ -896,9 +1208,9 @@ function toggleEntryDict(row, entry, anchor) {
     const enabled = entryDicts(entry);
     if (enabled.has(anchor)) enabled.delete(anchor);
     else enabled.add(anchor);
-    const before = chipPositions(row);
+    // Re-render in place. The chip order stays fixed, so only the on/off state
+    // and the shown definitions change.
     fillEntryRow(row, entry);
-    animateChips(row, before);
 }
 
 // True when any text shown for this entry uses an IDS (⿰) description.
@@ -927,7 +1239,7 @@ function hasIdsChars(entry) {
 function idsHeadword(text, reading, images, entry) {
     const node = document.createElement("span");
     node.className = "ids-headword";
-    const syllables = (reading || "").split(/\s+/).filter(Boolean);
+    const syllables = pinyinSyllables(reading || "");
     if (syllables.length) {
         const row = document.createElement("span");
         row.className = "reading";
@@ -1007,21 +1319,28 @@ function fillEntryRow(row, entry) {
 
     const enabled = visibleDicts(entry);
     // The selected language's dictionaries always come first in the entry.
+    // Within a language, the order comes from the draggable dictionary list.
     const langGroup = selectedLangGroup();
-    const definitions = [...(entry.definitions || [])].sort(
-        (a, b) =>
-            (b.lang === langGroup ? 1 : 0) - (a.lang === langGroup ? 1 : 0)
-    );
+    const langOrder = new Map();
+    for (const source of entry.definitions || []) {
+        if (!langOrder.has(source.lang)) langOrder.set(source.lang, langOrder.size);
+    }
+    const definitions = [...(entry.definitions || [])].sort((a, b) => {
+        const aFirst = a.lang === langGroup ? 1 : 0;
+        const bFirst = b.lang === langGroup ? 1 : 0;
+        if (aFirst !== bFirst) return bFirst - aFirst;
+        const aLang = langOrder.get(a.lang) ?? Number.MAX_SAFE_INTEGER;
+        const bLang = langOrder.get(b.lang) ?? Number.MAX_SAFE_INTEGER;
+        if (aLang !== bLang) return aLang - bLang;
+        return dictRank(a.anchor, a.lang) - dictRank(b.anchor, b.lang);
+    });
 
-    // Source chips are toggles: the ones on come first (and are lit yellow).
-    // They only appear when "Custom dictionaries" is on.
+    // Source chips are toggles: they are lit yellow when on, but stay in a
+    // stable order so clicking one does not make the row reshuffle.
     if (definitions.length && state.customDicts) {
         const box = document.createElement("div");
         box.className = "sources";
-        const ordered = [...definitions].sort(
-            (a, b) => (enabled.has(b.anchor) ? 1 : 0) - (enabled.has(a.anchor) ? 1 : 0)
-        );
-        for (const source of ordered) {
+        for (const source of definitions) {
             const chip = document.createElement("button");
             chip.type = "button";
             chip.className = enabled.has(source.anchor) ? "source on" : "source";
@@ -1043,8 +1362,12 @@ function fillEntryRow(row, entry) {
     const notes = [];
     if (enabled.has("cedict")) {
         const prons = extractPronunciations(entry.english_normalized);
-        for (const note of prons.taiwan) {
-            notes.push(detailRow("Taiwan pronunciation: ", furigana(primary, numericToMarked(note))));
+        // With Taiwan readings already active, the separate Taiwan note is
+        // redundant, so hide it.
+        if (!state.taiwan) {
+            for (const note of prons.taiwan) {
+                notes.push(detailRow("Taiwan pronunciation: ", furigana(primary, numericToMarked(note))));
+            }
         }
         for (const note of prons.others) {
             const label = note.label ? `Also pronounced (${note.label}): ` : "Also pronounced: ";
@@ -1118,12 +1441,6 @@ function fillEntryRow(row, entry) {
 // for it; a word found only in unselected dictionaries lives in the "Matches in
 // other dictionaries" section instead.
 function hasSelectedDefs(entry) {
-    if (!state.customDicts) {
-        // Priority mode: only definitions in the selected language count.
-        const group = selectedLangGroup();
-        if ((entry.definitions || []).some((s) => s.lang === group)) return true;
-        return group === "english" && (entry.forms || []).length > 0;
-    }
     const enabled = entryDicts(entry);
     if ((entry.definitions || []).some((s) => enabled.has(s.anchor))) return true;
     // A "see X" variant has no senses - only "other forms" (CC-CEDICT) - but it
@@ -1326,21 +1643,45 @@ function redraw() {
 // query is ignored once the user has typed a new one.
 let searchSeq = 0;
 
-async function search(query, offset = 0, scrollTop = false, recordTiming = true) {
+async function search(query, offset = 0, scrollMode = false, recordTiming = true) {
     const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}`;
     const startedAt = performance.now();
     const seq = ++searchSeq;
+    const allWildcard = query.trim() === "*";
+    lastWildcardCustom = null;
+    beginSearchDebug(query, offset, seq);
     // The footer (About link) is pinned to the bottom; hide it while results
     // are pending so it cannot flash/jump as the results area refills.
     document.body.classList.add("searching");
-    // Phase 1: the fast CEDICT tier. It is rendered immediately as soon as it
-    // has any results; otherwise we wait for the full list.
+
+    // Start the browser-side dictionary search immediately instead of waiting
+    // for the API tiers. It can take seconds with large imported dictionaries,
+    // so it must not delay the official results.
+    const customMatchesPromise =
+        !allWildcard && window.customDictionaryMatches
+            ? window.customDictionaryMatches(query).catch((error) => {
+                  console.error("Custom dictionary search failed:", error);
+                  return [];
+              })
+            : Promise.resolve([]);
+
+    // Phase 1: the fast CEDICT tier. Render it as soon as the server replies.
     const firstResponse = await fetch(url + "&part=primary", { cache: "no-store" });
     const first = await firstResponse.json();
     if (seq !== searchSeq) return 0;
+    if (currentDebugSearch) {
+        currentDebugSearch.official = {
+            total: first.total,
+            offset: first.offset,
+            pageSize: first.page_size,
+            results: Array.isArray(first.results) ? first.results.length : 0,
+            ms: first.ms,
+        };
+    }
+    recordDebug("response", "Primary search response received");
     entryDictState.clear(); // a fresh search starts from the global selection
     const firstMs = typeof first.ms === "number" ? first.ms : null;
-    const showFirst = first.total == null && first.results.length >= 1;
+    const showFirst = first.total == null && offset === 0 && first.results.length >= 1;
     if (showFirst) {
         currentEntries = first.results;
         currentQuery = query;
@@ -1352,6 +1693,7 @@ async function search(query, offset = 0, scrollTop = false, recordTiming = true)
         renderFuzzy([]);
         updateHint(query, first.pinyin_match, first.english_match);
     }
+
     // Keep the page number in the URL (without clobbering the query), so a
     // reload or a shared link returns to the same page.
     const size = first.page_size || RESULTS_PAGE_SIZE;
@@ -1361,18 +1703,23 @@ async function search(query, offset = 0, scrollTop = false, recordTiming = true)
     else current.searchParams.delete("page");
     current.searchParams.delete("offset"); // older links used a raw offset
     history.replaceState({ ...(history.state || {}), page }, "", current);
-    // Paging always starts at the top of the new page.
-    if (scrollTop) window.scrollTo({ top: 0 });
+
     // A "*" page comes complete in one response (its `total` is set).
     if (first.total == null) {
-        // Phase 2: the complete final list, slow source tiers included.
+        // Phase 2: the complete final list, slow source tiers included. Start
+        // it without waiting for the local dictionary search.
         const fullResponse = await fetch(url, { cache: "no-store" });
         const full = await fullResponse.json();
         if (seq !== searchSeq) return 0;
+        recordDebug(
+            "response",
+            `Complete search response: ${full.results.length} results, total ${full.total}`
+        );
+
+        // Show official results first; custom matches follow as a third tier.
         currentEntries = full.results;
         currentQuery = query;
         if (recordTiming) {
-            // Keep the first batch's timing next to the total when it was shown.
             firstSearchMs = showFirst ? firstMs : null;
             lastSearchMs = Math.round(performance.now() - startedAt);
         }
@@ -1381,20 +1728,193 @@ async function search(query, offset = 0, scrollTop = false, recordTiming = true)
         renderPagination(query, full);
         updateHint(query, full.pinyin_match, full.english_match);
         document.body.classList.remove("searching");
+        applyPagerScroll(scrollMode);
+
+        const customResult = await customMatchesPromise;
+        if (seq !== searchSeq) return 0;
+        const matches = Array.isArray(customResult)
+            ? customResult
+            : customResult.matches || [];
+        const fastKeys = new Set(matches.map(customMatchKey));
+        if (matches.length) {
+            await applyCustomMatches(full, matches);
+            if (seq !== searchSeq) return 0;
+            entryDictState.clear();
+            currentEntries = full.results;
+            currentQuery = query;
+            if (recordTiming) {
+                lastSearchMs = Math.round(performance.now() - startedAt);
+            }
+            render(full.results, query);
+            renderFuzzy(full.fuzzy);
+            renderPagination(query, full);
+            updateHint(query, full.pinyin_match, full.english_match);
+            applyPagerScroll(scrollMode);
+        }
+        if (!Array.isArray(customResult) && customResult.slow) {
+            const slow = await customResult.slow;
+            if (seq !== searchSeq) return 0;
+            const extra = slow.filter((match) => !fastKeys.has(customMatchKey(match)));
+            if (extra.length) {
+                await applyCustomMatches(full, extra);
+                if (seq !== searchSeq) return 0;
+                entryDictState.clear();
+                currentEntries = full.results;
+                currentQuery = query;
+                if (recordTiming) {
+                    lastSearchMs = Math.round(performance.now() - startedAt);
+                }
+                render(full.results, query);
+                renderFuzzy(full.fuzzy);
+                renderPagination(query, full);
+                updateHint(query, full.pinyin_match, full.english_match);
+                applyPagerScroll(scrollMode);
+            }
+        }
         return full.results.length;
     }
+
+    // Wildcard results are complete already. Show the official rows, then merge
+    // the local dictionary tier when it is ready.
     currentEntries = first.results;
     currentQuery = query;
     if (recordTiming) {
         firstSearchMs = null;
-        lastSearchMs = firstMs;
+        lastSearchMs = Math.round(performance.now() - startedAt);
     }
     render(first.results, query);
     renderFuzzy(first.fuzzy);
     renderPagination(query, first);
     updateHint(query, first.pinyin_match, first.english_match);
     document.body.classList.remove("searching");
+    applyPagerScroll(scrollMode);
+
+    if (allWildcard && !window.customDictionaryWildcardPage) {
+        recordDebug(
+            "error",
+            "Custom dictionary wildcard paging is unavailable (script did not load)."
+        );
+    }
+    if (allWildcard && window.customDictionaryWildcardPage) {
+        const officialTotal = first.total;
+        const officialCount = first.results.length;
+        const customOffset = Math.max(0, offset - officialTotal);
+        const customLimit =
+            offset >= officialTotal
+                ? size
+                : Math.max(0, size - officialCount);
+        let customPage = null;
+        try {
+            customPage = await window.customDictionaryWildcardPage(
+                customOffset,
+                customLimit
+            );
+        } catch (error) {
+            console.error("Custom wildcard paging failed:", error);
+        }
+        if (seq !== searchSeq) return 0;
+        if (customPage && customPage.total) {
+            const newTotal = officialTotal + customPage.total;
+            lastWildcardCustom = {
+                query,
+                officialTotal,
+                customTotal: customPage.total,
+            };
+            if (currentDebugSearch) {
+                currentDebugSearch.custom = {
+                    total: customPage.total,
+                    offset: customOffset,
+                    limit: customLimit,
+                    matches: customPage.matches.length,
+                };
+            }
+            recordDebug(
+                "response",
+                `Custom wildcard page: ${customPage.matches.length} rows, total ${customPage.total}`
+            );
+            first.total = newTotal;
+            if (customPage.matches.length) {
+                first.total = null;
+                await applyCustomMatches(first, customPage.matches);
+                first.total = newTotal;
+                entryDictState.clear();
+                currentEntries = first.results;
+                currentQuery = query;
+                render(first.results, query);
+                renderFuzzy(first.fuzzy);
+                updateHint(query, first.pinyin_match, first.english_match);
+            }
+            renderPagination(query, first);
+            if (recordTiming) {
+                lastSearchMs = Math.round(performance.now() - startedAt);
+            }
+            applyPagerScroll(scrollMode);
+        } else {
+            const source = window.customDictsStats?.lastSource || "unknown";
+            recordDebug(
+                "info",
+                `Custom wildcard page returned no entries (source: ${source})`
+            );
+        }
+        return first.results.length;
+    }
+
+    const customResult = await customMatchesPromise;
+    if (seq !== searchSeq) return 0;
+    const matches = Array.isArray(customResult)
+        ? customResult
+        : customResult.matches || [];
+    const fastKeys = new Set(matches.map(customMatchKey));
+    if (matches.length) {
+        await applyCustomMatches(first, matches);
+        if (seq !== searchSeq) return 0;
+        entryDictState.clear();
+        currentEntries = first.results;
+        currentQuery = query;
+        if (recordTiming) {
+            lastSearchMs = Math.round(performance.now() - startedAt);
+        }
+        render(first.results, query);
+        renderFuzzy(first.fuzzy);
+        renderPagination(query, first);
+        updateHint(query, first.pinyin_match, first.english_match);
+        applyPagerScroll(scrollMode);
+    }
+    if (!Array.isArray(customResult) && customResult.slow) {
+        const slow = await customResult.slow;
+        if (seq !== searchSeq) return 0;
+        const extra = slow.filter((match) => !fastKeys.has(customMatchKey(match)));
+        if (extra.length) {
+            await applyCustomMatches(first, extra);
+            if (seq !== searchSeq) return 0;
+            entryDictState.clear();
+            currentEntries = first.results;
+            currentQuery = query;
+            if (recordTiming) {
+                lastSearchMs = Math.round(performance.now() - startedAt);
+            }
+            render(first.results, query);
+            renderFuzzy(first.fuzzy);
+            renderPagination(query, first);
+            updateHint(query, first.pinyin_match, first.english_match);
+            applyPagerScroll(scrollMode);
+        }
+    }
     return first.results.length;
+}
+
+// Merge already-fetched browser dictionary matches into an API response.
+function customMatchKey(match) {
+    return `${match.dictId}|${match.term}|${match.reading}`;
+}
+
+async function applyCustomMatches(data, matches) {
+    if (!window.mergeCustomMatches) return;
+    try {
+        await window.mergeCustomMatches(data, matches);
+    } catch (error) {
+        console.error("Custom dictionary merge failed:", error);
+    }
 }
 
 // Show prev/next paging above and below a "*" (all-headwords) search. When there
@@ -1419,31 +1939,59 @@ function renderPagination(query, data) {
     const page = Math.floor((data.offset || 0) / size) + 1;
     const info = `Page ${page} of ${pages} (${total.toLocaleString()} results)`;
     for (const nav of [paginationTop, pagination]) {
-        nav.append(...pagerButtons(query, data, page, pages, info));
+        // The top pager leaves the page where it is; the bottom pager brings
+        // the top pager into view (not the very top of the page).
+        nav.append(...pagerButtons(query, data, page, pages, info, nav === paginationTop));
+    }
+}
+
+// After a page change, position the view according to which pager was used.
+function applyPagerScroll(mode) {
+    if (mode === "top-pager") {
+        if (paginationTop.hidden) return;
+        const top = paginationTop.getBoundingClientRect().top + window.scrollY;
+        window.scrollTo({ top, behavior: "auto" });
+    } else if (mode === true) {
+        window.scrollTo({ top: 0, behavior: "auto" });
     }
 }
 
 // The Previous / info / Next row shared by the top and bottom pagers.
-function pagerButtons(query, data, page, pages, info) {
+function pagerButtons(query, data, page, pages, info, fromTop) {
     const size = data.page_size || RESULTS_PAGE_SIZE;
+    const scrollMode = fromTop ? false : "top-pager";
 
     const prev = document.createElement("button");
     prev.type = "button";
     prev.textContent = "Previous";
     prev.disabled = page <= 1;
-    prev.addEventListener("click", () => search(query, (data.offset || 0) - size, true));
+    prev.addEventListener("click", () => search(query, (data.offset || 0) - size, scrollMode));
 
     const label = document.createElement("span");
     label.className = "page-info";
     label.textContent = info;
 
+    // Imported-dictionary headwords come after the official ones in a "*"
+    // listing. With a large official list they would be thousands of pages
+    // away, so give the pager a one-click shortcut to the first custom page.
+    let customJump = null;
+    if (lastWildcardCustom && lastWildcardCustom.query === query) {
+        customJump = document.createElement("button");
+        customJump.type = "button";
+        customJump.textContent = `Imported (${lastWildcardCustom.customTotal.toLocaleString()})`;
+        customJump.title = "Jump to headwords from imported dictionaries.";
+        customJump.addEventListener("click", () =>
+            search(query, lastWildcardCustom.officialTotal, scrollMode)
+        );
+    }
+
     const next = document.createElement("button");
     next.type = "button";
     next.textContent = "Next";
     next.disabled = page >= pages;
-    next.addEventListener("click", () => search(query, (data.offset || 0) + size, true));
+    next.addEventListener("click", () => search(query, (data.offset || 0) + size, scrollMode));
 
-    return [prev, label, next];
+    return customJump ? [prev, label, customJump, next] : [prev, label, next];
 }
 
 // Render the segmented input as clickable words (clicking one searches it).
@@ -1645,6 +2193,29 @@ function pageFromUrl() {
     return Number.isFinite(value) && value > 1 ? Math.floor(value) : 1;
 }
 
+// Close the optional search controls so the results get the space back.
+function collapseOptionPanels() {
+    for (const panel of document.querySelectorAll(".options.open")) {
+        panel.classList.remove("open");
+        const toggle = panel.querySelector(".options-toggle");
+        if (!toggle) continue;
+        toggle.setAttribute("aria-expanded", "false");
+        if (toggle.getAttribute("aria-controls") === "search-options") {
+            document
+                .querySelector(".mobile-search-options-toggle")
+                ?.setAttribute("aria-expanded", "false");
+        }
+        try {
+            const key =
+                "yabai-chaci-panel-" +
+                (toggle.getAttribute("aria-controls") || "");
+            localStorage.setItem(key, "false");
+        } catch (error) {
+            // localStorage unavailable - nothing to save.
+        }
+    }
+}
+
 // Run a search and put the query in the URL, so a reload keeps the results.
 function performSearch(query) {
     // A "#anchor" query jumps to that section of the About page (e.g. #cedict).
@@ -1652,6 +2223,7 @@ function performSearch(query) {
         location.assign(`/about${query}`);
         return;
     }
+    collapseOptionPanels();
     input.value = query;
     setTitle(query);
     showTagline(false);
@@ -1700,9 +2272,9 @@ function loadPrefs() {
         state.phonetic = localStorage.getItem("yabai-chaci-phonetic") === "zhuyin" ? "zhuyin" : "pinyin";
         state.taiwan = localStorage.getItem("yabai-chaci-taiwan") === "true";
         state.customDicts = localStorage.getItem("yabai-chaci-custom-dicts") === "true";
+        state.compact = localStorage.getItem("yabai-chaci-compact") === "true";
         state.lang = localStorage.getItem("yabai-chaci-lang") || "EN";
-        const storedLangs = JSON.parse(localStorage.getItem("yabai-chaci-langs") || "[]");
-        state.langs = new Set(Array.isArray(storedLangs) ? storedLangs : []);
+        loadDictOrder();
         const stored = JSON.parse(localStorage.getItem("yabai-chaci-dicts") || "null");
         // On a fresh start use the language's defaults (EN -> cedict only).
         state.dicts =
@@ -1732,8 +2304,8 @@ function savePrefs() {
         localStorage.setItem("yabai-chaci-phonetic", state.phonetic);
         localStorage.setItem("yabai-chaci-taiwan", String(state.taiwan));
         localStorage.setItem("yabai-chaci-custom-dicts", String(state.customDicts));
+        localStorage.setItem("yabai-chaci-compact", String(state.compact));
         localStorage.setItem("yabai-chaci-dicts", JSON.stringify([...state.dicts]));
-        localStorage.setItem("yabai-chaci-langs", JSON.stringify([...state.langs]));
         localStorage.setItem("yabai-chaci-lang", state.lang);
     } catch (e) {
         // localStorage unavailable - nothing to save.
@@ -1922,62 +2494,14 @@ function syncDictPanel() {
     }
 }
 
-// Dictionaries panel: a group switch toggles its whole column, and each
-// per-dictionary switch selects one dictionary.
+// Each dictionary belongs to its language column.
 function groupFor(toggle) {
     return toggle.closest(".dict-column").dataset.lang;
 }
 
-// Reflect the enabled language groups and selected dictionaries on the
-// switches. A language is on if it is explicitly enabled (priority mode) or
-// if any of its dictionaries is selected.
-// The "automatically choose 1 source" hint applies only while an enabled
-// language has no specific dictionary selected (priority mode). Selecting one
-// of that language's dictionaries replaces the automatic choice.
-function hasAutoLanguage() {
-    for (const lang of state.langs) {
-        const hasSelection = [...state.dicts].some(
-            (anchor) => anchorLang.get(anchor) === lang
-        );
-        if (!hasSelection) return true;
-    }
-    return false;
-}
-
 function syncGroups() {
-    if (dictPanel) dictPanel.classList.toggle("langs-on", hasAutoLanguage());
-    for (const group of dictGroupToggles) {
-        const lang = group.dataset.lang;
-        const members = dictToggles.filter((t) => groupFor(t) === lang);
-        const on = members.filter((t) => state.dicts.has(t.dataset.anchor)).length;
-        const langEnabled = state.langs.has(lang);
-        group.disabled = members.length === 0;
-        group.checked = langEnabled || on > 0;
-        group.indeterminate = !langEnabled && on > 0 && on < members.length;
-    }
-}
-
-for (const group of dictGroupToggles) {
-    group.addEventListener("change", () => {
-        const lang = group.dataset.lang;
-        if (group.checked) {
-            // Enable the language without selecting its dictionaries: the
-            // priority pick for that language is used.
-            state.langs.add(lang);
-        } else {
-            state.langs.delete(lang);
-            for (const toggle of dictToggles) {
-                if (groupFor(toggle) !== lang) continue;
-                toggle.checked = false;
-                state.dicts.delete(toggle.dataset.anchor);
-            }
-        }
-        group.indeterminate = false;
-        entryDictState.clear();
-        syncGroups();
-        savePrefs();
-        redraw();
-    });
+    // The language switches were replaced by the Compact/Detailed control.
+    updateDictMode();
 }
 
 for (const toggle of dictToggles) {
@@ -2016,6 +2540,29 @@ function saveOpenDictLangs() {
     }
 }
 
+// On phones, only one language column may be expanded. Opening any language
+// collapses the others; desktop still allows several open columns.
+const narrowDictsQuery = window.matchMedia("(max-width: 600px)");
+
+function closeOtherDictColumns(except) {
+    if (!narrowDictsQuery.matches) return;
+    for (const column of document.querySelectorAll(".dict-column.open")) {
+        if (column === except) continue;
+        column.classList.remove("open");
+        const disclosure = column.querySelector(".dict-disclosure");
+        if (disclosure) disclosure.setAttribute("aria-expanded", "false");
+    }
+    saveOpenDictLangs();
+}
+
+function enforceSingleOpenDictColumn() {
+    if (!narrowDictsQuery.matches) return;
+    closeOtherDictColumns(document.querySelector(".dict-column.open"));
+}
+
+window.closeOtherDictColumns = closeOtherDictColumns;
+window.enforceSingleOpenDictColumn = enforceSingleOpenDictColumn;
+
 const openDictLangs = readOpenDictLangs();
 for (const column of document.querySelectorAll(".dict-column")) {
     const button = column.querySelector(".dict-disclosure");
@@ -2028,9 +2575,23 @@ for (const column of document.querySelectorAll(".dict-column")) {
         const open = !column.classList.contains("open");
         column.classList.toggle("open", open);
         button.setAttribute("aria-expanded", String(open));
+        if (open) closeOtherDictColumns(column);
         saveOpenDictLangs();
     });
+    // Clicking the language name/header also opens its dictionary dropdown.
+    const head = column.querySelector(".dict-column-head");
+    if (head) {
+        head.addEventListener("click", (event) => {
+            if (event.target.closest(".dict-disclosure, .dict-remove")) return;
+            button.click();
+        });
+    }
 }
+
+enforceSingleOpenDictColumn();
+narrowDictsQuery.addEventListener("change", (event) => {
+    if (event.matches) enforceSingleOpenDictColumn();
+});
 
 // --- search-language dropdown (EN / ZH / TW) ------------------------------
 // Set the chosen language: update the button label and the selected option.
@@ -2065,10 +2626,12 @@ langMenu.addEventListener("click", (event) => {
     const item = event.target.closest("[role='option']");
     if (!item) return;
     applyLang(item.dataset.value);
-    applyDictDefaults(item.dataset.value);
+    // In custom-dictionary mode the user controls the dictionary selection;
+    // changing the search language must not toggle any dictionaries.
+    if (!state.customDicts) applyDictDefaults(item.dataset.value);
     savePrefs();
     setLangOpen(false);
-    redraw(); // the default dictionaries changed, so re-render the results
+    redraw(); // the selected language or default dictionaries may have changed
 });
 // Close the menu when clicking elsewhere, or pressing Escape.
 document.addEventListener("click", (event) => {
@@ -2081,27 +2644,69 @@ document.addEventListener("keydown", (event) => {
 // Collapsible panels ("Search options", "Dictionaries"). Each `.options` element
 // has an `.options-toggle` button; the `.open` class drives the CSS height
 // animation. The open/closed choice is remembered per panel.
+const mobileSearchOptionsToggle = document.querySelector(
+    ".mobile-search-options-toggle"
+);
+
+function isSearchOptionsPanel(panel) {
+    return Boolean(panel.querySelector("#search-options"));
+}
+
+function syncMobileSearchOptionsToggle(panel) {
+    if (!mobileSearchOptionsToggle || !isSearchOptionsPanel(panel)) return;
+    mobileSearchOptionsToggle.setAttribute(
+        "aria-expanded",
+        String(panel.classList.contains("open"))
+    );
+}
+
+function setOptionPanelOpen(panel, open, save = true) {
+    panel.classList.toggle("open", open);
+    const toggle = panel.querySelector(".options-toggle");
+    if (toggle) {
+        toggle.setAttribute("aria-expanded", String(open));
+        if (save) {
+            try {
+                const key =
+                    "yabai-chaci-panel-" +
+                    (toggle.getAttribute("aria-controls") || "");
+                localStorage.setItem(key, String(open));
+            } catch (e) {
+                // localStorage unavailable - nothing to save.
+            }
+        }
+    }
+    syncMobileSearchOptionsToggle(panel);
+}
+
 for (const panel of document.querySelectorAll(".options")) {
     const toggle = panel.querySelector(".options-toggle");
     const key = "yabai-chaci-panel-" + (toggle.getAttribute("aria-controls") || "");
     toggle.addEventListener("click", () => {
-        const open = !panel.classList.contains("open");
-        panel.classList.toggle("open", open);
-        toggle.setAttribute("aria-expanded", String(open));
-        try {
-            localStorage.setItem(key, String(open));
-        } catch (e) {
-            // localStorage unavailable - nothing to save.
-        }
+        setOptionPanelOpen(panel, !panel.classList.contains("open"));
     });
     try {
         if (localStorage.getItem(key) === "true") {
-            panel.classList.add("open");
-            toggle.setAttribute("aria-expanded", "true");
+            setOptionPanelOpen(panel, true, false);
+        } else {
+            syncMobileSearchOptionsToggle(panel);
         }
     } catch (e) {
         // localStorage unavailable - start closed.
     }
+}
+
+if (mobileSearchOptionsToggle) {
+    mobileSearchOptionsToggle.addEventListener("click", () => {
+        const panel = document
+            .getElementById("search-options")
+            ?.closest(".options");
+        if (!panel) return;
+        setOptionPanelOpen(panel, !panel.classList.contains("open"));
+        if (panel.classList.contains("open")) setLangOpen(false);
+    });
+    const panel = document.getElementById("search-options")?.closest(".options");
+    if (panel) syncMobileSearchOptionsToggle(panel);
 }
 
 // Run a search when the form is submitted (Enter or the button).
@@ -2173,6 +2778,9 @@ const pullArrow = document.getElementById("pull-arrow");
 const PULL_KEY = "yabai-chaci-pulled";
 // Pending timer that finishes the close animation.
 let closeTimer = null;
+// Pending timer that releases the panel's reserved space after its row has
+// finished growing back to the normal tall size.
+let slotReleaseTimer = null;
 // requestAnimationFrame id for making the pull tab follow the panel.
 let pullArrowFrame = null;
 
@@ -2192,6 +2800,10 @@ function positionPullArrow() {
     ) {
         placePulledPanel();
     }
+    // Center the tab on the search panel itself (the CSS transform centers it
+    // around this point).
+    const rect = searchPanel.getBoundingClientRect();
+    pullArrow.style.left = `${rect.left + rect.width / 2}px`;
     // The tracking loop below owns the tab's visibility and position.
 }
 
@@ -2206,10 +2818,14 @@ function startPullArrowTracking() {
             return;
         }
         const rect = searchPanel.getBoundingClientRect();
-        // Hidden while the bar is simply sitting on screen; shown once it is
-        // popped out or scrolled out of view.
-        pullArrow.hidden =
-            !searchPanel.classList.contains("pulled") && rect.bottom > 0;
+        const pulled = searchPanel.classList.contains("pulled");
+        const docked = searchPanel.classList.contains("docked");
+        // Hide the tab when the search bar is fully visible in its normal
+        // place. Keep it available while the bar is only partly visible, so
+        // scrolling back up still has the pull handle until it reaches the top.
+        const barFullyVisible =
+            !pulled && rect.top >= 0 && rect.bottom <= window.innerHeight;
+        pullArrow.hidden = docked || barFullyVisible;
         // Lift by 1px so the tab's background covers the panel's bottom border.
         pullArrow.style.top = `${Math.max(0, rect.bottom - 1)}px`;
         pullArrowFrame = requestAnimationFrame(track);
@@ -2287,6 +2903,10 @@ function setPulled(open) {
             clearTimeout(closeTimer);
             closeTimer = null;
         }
+        if (slotReleaseTimer) {
+            clearTimeout(slotReleaseTimer);
+            slotReleaseTimer = null;
+        }
         searchPanel.classList.remove("closing");
         if (!searchPanel.classList.contains("pulled")) {
             // Keep the panel's place in the flow, then fix it to the viewport.
@@ -2296,7 +2916,6 @@ function setPulled(open) {
             searchPanel.classList.add("pulled");
             pullArrow.setAttribute("aria-expanded", "true");
             savePulled(true);
-            input.focus({ preventScroll: true });
         }
     } else if (searchPanel.classList.contains("pulled")) {
         // Slide the panel up first, then return it to the normal page flow.
@@ -2310,8 +2929,15 @@ function setPulled(open) {
             searchPanel.style.removeProperty("--pulled-left");
             searchPanel.style.removeProperty("--pulled-width");
             searchPanel.style.removeProperty("top");
-            if (panelSlot) panelSlot.style.height = "";
             updatePullArrow();
+            // Keep the reserved height until the search row has grown back to
+            // the normal tall size. Clearing it earlier makes the page scroll.
+            slotReleaseTimer = setTimeout(() => {
+                slotReleaseTimer = null;
+                if (!searchPanel.classList.contains("pulled") && panelSlot) {
+                    panelSlot.style.height = "";
+                }
+            }, 240);
         }, closeDelay);
     }
     updatePullArrow();
@@ -2344,8 +2970,285 @@ updatePullArrow();
 // Re-render when the user navigates with the browser's back/forward buttons.
 window.addEventListener("popstate", restoreFromUrl);
 
+// Compact / Detailed display switch.
+const dictModeButtons = [...document.querySelectorAll(".dict-mode-option")];
+
+function updateDictMode() {
+    for (const button of dictModeButtons) {
+        const active = (button.dataset.mode === "compact") === state.compact;
+        button.setAttribute("aria-pressed", String(active));
+    }
+}
+
+for (const button of dictModeButtons) {
+    button.addEventListener("click", () => {
+        const compact = button.dataset.mode === "compact";
+        if (state.compact === compact) return;
+        state.compact = compact;
+        savePrefs();
+        updateDictMode();
+        entryDictState.clear();
+        redraw();
+    });
+}
+
+// Tap/click support for the compact-mode info bubble. Desktop hover and
+// keyboard focus are handled by CSS; touch devices need an explicit toggle.
+const dictModeInfo = document.querySelector(".dict-mode-info");
+if (dictModeInfo) {
+    const setInfoOpen = (open) => {
+        dictModeInfo.classList.toggle("open", open);
+        dictModeInfo.setAttribute("aria-expanded", String(open));
+    };
+    dictModeInfo.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setInfoOpen(!dictModeInfo.classList.contains("open"));
+    });
+    dictModeInfo.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        setInfoOpen(!dictModeInfo.classList.contains("open"));
+    });
+    document.addEventListener("click", (event) => {
+        if (!dictModeInfo.contains(event.target)) setInfoOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") setInfoOpen(false);
+    });
+}
+
+// Dictionary order, used by compact mode for priority.
+function orderForLanguage(lang, anchors) {
+    const saved = Array.isArray(dictOrder[lang]) ? dictOrder[lang] : [];
+    // Keep saved anchors that are not in the DOM yet. Browser-imported
+    // dictionaries are loaded asynchronously, so their saved position must not
+    // be dropped by the first (built-in-only) ordering pass on page load.
+    const merged = [...saved];
+    for (const anchor of anchors) {
+        if (!merged.includes(anchor)) merged.push(anchor);
+    }
+    dictOrder[lang] = merged;
+    saveDictOrder();
+    // Visual order only for the dictionaries currently in the DOM.
+    return merged.filter((anchor) => anchors.includes(anchor));
+}
+
+function applyDictOrder(container) {
+    const lang = container.closest(".dict-column")?.dataset.lang;
+    if (!lang) return;
+    const labels = [...container.querySelectorAll("label:not(.dict-loading)")];
+    const anchors = labels
+        .map((label) => label.querySelector(".dict-toggle")?.dataset.anchor)
+        .filter(Boolean);
+    const order = orderForLanguage(lang, anchors);
+    const byAnchor = new Map(
+        labels.map((label) => [
+            label.querySelector(".dict-toggle")?.dataset.anchor,
+            label,
+        ])
+    );
+    // Import placeholders sit after the real rows. Keep the sorted rows before
+    // the first placeholder so an in-progress import is not jumped over.
+    const placeholder = container.querySelector("label.dict-loading");
+    for (const anchor of order) {
+        const label = byAnchor.get(anchor);
+        if (!label) continue;
+        if (placeholder) container.insertBefore(label, placeholder);
+        else container.append(label);
+    }
+}
+
+let draggedDictLabel = null;
+
+// HTML5 drag and drop works with a mouse, but not with a finger. Use pointer
+// events for touch/pen so the same grip can reorder rows on mobile.
+function attachHandlePointerDrag(handle, label, container) {
+    let pointerId = null;
+    let moved = false;
+
+    function cleanup() {
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", finish);
+        document.removeEventListener("pointercancel", finish);
+    }
+
+    function move(event) {
+        if (pointerId === null || event.pointerId !== pointerId) return;
+        if (event.cancelable) event.preventDefault();
+        moved = true;
+        const others = [...container.querySelectorAll("label")].filter(
+            (other) => other !== label
+        );
+        let target = null;
+        for (const other of others) {
+            const rect = other.getBoundingClientRect();
+            if (event.clientY < rect.top + rect.height / 2) {
+                target = other;
+                break;
+            }
+        }
+        if (target) container.insertBefore(label, target);
+        else container.append(label);
+    }
+
+    function finish(event) {
+        if (pointerId === null || event.pointerId !== pointerId) return;
+        if (event.cancelable) event.preventDefault();
+        cleanup();
+        label.classList.remove("dict-dragging");
+        try {
+            handle.releasePointerCapture(pointerId);
+        } catch (error) {
+            // Synthetic or already-released pointer.
+        }
+        pointerId = null;
+        if (!moved) return;
+        const lang = container.closest(".dict-column")?.dataset.lang;
+        if (lang) {
+            dictOrder[lang] = [
+                ...container.querySelectorAll(".dict-toggle"),
+            ].map((toggle) => toggle.dataset.anchor);
+            saveDictOrder();
+        }
+        entryDictState.clear();
+        redraw();
+    }
+
+    handle.addEventListener(
+        "pointerdown",
+        (event) => {
+            if (event.pointerType === "mouse" || pointerId !== null) return;
+            event.preventDefault();
+            event.stopPropagation();
+            pointerId = event.pointerId;
+            moved = false;
+            label.classList.add("dict-dragging");
+            try {
+                handle.setPointerCapture(pointerId);
+            } catch (error) {
+                // Pointer capture is optional; document-level moves still work
+                // in browsers that do not support it for synthetic pointers.
+            }
+            document.addEventListener("pointermove", move, { passive: false });
+            document.addEventListener("pointerup", finish);
+            document.addEventListener("pointercancel", finish);
+        },
+        { passive: false }
+    );
+}
+function setupDictionaryDrag(container) {
+    for (const label of container.querySelectorAll("label:not(.dict-loading)")) {
+        label.draggable = false;
+        if (!label.querySelector(".dict-handle")) {
+            const handle = document.createElement("span");
+            handle.className = "dict-handle";
+            handle.draggable = true;
+            handle.setAttribute("aria-hidden", "true");
+            handle.title = "Drag to reorder";
+            // A click on the grip should not toggle the dictionary switch.
+            handle.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            });
+            attachHandlePointerDrag(handle, label, container);
+            label.prepend(handle);
+        }
+    }
+
+    // The per-column import plus is only shown while the cursor is on or below
+    // the last dictionary row, not anywhere in the language column.
+    const column = container.closest(".dict-column");
+    if (column && column.dataset.addHoverReady !== "true") {
+        column.dataset.addHoverReady = "true";
+        const updateAddButton = (event) => {
+            const last = [...container.querySelectorAll("label:not(.dict-loading)")].pop();
+            const show =
+                column.classList.contains("open") &&
+                (!last ||
+                    event.clientY >= last.getBoundingClientRect().top - 1);
+            column.classList.toggle("add-visible", Boolean(show));
+        };
+        column.addEventListener("mousemove", updateAddButton);
+        column.addEventListener("mouseenter", updateAddButton);
+        column.addEventListener("mouseleave", () => {
+            column.classList.remove("add-visible");
+        });
+    }
+
+    if (container.dataset.dragReady === "true") return;
+    container.dataset.dragReady = "true";
+    container.addEventListener("dragstart", (event) => {
+        const handle = event.target.closest(".dict-handle");
+        if (!handle) return;
+        const label = handle.closest("label");
+        if (!label || label.parentElement !== container) return;
+        draggedDictLabel = label;
+        label.classList.add("dict-dragging");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", "");
+    });
+    container.addEventListener("dragend", () => {
+        if (draggedDictLabel) draggedDictLabel.classList.remove("dict-dragging");
+        draggedDictLabel = null;
+    });
+    container.addEventListener("dragover", (event) => {
+        if (!draggedDictLabel || draggedDictLabel.parentElement !== container) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+    });
+    container.addEventListener("drop", (event) => {
+        if (!draggedDictLabel || draggedDictLabel.parentElement !== container) return;
+        event.preventDefault();
+        const target = event.target.closest("label");
+        if (target && target !== draggedDictLabel) {
+            const rect = target.getBoundingClientRect();
+            const before = event.clientY < rect.top + rect.height / 2;
+            container.insertBefore(
+                draggedDictLabel,
+                before ? target : target.nextSibling
+            );
+        } else if (!target) {
+            container.append(draggedDictLabel);
+        }
+        const lang = container.closest(".dict-column")?.dataset.lang;
+        if (lang) {
+            dictOrder[lang] = [
+                ...container.querySelectorAll(".dict-toggle"),
+            ].map((toggle) => toggle.dataset.anchor);
+            saveDictOrder();
+        }
+        entryDictState.clear();
+        redraw();
+    });
+}
+
+function setupDictionaryOrdering() {
+    for (const container of document.querySelectorAll(".dict-items")) {
+        applyDictOrder(container);
+        setupDictionaryDrag(container);
+    }
+}
+
+// Small integration surface for the browser-side custom dictionary importer.
+window.state = state;
+window.toToneless = toToneless;
+window.anchorLang = anchorLang;
+window.dictToggles = dictToggles;
+window.entryDictState = entryDictState;
+window.syncGroups = syncGroups;
+window.savePrefs = savePrefs;
+window.redraw = redraw;
+window.groupFor = groupFor;
+window.syncDictPanel = syncDictPanel;
+window.setupDictionaryOrdering = setupDictionaryOrdering;
+window.refreshSearch = () => {
+    if (currentQuery && currentQuery.trim()) search(currentQuery);
+    else redraw();
+};
+
 // On first load: apply saved preferences, then restore a search from the URL.
 loadPrefs();
+setupDictionaryOrdering();
 // Reserve space so restoring the scroll position does not visibly jump once the
 // results render.
 prepareInitialScroll();

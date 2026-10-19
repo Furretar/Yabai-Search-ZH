@@ -58,6 +58,35 @@ h1 {
     transform: translateY(40%);
 }
 
+/* Tiny language / version labels stacked to the right of the subtitle. */
+.site-meta {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    margin-left: .15em;
+    font-size: .35em;
+    line-height: 1.1;
+    vertical-align: super;
+    color: var(--muted);
+}
+
+.site-zh,
+.site-version {
+    font-size: 1em;
+    line-height: 1;
+    letter-spacing: .05em;
+}
+
+/* Lift the language tag and push the version further down. */
+.site-zh {
+    transform: translateY(-.18em);
+}
+
+.site-version {
+    margin-top: .3em;
+    white-space: nowrap;
+}
+
 /* The search form: input and button side by side. */
 form {
     display: flex;
@@ -347,12 +376,26 @@ body:has(.search-panel:focus-within) .pull-arrow {
 }
 
 /* While the language menu is open, stop the pulled panel's scroller from
-   clipping the menu; it extends below the short, collapsed panel. */
+   clipping the menu; it extends below the short, collapsed panel. The panel is
+   lifted above the pull-out handle, so mask the bottom border under the tab
+   again to keep the two surfaces attached. */
 .search-panel.pulled:has(.lang-menu:not([hidden])) {
     overflow: visible;
     /* Also lift the panel above the pull-out handle, so the menu is not
        covered by it. */
     z-index: 33;
+}
+
+.search-panel.pulled:not(.docked):has(.lang-menu:not([hidden]))::after {
+    content: "";
+    position: absolute;
+    bottom: -1px;
+    left: 50%;
+    width: 3.5rem;
+    height: 1px;
+    background: #121016;
+    transform: translateX(-50%);
+    pointer-events: none;
 }
 
 /* The search row sits inset and flush inside the panel. The normal (not
@@ -473,6 +516,39 @@ body:has(.search-panel:focus-within) .pull-arrow {
     color: var(--accent);
 }
 
+/* Compact Search Options toggle, shown beside the language code on phones. */
+.mobile-search-options-toggle {
+    display: none;
+    flex: none;
+    align-items: center;
+    gap: .2rem;
+    padding: .2rem .3rem;
+    border: none;
+    border-radius: .3rem;
+    background: none;
+    color: var(--control);
+    font: inherit;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.mobile-search-options-toggle:hover,
+.mobile-search-options-toggle[aria-expanded="true"] {
+    color: var(--accent);
+}
+
+.mobile-options-arrow {
+    display: inline-block;
+    font-size: .7em;
+    transition: transform .15s ease;
+}
+
+.mobile-search-options-toggle[aria-expanded="true"] .mobile-options-arrow {
+    transform: rotate(180deg);
+}
+
 .lang-menu {
     position: absolute;
     top: 100%;
@@ -534,17 +610,6 @@ body:has(.search-panel:focus-within) .pull-arrow {
 .options-toggle.search-options-toggle,
 .options-toggle.dictionaries-toggle {
     text-align: center;
-}
-
-/* The Search options row is more compact than the default disclosure. */
-.options-toggle.search-options-toggle {
-    padding-top: .25rem;
-    padding-bottom: .35rem;
-}
-
-/* While open, tighten the gap above the bottom Search options label. */
-.options.open .search-options-toggle {
-    padding-top: .2rem;
 }
 
 /* Both disclosure labels turn yellow on hover. */
@@ -620,8 +685,9 @@ body:has(.search-panel:focus-within) .pull-arrow {
     align-items: flex-start;
     justify-content: space-between;
     gap: .4rem 1rem;
-    /* Space above the first control row; tighter below the last one. */
-    padding: .5rem .75rem .2rem;
+    /* Equal space above the controls (below "Search Options") and a little
+       more below them (above the Dictionaries separator). */
+    padding: .35rem .75rem .6rem;
     opacity: 0;
     transition: opacity 100ms ease;
 }
@@ -646,6 +712,30 @@ body:has(.search-panel:focus-within) .pull-arrow {
    keeps its own width and lines up with the buttons. */
 .option-rows > .custom-dicts-button {
     width: auto;
+}
+
+/* When the chip wraps onto its own line, center it. */
+@media (max-width: 748px) {
+    .option-rows > .custom-dicts-button {
+        margin-left: auto;
+        margin-right: auto;
+    }
+}
+
+/* Once the fourth control would wrap, drop the descriptions so the four
+   controls stay on one row. */
+@media (max-width: 556px) {
+    .option-description {
+        display: none;
+    }
+}
+
+/* On very narrow screens the quick controls wrap onto three rows. Center each
+   row instead of spreading the controls to the edges. */
+@media (max-width: 390px) {
+    .option-rows {
+        justify-content: center;
+    }
 }
 
 .option-description {
@@ -843,6 +933,11 @@ body:has(.search-panel:focus-within) .pull-arrow {
 /* On: a yellow outline at all times, including while hovered. */
 .quick-toggle[aria-pressed="true"] {
     border-color: var(--accent);
+}
+
+/* Match the width of one two-square quick pair. */
+#quick-tone {
+    width: calc(3.07rem * 2 + 2px);
 }
 
 /* The tone sample is a four-character phrase in red, yellow, green, blue. */
@@ -1052,24 +1147,46 @@ body:has(.search-panel:focus-within) .pull-arrow {
     color: var(--tone5);
 }
 
-/* The Chinese characters in a result. */
+/* The Chinese characters in a result. The inline-block wrapper lets a long
+   headword shrink to the available width so its furigana columns can wrap. */
 .hanzi {
+    display: inline-block;
+    max-width: 100%;
     font-size: var(--headword-size);
 }
 
-/* Furigana: a two-row grid with one column per character, so each reading sits
-   above its character and the word is exactly as wide as its reading. */
+/* Furigana: one flex column per character, so each reading sits above its
+   character. Columns are flex items, which lets a long headword wrap between
+   characters instead of overflowing a narrow screen. */
 .furigana {
-    display: inline-grid;
-    justify-items: center;
+    display: inline-flex;
+    align-items: flex-end;
+    max-width: 100%;
     vertical-align: bottom;
 }
 
+/* Result headwords may wrap between characters; other furigana (definition
+   links, parsed words) stays on one line like before. */
+.hanzi .furigana {
+    flex-wrap: wrap;
+}
+
+.furi-col {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;
+}
+
 .furigana .reading {
-    grid-row: 1;
     font-size: var(--furigana-reading);
     line-height: 1;
     white-space: nowrap;
+}
+
+.furigana .char {
+    /* Fallback layouts put a whole multi-character word in one cell. */
+    overflow-wrap: anywhere;
 }
 
 /* Furigana inside a definition (cross-referenced words) has its own size. */
@@ -1077,9 +1194,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
     font-size: var(--furigana-def);
 }
 
-.furigana .char {
-    grid-row: 2;
-}
+
 
 /* The main word's reading; furigana inside definitions inherits color. */
 .hanzi .reading {
@@ -1184,11 +1299,59 @@ body:has(.search-panel:focus-within) .pull-arrow {
     text-decoration: underline;
 }
 
+/* Imported dictionaries have no About/source page, so their titles are plain
+   labels rather than links. Keep them from reacting to hover. */
+.def-source-name:not([href]),
+.def-source-name:not([href]):hover {
+    color: var(--muted);
+    text-decoration: none;
+    cursor: default;
+}
+
 .def-source-line {
     position: relative;
     margin-top: .15rem;
     padding-right: 1.5rem;
     font-size: var(--definition-size);
+}
+
+/* Custom dictionary glosses keep example/line breaks from the source. */
+.custom-source .def-source-line {
+    white-space: pre-line;
+}
+
+/* Inline dictionary pinyin moved above the Chinese characters by
+   static/inline_furigana.js. */
+.inline-furigana {
+    ruby-position: over;
+    ruby-align: center;
+}
+
+.inline-furigana rt {
+    color: var(--reading);
+    font-size: .6em;
+    font-weight: 400;
+    line-height: 1.1;
+}
+
+.inline-furigana .tone1 {
+    color: var(--tone1);
+}
+
+.inline-furigana .tone2 {
+    color: var(--tone2);
+}
+
+.inline-furigana .tone3 {
+    color: var(--tone3);
+}
+
+.inline-furigana .tone4 {
+    color: var(--tone4);
+}
+
+.inline-furigana .tone5 {
+    color: var(--tone5);
 }
 
 /* Copy icon at the end of a definition, revealed on hover/focus. */
@@ -1381,30 +1544,6 @@ body:has(.search-panel:focus-within) .pull-arrow {
     transition: opacity 100ms ease;
 }
 
-/* Explanation hints: wide mode puts it next to the bottom Dictionaries label;
-   compact mode puts it above the language columns. Both are hidden when the
-   panel is closed, and neither is shown in the other layout. */
-.dictionaries-hint,
-.dict-compact-hint {
-    display: none;
-    font-size: .8rem;
-    color: var(--muted);
-}
-
-.dictionaries-hint {
-    margin-left: .75rem;
-}
-
-.dict-compact-hint {
-    margin: 0 0 .75rem;
-}
-
-@media (min-width: 601px) {
-    .options.open.langs-on .dictionaries-hint {
-        display: inline;
-    }
-}
-
 .options.open .dict-body {
     opacity: 1;
     transition-delay: 90ms;
@@ -1425,17 +1564,18 @@ body:has(.search-panel:focus-within) .pull-arrow {
 }
 
 /* The Japanese group sits alone on the grid's second row. Pull it up against
-   the row above, but leave a few pixels of breathing room; while its list is
-   collapsed, drop the body's bottom padding so the panel ends right below its
-   header. */
+   the row above, but leave a few pixels of breathing room above and below. */
 @media (min-width: 601px) {
-    .dict-column[data-lang="japanese"] {
+    .dict-column[data-lang="japanese"],
+    .dict-column[data-lang^="custom-lang-"],
+    .dict-add-lang-cell {
         margin-top: calc(-1rem + 4px);
     }
 
     .dict-body:has(.dict-column[data-lang="japanese"]:not(.open)) {
         padding-bottom: 0;
     }
+
 }
 
 .dict-column-head {
@@ -1444,6 +1584,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
     gap: .3rem;
     font-weight: 600;
     color: var(--control);
+    cursor: pointer;
 }
 
 /* Separator under each language title, above its dictionary list. The equal
@@ -1513,9 +1654,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
 .dict-column.open .dict-items {
     max-height: 20rem;
     margin-top: .5rem;
-    /* A divider under the last dictionary in the open language. */
     padding-bottom: .5rem;
-    border-bottom: 1px solid var(--options-divider);
     opacity: 1;
     visibility: visible;
     transition:
@@ -1530,20 +1669,634 @@ body:has(.search-panel:focus-within) .pull-arrow {
     color: var(--accent);
 }
 
-/* Once a specific dictionary in a language is on, its language switch is
-   replaced by the yellow language name. Turn all of that language's
-   dictionaries off to bring the switch back. */
-.dict-column:has(.dict-toggle:checked) .dict-group {
-    display: none;
-}
-
 .dict-column:has(.dict-toggle:checked) .dict-column-head {
     color: var(--accent);
 }
 
-.dict-column:has(.dict-toggle:checked) .dict-head-label {
+/* Add-language cell and per-column import buttons. */
+.dict-add-lang,
+.dict-add-dict {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0;
+    border: 1px solid var(--options-divider);
+    border-radius: .25rem;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 1.1rem;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+}
+
+/* The add-language plus occupies the next free grid cell, centered. */
+.dict-add-lang-cell {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 2.5rem;
+}
+
+.dict-add-lang-cell .dict-add-lang {
+    width: 1.8rem;
+    height: 1.8rem;
+    border-style: dashed;
+    font-size: 1.3rem;
+}
+
+.dict-add-lang:hover,
+.dict-add-dict:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* The import target appears below the last dictionary only while the
+   language's list is expanded and hovered; it reserves no space otherwise. */
+.dict-add-dict {
+    display: none;
+    margin: .4rem auto 0;
+    border-style: dashed;
+}
+
+.dict-column.add-visible .dict-add-dict,
+.dict-column.open:has(.dict-items label:last-child:hover) .dict-add-dict,
+.dict-column.open:has(.dict-items label:last-child.dict-dragging) .dict-add-dict,
+.dict-column.open .dict-add-dict:focus-visible {
+    display: flex;
+}
+
+/* Delete controls for user-added languages and dictionaries. */
+.dict-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 1.1rem;
+    height: 1.1rem;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    visibility: hidden;
+    transition: color .15s ease, opacity .15s ease;
+}
+
+.dict-column-head:hover .dict-remove-lang,
+.dict-column label:hover .dict-remove-dict,
+.dict-remove:focus-visible {
+    opacity: 1;
+    visibility: visible;
+}
+
+.dict-remove:hover {
+    color: var(--tone1);
+}
+
+/* Check Storage sits at the far left of the Dictionaries header, shown only
+   while the dictionaries panel is open. */
+.dictionaries-header {
+    position: relative;
+}
+
+.dict-storage-link {
+    display: none;
+    position: absolute;
+    left: .75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: .85rem;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.options.open .dict-storage-link {
+    display: inline-flex;
+}
+
+.dict-storage-link:hover {
+    color: var(--accent);
+}
+
+/* Compact / Detailed switch on the right of the Dictionaries header. */
+.dict-mode {
+    display: none;
+    position: absolute;
+    right: .75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    align-items: center;
+    gap: .25rem;
+    font-size: .85rem;
+}
+
+.options.open .dict-mode {
+    display: flex;
+}
+
+.dict-mode-option {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    cursor: pointer;
+}
+
+.dict-mode-option[aria-pressed="true"] {
+    color: var(--accent);
+}
+
+.dict-mode-separator {
+    color: var(--muted);
+}
+
+.dict-mode-group {
+    display: inline-flex;
+    align-items: center;
+    gap: .25rem;
+}
+
+.dict-mode-info {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.05rem;
+    height: 1.05rem;
+    margin-left: .15rem;
+    border: 1px solid var(--muted);
+    border-radius: 50%;
+    color: var(--muted);
+    font: .7rem serif;
+    line-height: 1;
+    cursor: help;
+}
+
+.dict-mode-info:hover,
+.dict-mode-info:focus-visible,
+.dict-mode-info.open {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* The info bubble. Native title tooltips do not open on touch, so the icon
+   also toggles this element on tap (see app.js). */
+.dict-mode-help {
+    display: none;
+    position: absolute;
+    top: calc(100% + .4rem);
+    right: -.25rem;
+    z-index: 20;
+    width: max-content;
+    max-width: min(18rem, calc(100vw - 1.5rem));
+    padding: .4rem .5rem;
+    border: 1px solid var(--panel-border);
+    border-radius: .3rem;
+    background: #121016;
+    box-shadow: 0 .4rem 1rem rgba(0, 0, 0, .45);
+    color: #d2ccd8;
+    font-family: system-ui, sans-serif;
+    font-size: .75rem;
+    font-weight: 400;
+    font-style: normal;
+    line-height: 1.35;
+    text-align: left;
+    white-space: normal;
     pointer-events: none;
+}
+
+.dict-mode-info:hover .dict-mode-help,
+.dict-mode-info:focus-visible .dict-mode-help,
+.dict-mode-info.open .dict-mode-help {
+    display: block;
+}
+
+/* On narrow phones the mode switch would run into the centered Dictionaries
+   label. Keep "Compact /" on the first line and wrap "Detailed i" below it. */
+@media (max-width: 480px) {
+    .dict-mode {
+        top: .45rem;
+        transform: none;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        max-width: 6rem;
+        row-gap: .05rem;
+    }
+
+    .options.open .dictionaries-header {
+        padding-bottom: .75rem;
+    }
+
+    .dict-body {
+        padding-top: 0;
+    }
+
+    .dict-column-head .dict-name {
+        padding-top: .1rem;
+    }
+
+    .dict-storage-link {
+        top: .45rem;
+        transform: none;
+    }
+}
+
+/* Drag handle, shown on the left of a dictionary row while it is hovered.
+   Only the handle starts a drag, so the switch and label still toggle. */
+.dict-items label {
+    position: relative;
+    transition: padding-left .15s ease;
+}
+
+.dict-name-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.dict-items label:not(.dict-loading):hover,
+.dict-items label:not(.dict-loading).dict-dragging {
+    padding-left: 1.3rem;
+}
+
+.dict-handle {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    width: .8rem;
+    height: 1.15rem;
+    opacity: 0;
+    visibility: hidden;
+    color: var(--muted);
+    cursor: grab;
+    background-image: radial-gradient(circle, currentColor 1px, transparent 1.4px);
+    background-size: .32rem .32rem;
+    background-position: center;
+    background-repeat: repeat;
+    touch-action: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    transition: opacity .15s ease, color .15s ease;
+}
+
+.dict-column label:hover .dict-handle,
+.dict-items label.dict-dragging .dict-handle {
+    opacity: 1;
+    visibility: visible;
+}
+
+.dict-handle:hover {
+    color: var(--accent);
+}
+
+/* Touch screens need a larger grip target, but the grips still only appear
+   while the dictionary row is hovered. */
+@media (hover: none), (pointer: coarse) {
+    .dict-handle {
+        width: 1.2rem;
+        height: 1.6rem;
+        background-size: .36rem .36rem;
+    }
+
+    .dict-items label:not(.dict-loading):hover,
+    .dict-items label:not(.dict-loading).dict-dragging {
+        padding-left: 1.7rem;
+    }
+}
+
+.dict-items label.dict-dragging {
+    opacity: .45;
+    cursor: grabbing;
+}
+
+/* Temporary row while a dictionary file is being read and indexed. */
+.dict-loading {
     cursor: default;
+    color: var(--muted);
+}
+
+.dict-loading-toggle {
+    opacity: .45;
+    cursor: default;
+}
+
+.dict-loading-text {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    row-gap: .1rem;
+}
+
+.dict-loading-title {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.dict-loading-status {
+    color: var(--muted);
+    font-size: .8rem;
+    overflow-wrap: anywhere;
+}
+
+.dict-loading-error .dict-loading-status {
+    color: var(--tone1);
+}
+
+/* Per-dictionary storage breakdown. */
+.storage-dialog {
+    width: min(34rem, calc(100% - 2rem));
+}
+
+.storage-list {
+    display: flex;
+    flex-direction: column;
+    gap: .6rem;
+    max-height: 60vh;
+    margin-top: .5rem;
+    overflow-y: auto;
+}
+
+.storage-item {
+    padding: .55rem .65rem;
+    border: 1px solid var(--options-divider);
+    border-radius: .35rem;
+}
+
+.storage-title {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.storage-meta {
+    margin: .15rem 0 .35rem;
+    color: var(--muted);
+    font-size: .8rem;
+}
+
+.storage-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    font-size: .82rem;
+    color: var(--control);
+}
+
+.storage-total-row {
+    margin-top: .35rem;
+    padding-top: .35rem;
+    border-top: 1px solid var(--options-divider);
+    color: var(--accent);
+}
+
+.storage-total {
+    margin: .6rem 0 0;
+    color: var(--accent);
+    font-size: .85rem;
+    text-align: right;
+}
+
+/* In-page language-name and delete-confirmation dialogs. */
+.custom-dialog {
+    box-sizing: border-box;
+    width: min(28rem, calc(100% - 2rem));
+    padding: 1rem 1.1rem;
+    border: 1px solid var(--panel-border);
+    border-radius: .5rem;
+    background: #121016;
+    color: #d2ccd8;
+    box-shadow: 0 1rem 2rem rgba(0, 0, 0, .55);
+}
+
+.custom-dialog::backdrop {
+    background: rgba(0, 0, 0, .55);
+}
+
+/* The global form rule is a search-row flex layout; dialogs stack instead. */
+.custom-dialog form {
+    display: block;
+}
+
+.custom-dialog h2 {
+    margin: 0 0 .5rem;
+    font-size: 1.1rem;
+    color: var(--accent);
+}
+
+.dialog-field {
+    display: flex;
+    flex-direction: column;
+    gap: .35rem;
+    margin: .75rem 0;
+    font-size: .9rem;
+}
+
+.custom-dialog input[type="text"] {
+    box-sizing: border-box;
+    width: 100%;
+    padding: .45rem .55rem;
+    border: 1px solid var(--panel-border);
+    border-radius: .3rem;
+    background: #17141a;
+    color: #d2ccd8;
+    font: inherit;
+}
+
+.custom-dialog input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: .5rem;
+    margin-top: .9rem;
+}
+
+/* Keep both actions the same height even when Cancel uses smaller text. */
+.custom-dialog .dialog-actions button {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 2rem;
+}
+
+/* Add-language dialog: title centered, small Cancel on the left and Add on
+   the right. */
+#add-language-dialog h2 {
+    text-align: center;
+}
+
+#add-language-dialog .dialog-actions {
+    justify-content: space-between;
+    align-items: center;
+}
+
+#add-language-dialog .dialog-cancel {
+    padding: .1rem .35rem;
+    font-size: .78rem;
+    line-height: 1.4;
+}
+
+.dialog-cancel,
+.dialog-submit {
+    padding: .3rem .7rem;
+    border: 1px solid var(--panel-border);
+    border-radius: .3rem;
+    background: transparent;
+    color: var(--control);
+    font: inherit;
+    cursor: pointer;
+}
+
+.dialog-submit {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.dialog-danger {
+    color: var(--tone1);
+    border-color: var(--tone1);
+}
+
+.dialog-cancel:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.dialog-danger:hover {
+    color: #ff6b6b;
+    border-color: #ff6b6b;
+}
+
+.dialog-error {
+    margin: .5rem 0 0;
+    color: var(--tone1);
+    font-size: .85rem;
+}
+
+/* Browser-side dictionary import dialog. */
+.import-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: rgba(0, 0, 0, .55);
+}
+
+.import-modal[hidden] {
+    display: none;
+}
+
+.import-dialog {
+    box-sizing: border-box;
+    width: min(30rem, 100%);
+    max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 1rem 1.1rem;
+    border: 1px solid var(--panel-border);
+    border-radius: .5rem;
+    background: #121016;
+    color: #d2ccd8;
+    box-shadow: 0 .8rem 2rem rgba(0, 0, 0, .5);
+}
+
+.import-dialog h2 {
+    margin: 0 0 .35rem;
+    font-size: 1.1rem;
+    color: var(--accent);
+}
+
+.import-target,
+.import-status {
+    margin: .35rem 0;
+}
+
+.import-drop {
+    margin: .7rem 0;
+    padding: 1.4rem 1rem;
+    border: 1px dashed var(--panel-border);
+    border-radius: .4rem;
+    text-align: center;
+}
+
+.import-drop.dragging {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.import-source {
+    margin: .2rem 0 .8rem;
+    font-size: .82rem;
+}
+
+.import-choose,
+.import-close {
+    padding: .3rem .7rem;
+    border: 1px solid var(--panel-border);
+    border-radius: .3rem;
+    background: transparent;
+    color: var(--control);
+    font: inherit;
+    cursor: pointer;
+}
+
+.import-choose:hover,
+.import-close:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.import-close {
+    display: block;
+    margin-left: auto;
+}
+
+.import-storage-status {
+    margin: .45rem 0;
+    color: var(--control);
+    font-size: .85rem;
+    line-height: 1.35;
+}
+
+.import-storage-status.storage-granted {
+    color: var(--accent);
+}
+
+.import-storage-status.storage-denied {
+    color: var(--control);
+}
+
+/* While a search is pending, lock the page scroll. The footer is briefly
+   below the still-short results area, and scrolling down to it would leave the
+   page stranded below the About link once the results arrive. */
+html:has(body.searching) {
+    overflow: hidden;
 }
 
 /* On search pages, keep the content at least one screen tall so the timings
@@ -1575,6 +2328,25 @@ footer {
     border-top: 1px solid var(--entry-divider);
     font-size: .9rem;
     text-align: center;
+}
+
+/* The copy-log control looks like a link but is a button (no form submit). */
+.copy-log-button {
+    margin-left: .75rem;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+}
+
+.copy-log-button:hover {
+    text-decoration: underline;
+}
+
+.copy-log-button.copied {
+    color: var(--muted);
 }
 
 /* The "Search Functions" bullet list. */
@@ -1701,12 +2473,33 @@ body:has(.search-panel.pulled.docked) #parsed {
         margin-top: .75rem;
     }
 
+    /* Replace the full-width Search Options row with a compact gear beside
+       the language code. */
+    .options-toggle.search-options-toggle {
+        display: none;
+    }
+
+    .mobile-search-options-toggle {
+        display: inline-flex;
+    }
+
+    .lang-select {
+        margin-right: 0;
+    }
+
+    .lang-select::after {
+        display: none;
+    }
+
     /* Stack the dictionary groups so long labels fit, then let a tall expanded
        panel scroll instead of clipping its contents. */
     .dict-columns {
         grid-template-columns: 1fr;
-        /* More space between a language group and the dictionary above it. */
-        gap: 1.5rem;
+        gap: .25rem;
+    }
+
+    .dict-column.open .dict-items {
+        padding-bottom: .25rem;
     }
 
     /* The columns stack here, so the vertical separators do not apply. */
@@ -1715,20 +2508,35 @@ body:has(.search-panel.pulled.docked) #parsed {
         padding-left: 0;
     }
 
-    /* Compact layout: show the hint above the language columns only while the
-       dictionaries panel is open and a language is switched on. */
-    .options.open.langs-on .dict-compact-hint {
-        display: block;
-    }
-
-    .options.open .dictionaries-hint {
-        display: none;
-    }
-
     .options.open .options-collapse {
         max-height: 70vh;
         overflow-y: auto;
     }
+}
+
+/* Progress while existing imports are upgraded with stored script forms. */
+.dict-backfill-status {
+    position: fixed;
+    left: 50%;
+    bottom: 1rem;
+    z-index: 55;
+    /* Status only: never intercept clicks on the footer or pager below it. */
+    pointer-events: none;
+    max-width: calc(100vw - 2rem);
+    padding: .4rem .65rem;
+    transform: translateX(-50%);
+    border: 1px solid var(--panel-border);
+    border-radius: .35rem;
+    background: #121016;
+    box-shadow: 0 .4rem 1rem rgba(0, 0, 0, .45);
+    color: var(--control);
+    font-size: .8rem;
+    line-height: 1.3;
+    text-align: center;
+}
+
+.dict-backfill-status[hidden] {
+    display: none;
 }
 
 /* Pager for "*" (all-headwords) searches. */
