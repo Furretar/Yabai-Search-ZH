@@ -24,7 +24,7 @@ MOE_DB = ROOT / "data" / "moe.sqlite"
 WIKTIONARY_DB = ROOT / "data" / "wiktionary.sqlite"
 
 # Characters trimmed from both ends of a token before lowercasing. Must match
-# the strip set in yabai_chaci/db.py (_ENGLISH_WORD_STRIP).
+# the strip set in yabai_search/db.py (_ENGLISH_WORD_STRIP).
 _STRIP = " \t\r\n!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~“”‘’「」【】《》…·—–~"
 
 

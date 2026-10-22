@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from yabai_chaci import db
-from yabai_chaci.default_dictionaries import DEFAULTS
+from yabai_search import db
+from yabai_search.default_dictionaries import DEFAULTS
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 
@@ -61,6 +61,37 @@ def test_cedict_source_and_definition(search, find_result):
     assert "cedict" in _anchors(entry)
     assert "cedict" in _definition_anchors(entry)
     assert entry["pinyin"] == "dàng àn"
+
+
+def test_cedict_also_written_notes_become_other_forms(search, find_result):
+    """An "also written X" note is a form, not a numbered sense."""
+    entry = find_result(search("没精打采"), "没精打采")
+    assert entry is not None
+    senses = [
+        sense
+        for definition in entry["definitions"]
+        if definition["anchor"] == "cedict"
+        for group in definition.get("groups", [])
+        for sense in group.get("senses", [])
+    ]
+    assert not any("also written" in sense for sense in senses)
+    assert any(form["traditional"] == "沒精打彩" for form in entry["forms"])
+
+
+def test_cedict_also_written_variant_without_own_entry(search, find_result):
+    """A note-only variant still appears under Other forms."""
+    entry = find_result(search("三宝太监"), "三宝太监")
+    assert entry is not None
+    assert entry["main"] is None
+    assert any(form["traditional"] == "三保太監" for form in entry["forms"])
+
+
+def test_cedict_also_written_does_not_redirect(search, find_result):
+    """Two standard spellings stay separate instead of redirecting to each other."""
+    entry = find_result(search("来福枪"), "来福枪")
+    assert entry is not None
+    assert entry["main"] is None
+    assert any(form["traditional"] == "來復槍" for form in entry["forms"])
 
 
 @requires_moe

@@ -1,6 +1,6 @@
 {
   # Human-readable description of what this flake provides.
-  description = "Yabai-Chaci - a CC-CEDICT Chinese-English dictionary";
+  description = "Yabai Search - a CC-CEDICT Chinese-English dictionary";
 
   # Pin nixpkgs to the same release the host system uses, so libraries match.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
@@ -29,10 +29,10 @@
 
         # Printed each time the shell starts, as a reminder of the commands.
         shellHook = ''
-          echo "Yabai-Chaci dev shell"
+          echo "Yabai Search dev shell"
           echo "  first run:   uv sync"
           echo "  import data: uv run python -m scripts.import_cedict"
-          echo "  run server:  uv run uvicorn yabai_chaci.main:app --reload"
+          echo "  run server:  uv run uvicorn yabai_search.main:app --reload"
         '';
       };
     };

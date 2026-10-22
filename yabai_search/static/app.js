@@ -1,4 +1,4 @@
-// Front-end script for Yabai-Chaci. Runs in the browser.
+// Front-end script for Yabai Search. Runs in the browser.
 // It calls the /api/search endpoint and renders the results into the page.
 
 // Grab the elements we need from index.html (by their id attributes).
@@ -45,7 +45,7 @@ const langDefaults = JSON.parse(langSelect.dataset.defaults || "{}");
 
 // Compact mode shows one definition per language, chosen by the user's
 // dictionary order. Detailed mode shows every selected dictionary.
-const DICT_ORDER_KEY = "yabai-chaci-dict-order";
+const DICT_ORDER_KEY = "yabai-search-dict-order";
 let dictOrder = {};
 
 function loadDictOrder() {
@@ -100,6 +100,8 @@ let currentTokens = [];
 const DEBUG_EVENT_LIMIT = 200;
 const debugEvents = [];
 let currentDebugSearch = null;
+// Time of the last keystroke, used to report the debounce gap in the log.
+let lastInputAt = 0;
 // Counts for the "*" pager's shortcut to the imported-dictionary results.
 let lastWildcardCustom = null;
 
@@ -112,16 +114,21 @@ function debugErrorText(error) {
 
 // Record one event. While a search is active it is also attached to that
 // search, which is what "traceback from the current search" reports.
-function recordDebug(level, message, error = null) {
+function recordDebug(level, message, error = null, details = null) {
     const entry = {
         at: new Date().toISOString(),
         level,
         message: String(message),
     };
     if (error) entry.stack = debugErrorText(error);
+    if (details && typeof details === "object") Object.assign(entry, details);
     if (currentDebugSearch) {
         entry.query = currentDebugSearch.query;
         entry.offset = currentDebugSearch.offset;
+        if (typeof currentDebugSearch.startedAtPerf === "number") {
+            entry.sinceSearchStartMs =
+                Math.round((performance.now() - currentDebugSearch.startedAtPerf) * 10) / 10;
+        }
         currentDebugSearch.events.push(entry);
         if (currentDebugSearch.events.length > DEBUG_EVENT_LIMIT) {
             currentDebugSearch.events.shift();
@@ -129,6 +136,45 @@ function recordDebug(level, message, error = null) {
     }
     debugEvents.push(entry);
     if (debugEvents.length > DEBUG_EVENT_LIMIT) debugEvents.shift();
+}
+
+// Record a client-side phase duration (debug only).
+function recordPhase(name, start, details = null) {
+    const ms = Math.round((performance.now() - start) * 10) / 10;
+    recordDebug("phase", name, null, { ms, ...(details || {}) });
+}
+
+// Log the server's debug headers for one response (debug only).
+function recordServerDebug(label, response) {
+    const timing = response.headers.get("server-timing");
+    const counters = response.headers.get("x-yabai-debug");
+    if (timing) recordDebug("network", `${label} Server-Timing`, null, { serverTiming: timing });
+    if (counters) recordDebug("network", `${label} server counters`, null, { serverCounters: counters });
+}
+
+// Log TTFB, download and transfer size from the browser's resource timing.
+function recordNetworkTiming(label, url) {
+    try {
+        const absolute = new URL(url, location.href).href;
+        const entries = performance.getEntriesByName(absolute);
+        const entry = entries[entries.length - 1];
+        if (!entry) return;
+        const serverTiming = Array.isArray(entry.serverTiming)
+            ? entry.serverTiming
+                .map((item) => `${item.name}${item.duration == null ? "" : `=${item.duration}`}`)
+                .join(", ")
+            : "";
+        recordDebug("network", label, null, {
+            ttfbMs: Math.round(entry.responseStart - entry.startTime),
+            downloadMs: Math.round(entry.responseEnd - entry.responseStart),
+            durationMs: Math.round(entry.duration),
+            transferSize: entry.transferSize,
+            encodedBodySize: entry.encodedBodySize,
+            resourceServerTiming: serverTiming,
+        });
+    } catch (error) {
+        // Resource timing is best-effort debug data.
+    }
 }
 
 // Capture all existing console.error calls (the custom dictionary code logs
@@ -155,12 +201,37 @@ window.addEventListener("unhandledrejection", (event) => {
     recordDebug("error", "Unhandled promise rejection", event.reason || null);
 });
 
+// Long tasks show when the main thread was blocked (debug only).
+if ("PerformanceObserver" in window) {
+    try {
+        const supported = PerformanceObserver.supportedEntryTypes || [];
+        if (supported.includes("longtask")) {
+            const longTaskObserver = new PerformanceObserver((list) => {
+                for (const entry of list.getEntries()) {
+                    recordDebug("longtask", "Long task", null, {
+                        longTaskMs: Math.round(entry.duration),
+                    });
+                }
+            });
+            longTaskObserver.observe({ type: "longtask", buffered: true });
+        }
+    } catch (error) {
+        // Long-task timing is optional debug data.
+    }
+}
+
 function beginSearchDebug(query, offset, seq) {
+    const now = performance.now();
     currentDebugSearch = {
         query: String(query),
         offset,
         seq,
         startedAt: new Date().toISOString(),
+        startedAtPerf: now,
+        queryLength: String(query).length,
+        sinceLastInputMs: lastInputAt ? Math.round(now - lastInputAt) : null,
+        previousSeq: Math.max(0, seq - 1),
+        previousSearchMs: lastSearchMs,
         official: null,
         custom: null,
         events: [],
@@ -203,6 +274,10 @@ function debugSnapshot() {
             query: currentDebugSearch.query,
             offset: currentDebugSearch.offset,
             seq: currentDebugSearch.seq,
+            queryLength: currentDebugSearch.queryLength,
+            sinceLastInputMs: currentDebugSearch.sinceLastInputMs,
+            previousSeq: currentDebugSearch.previousSeq,
+            previousSearchMs: currentDebugSearch.previousSearchMs,
             startedAt: currentDebugSearch.startedAt,
             official: currentDebugSearch.official,
             custom: currentDebugSearch.custom,
@@ -213,13 +288,17 @@ function debugSnapshot() {
         generatedAt: new Date().toISOString(),
         url: location.href,
         userAgent: navigator.userAgent,
+        environment: {
+            hardwareConcurrency: navigator.hardwareConcurrency ?? null,
+            deviceMemory: navigator.deviceMemory ?? null,
+        },
         currentState,
         customDictionaries: readCustomDictionaryDebugInfo(),
         customDictionaryStats: window.customDictsStats || null,
         currentSearch,
         recentEvents: debugEvents.slice(-50),
     };
-    return "Yabai-Chaci debug log\n" + JSON.stringify(info, null, 2) + "\n";
+    return "Yabai Search debug log\n" + JSON.stringify(info, null, 2) + "\n";
 }
 
 // Fallback for browsers where the async clipboard API is unavailable.
@@ -1388,6 +1467,15 @@ function formatHskLevel(level) {
     return level >= 7 ? "7-9" : String(level);
 }
 
+// The note label for a CEDICT variant. Plain variants stay "Other forms",
+// while qualified ones (e.g. an "old variant of 柿") get their own label so
+// they are not confused with ordinary forms.
+function formNoteLabel(qualifier) {
+    const text = (qualifier || "").trim();
+    if (!text) return "Other forms";
+    return `${text.charAt(0).toUpperCase()}${text.slice(1)} variant`;
+}
+
 // Build one result row for an entry.
 function entryRow(entry) {
     const row = document.createElement("div");
@@ -1561,23 +1649,33 @@ function fillEntryRow(row, entry) {
                 notes.push(detailRow(label, furigana(primaryMasked, numericToMarked(note.reading))));
             }
         if (entry.forms && entry.forms.length) {
-            const fragment = document.createDocumentFragment();
-            entry.forms.forEach((form, i) => {
-                if (i) fragment.append("; ");
-                // Shown as-is, without the traditional/simplified toggle.
-                const word = form.traditional;
-                if (!word) {
-                    if (form.pinyin) fragment.append(form.pinyin);
-                    return;
-                }
-                // Every form is a search link too, with furigana when known.
-                fragment.append(
-                    form.pinyin
-                        ? searchLink(word, furigana(word, form.pinyin))
-                        : searchLink(word)
-                );
-            });
-            notes.push(detailRow("Other forms: ", fragment));
+            // Group by the CEDICT qualifier so "Old variant: 柹" is not lumped
+            // in with plain "Other forms".
+            const groups = new Map();
+            for (const form of entry.forms) {
+                const label = formNoteLabel(form.qualifier);
+                if (!groups.has(label)) groups.set(label, []);
+                groups.get(label).push(form);
+            }
+            for (const [label, forms] of groups) {
+                const fragment = document.createDocumentFragment();
+                forms.forEach((form, i) => {
+                    if (i) fragment.append("; ");
+                    // Shown as-is, without the traditional/simplified toggle.
+                    const word = form.traditional;
+                    if (!word) {
+                        if (form.pinyin) fragment.append(form.pinyin);
+                        return;
+                    }
+                    // Every form is a search link too, with furigana when known.
+                    fragment.append(
+                        form.pinyin
+                            ? searchLink(word, furigana(word, form.pinyin))
+                            : searchLink(word)
+                    );
+                });
+                notes.push(detailRow(`${label}: `, fragment));
+            }
         }
     }
 
@@ -1714,7 +1812,8 @@ function openReportDialog(entry) {
     }
     if (cancel) cancel.textContent = "Cancel";
     if (!dialog.open) dialog.showModal();
-    message?.focus();
+    // Do not focus the message box here: on phones that pops the on-screen
+    // keyboard immediately. The dialog's own first control gets focus instead.
 }
 
 const reportForm = document.getElementById("report-form");
@@ -2012,9 +2111,6 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     const allWildcard = query.trim() === "*";
     lastWildcardCustom = null;
     beginSearchDebug(query, offset, seq);
-    // The footer (About link) is pinned to the bottom; hide it while results
-    // are pending so it cannot flash/jump as the results area refills.
-    document.body.classList.add("searching");
 
     // Start the browser-side dictionary search immediately instead of waiting
     // for the API tiers. It can take seconds with large imported dictionaries,
@@ -2028,8 +2124,17 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             : Promise.resolve([]);
 
     // Phase 1: the fast CEDICT tier. Render it as soon as the server replies.
-    const firstResponse = await fetch(url + "&part=primary", { cache: "no-store" });
+    const primaryUrl = url + "&part=primary";
+    const primaryFetchStart = performance.now();
+    const firstResponse = await fetch(primaryUrl, { cache: "no-store" });
+    recordPhase("primary fetch", primaryFetchStart, { status: firstResponse.status });
+    recordServerDebug("primary", firstResponse);
+    const primaryParseStart = performance.now();
     const first = await firstResponse.json();
+    recordPhase("primary parse", primaryParseStart, {
+        results: Array.isArray(first.results) ? first.results.length : 0,
+    });
+    recordNetworkTiming("primary network", primaryUrl);
     if (seq !== searchSeq) return 0;
     if (currentDebugSearch) {
         currentDebugSearch.official = {
@@ -2051,9 +2156,13 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             lastSearchMs = firstMs;
             firstSearchMs = null;
         }
+        const primaryRenderStart = performance.now();
         render(first.results, query);
         renderFuzzy([]);
         updateHint(query, first.pinyin_match, first.english_match);
+        recordPhase("primary render", primaryRenderStart, {
+            rows: first.results.length,
+        });
     }
 
     // Keep the page number in the URL (without clobbering the query), so a
@@ -2070,8 +2179,17 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     if (first.total == null) {
         // Phase 2: the complete final list, slow source tiers included. Start
         // it without waiting for the local dictionary search.
+        const fullFetchStart = performance.now();
         const fullResponse = await fetch(url, { cache: "no-store" });
+        recordPhase("full fetch", fullFetchStart, { status: fullResponse.status });
+        recordServerDebug("full", fullResponse);
+        const fullParseStart = performance.now();
         const full = await fullResponse.json();
+        recordPhase("full parse", fullParseStart, {
+            results: Array.isArray(full.results) ? full.results.length : 0,
+            total: full.total,
+        });
+        recordNetworkTiming("full network", url);
         if (seq !== searchSeq) return 0;
         recordDebug(
             "response",
@@ -2085,12 +2203,13 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             firstSearchMs = showFirst ? firstMs : null;
             lastSearchMs = Math.round(performance.now() - startedAt);
         }
+        const fullRenderStart = performance.now();
         render(full.results, query);
         renderFuzzy(full.fuzzy);
         renderPagination(query, full);
         updateHint(query, full.pinyin_match, full.english_match);
-        document.body.classList.remove("searching");
         applyPagerScroll(scrollMode);
+        recordPhase("full render", fullRenderStart, { rows: full.results.length });
 
         const customResult = await customMatchesPromise;
         if (seq !== searchSeq) return 0;
@@ -2100,6 +2219,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         const allHeadwordMatches = [...matches];
         const fastKeys = new Set(matches.map(customMatchKey));
         if (matches.length) {
+            const customMergeStart = performance.now();
             await applyCustomMatches(full, matches, RESULTS_PAGE_SIZE);
             if (seq !== searchSeq) return 0;
             entryDictState.clear();
@@ -2113,12 +2233,17 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             renderPagination(query, full);
             updateHint(query, full.pinyin_match, full.english_match);
             applyPagerScroll(scrollMode);
+            recordPhase("custom merge", customMergeStart, {
+                rows: full.results.length,
+                matches: matches.length,
+            });
         }
         if (!Array.isArray(customResult) && customResult.slow) {
             const slow = await customResult.slow;
             if (seq !== searchSeq) return 0;
             const extra = slow.filter((match) => !fastKeys.has(customMatchKey(match)));
             if (extra.length) {
+                const slowMergeStart = performance.now();
                 allHeadwordMatches.push(...extra);
                 await applyCustomMatches(full, extra, RESULTS_PAGE_SIZE);
                 if (seq !== searchSeq) return 0;
@@ -2133,6 +2258,10 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
                 renderPagination(query, full);
                 updateHint(query, full.pinyin_match, full.english_match);
                 applyPagerScroll(scrollMode);
+                recordPhase("slow custom merge", slowMergeStart, {
+                    rows: full.results.length,
+                    matches: extra.length,
+                });
             }
         }
 
@@ -2191,7 +2320,6 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     renderFuzzy(first.fuzzy);
     renderPagination(query, first);
     updateHint(query, first.pinyin_match, first.english_match);
-    document.body.classList.remove("searching");
     applyPagerScroll(scrollMode);
 
     if (allWildcard && !window.customDictionaryWildcardPage) {
@@ -2361,9 +2489,11 @@ async function appendCustomChunked(
     ) {
         return { added: false, matches: [] };
     }
+    // Fuzzy rows are already part of this page, so leave room for them.
+    const fuzzyRows = Array.isArray(data.fuzzy) ? data.fuzzy.length : 0;
     const remaining = Math.max(
         0,
-        RESULTS_PAGE_SIZE - data.results.length
+        RESULTS_PAGE_SIZE - data.results.length - fuzzyRows
     );
     if (!remaining) return { added: false, matches: [] };
     const skipKeys = headwordMatches.map(customMatchKey);
@@ -2540,7 +2670,7 @@ function renderParsed(tokens) {
 // before they are in the DOM and lands at the top. Save each URL's position
 // ourselves and restore it once that URL's results are rendered.
 if ("scrollRestoration" in history) history.scrollRestoration = "manual";
-const SCROLL_KEY = "yabai-chaci-scroll";
+const SCROLL_KEY = "yabai-search-scroll";
 const SCROLL_LIMIT = 30;
 
 // Newest last. Keeping entries for other URLs is what makes Back restore the
@@ -2662,9 +2792,9 @@ function queryFromUrl() {
     return new URLSearchParams(location.search).get("q") || "";
 }
 
-// Results per page (matches db.ALL_PAGE_SIZE = 50) for turning ?page=N into an
+// Results per page (matches db.ALL_PAGE_SIZE = 25) for turning ?page=N into an
 // offset before the first request.
-const RESULTS_PAGE_SIZE = 50;
+const RESULTS_PAGE_SIZE = 25;
 
 // The results page from ?page=..., or 1 when it is absent/invalid.
 function pageFromUrl() {
@@ -2686,7 +2816,7 @@ function collapseOptionPanels() {
         }
         try {
             const key =
-                "yabai-chaci-panel-" +
+                "yabai-search-panel-" +
                 (toggle.getAttribute("aria-controls") || "");
             localStorage.setItem(key, "false");
         } catch (error) {
@@ -2704,6 +2834,7 @@ function performSearch(query) {
     }
     collapseOptionPanels();
     input.value = query;
+    updateClearButton();
     setTitle(query);
     showTagline(false);
     history.pushState({ q: query }, "", `?q=${encodeURIComponent(query)}`);
@@ -2730,6 +2861,7 @@ function restoreFromUrl() {
         showTagline(true);
         restoreScroll();
     }
+    updateClearButton();
 }
 
 // Release the temporary page height used to keep the scroll position after
@@ -2740,6 +2872,11 @@ function releaseClearScrollGuard() {
     delete document.body.dataset.clearScrollGuard;
 }
 
+// Show the clear (x) button only while the search box has text.
+function updateClearButton() {
+    clearButton.hidden = input.value.length === 0;
+}
+
 // Return to the home view: no query, no results, tagline shown, URL reset.
 // In the pop-out panel, keep the current scroll position: clearing the results
 // would otherwise make the page shorter and jump the user back to the top.
@@ -2747,6 +2884,7 @@ function goHome(keepScroll = false) {
     const scrollY = keepScroll ? window.scrollY : 0;
     const height = keepScroll ? document.documentElement.scrollHeight : 0;
     input.value = "";
+    updateClearButton();
     setTitle("");
     clearResults();
     showTagline(true);
@@ -2763,20 +2901,20 @@ function goHome(keepScroll = false) {
 // Load the display preferences from localStorage (if it's available).
 function loadPrefs() {
     try {
-        const script = localStorage.getItem("yabai-chaci-script");
+        const script = localStorage.getItem("yabai-search-script");
         if (script === "traditional" || script === "simplified") state.script = script;
         // Tone coloring is on by default; only an explicit "false" disables it.
-        state.toneColoring = localStorage.getItem("yabai-chaci-tone") !== "false";
-        state.phonetic = localStorage.getItem("yabai-chaci-phonetic") === "zhuyin" ? "zhuyin" : "pinyin";
-        state.taiwan = localStorage.getItem("yabai-chaci-taiwan") === "true";
-        state.customDicts = localStorage.getItem("yabai-chaci-custom-dicts") === "true";
-        state.compact = localStorage.getItem("yabai-chaci-compact") === "true";
+        state.toneColoring = localStorage.getItem("yabai-search-tone") !== "false";
+        state.phonetic = localStorage.getItem("yabai-search-phonetic") === "zhuyin" ? "zhuyin" : "pinyin";
+        state.taiwan = localStorage.getItem("yabai-search-taiwan") === "true";
+        state.customDicts = localStorage.getItem("yabai-search-custom-dicts") === "true";
+        state.compact = localStorage.getItem("yabai-search-compact") === "true";
         // The Compact/Detailed switch is inside the custom dictionary panel,
         // so without custom dictionaries the app always uses compact mode.
         if (!state.customDicts) state.compact = true;
-        state.lang = localStorage.getItem("yabai-chaci-lang") || "EN";
+        state.lang = localStorage.getItem("yabai-search-lang") || "EN";
         loadDictOrder();
-        const stored = JSON.parse(localStorage.getItem("yabai-chaci-dicts") || "null");
+        const stored = JSON.parse(localStorage.getItem("yabai-search-dicts") || "null");
         // Without custom dictionaries, ignore saved choices and use the
         // language's defaults (EN -> cedict only). A custom order belongs to
         // the custom setup, so drop it too.
@@ -2806,14 +2944,14 @@ function loadPrefs() {
 // Persist the display preferences.
 function savePrefs() {
     try {
-        localStorage.setItem("yabai-chaci-script", state.script);
-        localStorage.setItem("yabai-chaci-tone", String(state.toneColoring));
-        localStorage.setItem("yabai-chaci-phonetic", state.phonetic);
-        localStorage.setItem("yabai-chaci-taiwan", String(state.taiwan));
-        localStorage.setItem("yabai-chaci-custom-dicts", String(state.customDicts));
-        localStorage.setItem("yabai-chaci-compact", String(state.compact));
-        localStorage.setItem("yabai-chaci-dicts", JSON.stringify([...state.dicts]));
-        localStorage.setItem("yabai-chaci-lang", state.lang);
+        localStorage.setItem("yabai-search-script", state.script);
+        localStorage.setItem("yabai-search-tone", String(state.toneColoring));
+        localStorage.setItem("yabai-search-phonetic", state.phonetic);
+        localStorage.setItem("yabai-search-taiwan", String(state.taiwan));
+        localStorage.setItem("yabai-search-custom-dicts", String(state.customDicts));
+        localStorage.setItem("yabai-search-compact", String(state.compact));
+        localStorage.setItem("yabai-search-dicts", JSON.stringify([...state.dicts]));
+        localStorage.setItem("yabai-search-lang", state.lang);
     } catch (e) {
         // localStorage unavailable - nothing to save.
     }
@@ -3110,7 +3248,7 @@ for (const toggle of dictToggles) {
 // Each language header has a disclosure arrow. It controls its dictionary list
 // manually; selecting or clearing dictionaries never collapses the list. The
 // open languages are remembered across reloads.
-const DICT_OPEN_KEY = "yabai-chaci-dict-open";
+const DICT_OPEN_KEY = "yabai-search-dict-open";
 
 function readOpenDictLangs() {
     try {
@@ -3207,7 +3345,7 @@ function defaultDictsForLanguage(lang) {
 }
 
 // Selecting a search language switches on its default dictionaries and off all
-// the others (see yabai_chaci/default_dictionaries.py).
+// the others (see yabai_search/default_dictionaries.py).
 function applyDictDefaults(value) {
     if (!(value in langDefaults)) return;
     state.dicts = defaultDictsForLanguage(value);
@@ -3278,7 +3416,7 @@ function applyOptionPanelState(panel, open, save = true) {
         if (save) {
             try {
                 const key =
-                    "yabai-chaci-panel-" +
+                    "yabai-search-panel-" +
                     (toggle.getAttribute("aria-controls") || "");
                 localStorage.setItem(key, String(open));
             } catch (e) {
@@ -3362,7 +3500,7 @@ function setOptionPanelOpen(panel, open, save = true) {
 
 for (const panel of document.querySelectorAll(".options")) {
     const toggle = panel.querySelector(".options-toggle");
-    const key = "yabai-chaci-panel-" + (toggle.getAttribute("aria-controls") || "");
+    const key = "yabai-search-panel-" + (toggle.getAttribute("aria-controls") || "");
     toggle.addEventListener("click", () => {
         setOptionPanelOpen(panel, !panel.classList.contains("open"));
     });
@@ -3407,6 +3545,12 @@ form.addEventListener("submit", (event) => {
     event.preventDefault(); // don't reload the page
     const query = input.value.trim();
     if (query) performSearch(query);
+});
+
+// Keep the clear button in sync with the text in the search box.
+input.addEventListener("input", () => {
+    lastInputAt = performance.now();
+    updateClearButton();
 });
 
 // The clear (✕) button empties the box, returns to the home view, and re-focuses
@@ -3474,7 +3618,7 @@ const pullArrow = document.getElementById("pull-arrow");
 
 // The panel's expanded state survives a refresh (sessionStorage is scoped to the
 // tab, so a fresh tab still starts with the panel in the page).
-const PULL_KEY = "yabai-chaci-pulled";
+const PULL_KEY = "yabai-search-pulled";
 // Pending timer that finishes the close animation.
 let closeTimer = null;
 // Pending timer that releases the panel's reserved space after its row has

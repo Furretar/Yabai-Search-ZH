@@ -27,7 +27,7 @@ def _preload_libstdcpp() -> None:
 _preload_libstdcpp()
 
 from fastapi.testclient import TestClient  # noqa: E402
-from yabai_chaci.main import app  # noqa: E402
+from yabai_search.main import app  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -42,7 +42,7 @@ def search(client):
     """Call /api/search and return its JSON, failing on an HTTP error."""
 
     def run(query: str, **params):
-        params.setdefault("limit", 50)
+        params.setdefault("limit", 25)
         response = client.get("/api/search", params={"q": query, **params})
         assert response.status_code == 200, response.text
         return response.json()

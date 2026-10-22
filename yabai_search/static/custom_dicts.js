@@ -15,9 +15,9 @@
             return "";
         }
     })();
-    const DB_NAME = "yabai-chaci-custom-dicts";
+    const DB_NAME = "yabai-search-custom-dicts";
     const DB_VERSION = 6;
-    const OPEN_KEY = "yabai-chaci-dict-open";
+    const OPEN_KEY = "yabai-search-dict-open";
     const MAX_SEARCH_RESULTS = 50;
 
     let dbPromise = null;
@@ -35,7 +35,7 @@
     let sqliteSearchEnabled = true;
     try {
         sqliteSearchEnabled =
-            localStorage.getItem("yabai-chaci-sqlite-search") !== "false";
+            localStorage.getItem("yabai-search-sqlite-search") !== "false";
     } catch (error) {
         // localStorage unavailable - keep the default.
     }
@@ -64,7 +64,7 @@
 
     class ImportCancelled extends Error {}
     const CUSTOM_INDEX_VERSION = 9;
-    const BUILD_STATE_KEY = "yabai-chaci-custom-index-build";
+    const BUILD_STATE_KEY = "yabai-search-custom-index-build";
 
     // Where a partially built SQLite index stopped. IndexedDB keys are stable
     // across reloads, so the build can continue from the last inserted row.
@@ -3768,9 +3768,11 @@
             }
         }
         // Imported rows are appended after the server rows, but never past the
-        // page limit. Definitions merged into existing rows do not consume a
+        // page limit. Fuzzy rows are already part of the page, so leave room
+        // for them too. Definitions merged into existing rows do not consume a
         // slot; only custom-only rows do.
-        const room = Math.max(0, maxResults - entries.length);
+        const fuzzyRows = Array.isArray(data.fuzzy) ? data.fuzzy.length : 0;
+        const room = Math.max(0, maxResults - entries.length - fuzzyRows);
         for (const entry of customOnly.slice(0, room)) entries.push(entry);
     }
 
@@ -3815,7 +3817,7 @@
         try {
             for (let index = 0; index < storage.length; index += 1) {
                 const key = storage.key(index);
-                if (!key || !key.startsWith("yabai-chaci-")) continue;
+                if (!key || !key.startsWith("yabai-search-")) continue;
                 const value = storage.getItem(key) || "";
                 keys += 1;
                 bytes += (key.length + value.length) * 2;

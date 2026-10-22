@@ -188,7 +188,7 @@ def download(url: str, destination: Path) -> None:
         url,
         headers={
             "User-Agent": (
-                "Yabai-Chaci/1.0 "
+                "Yabai-Search/1.0 "
                 "(https://github.com/Furretar/Yabai-Search-ZH)"
             )
         },

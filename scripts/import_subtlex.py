@@ -33,6 +33,7 @@ DEFAULT_DB = ROOT / "data" / "subtlex.sqlite"
 
 SCHEMA = """
 DROP TABLE IF EXISTS freq;
+DROP TABLE IF EXISTS freq_fts;
 
 CREATE TABLE freq (
     word        TEXT PRIMARY KEY,  -- the word (as written in SUBTLEX-CH)
@@ -43,6 +44,15 @@ CREATE TABLE freq (
 
 CREATE INDEX idx_freq_rank ON freq(rank);
 
+-- Trigram index over the word column, so a 3+ character headword search can use
+-- the index instead of scanning every row. The rank is stored (unindexed) so
+-- results keep the frequency order without relying on rowid numbering.
+CREATE VIRTUAL TABLE freq_fts USING fts5(
+    word,
+    freq_rank UNINDEXED,
+    tokenize='trigram'
+);
+
 DROP TABLE IF EXISTS meta;
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
@@ -52,7 +62,7 @@ def download(url: str, dest: Path) -> None:
     """Stream `url` to `dest` so we cache the file instead of re-fetching it."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"downloading {url}")
-    request = urllib.request.Request(url, headers={"User-Agent": "yabai-chaci/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "yabai-search/0.1"})
     with urllib.request.urlopen(request) as response, dest.open("wb") as out:
         while chunk := response.read(1 << 20):
             out.write(chunk)
@@ -105,6 +115,10 @@ def build(zip_path: Path, db_path: Path) -> None:
     if rows:
         connection.executemany(insert, rows)
 
+    # Build the trigram index after the rows are in place.
+    connection.execute(
+        "INSERT INTO freq_fts(word, freq_rank) SELECT word, rank FROM freq"
+    )
     connection.commit()
     connection.execute("VACUUM")
     total = connection.execute("SELECT COUNT(*) FROM freq").fetchone()[0]

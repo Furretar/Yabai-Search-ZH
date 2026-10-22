@@ -19,11 +19,11 @@ import urllib.request
 from pathlib import Path
 
 # Expand CEDICT abbreviations for the normalized column.
-from yabai_chaci.normalize import normalize_english
+from yabai_search.normalize import normalize_english
 
 # Reuse the pinyin helpers so the database gets the same marked/toneless forms
 # that the search layer computes at query time.
-from yabai_chaci.pinyin import numeric_to_marked, to_toneless
+from yabai_search.pinyin import numeric_to_marked, to_toneless
 
 # Project root is one directory above scripts/.
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +45,7 @@ LINE_RE = re.compile(r"^(\S+)\s+(\S+)\s+\[([^\]]*)\]\s+/(.*)/$")
 SCHEMA = """
 DROP TABLE IF EXISTS entries;
 DROP TABLE IF EXISTS entries_fts;
+DROP TABLE IF EXISTS entries_fts_trigram;
 
 CREATE TABLE entries (
     id                 INTEGER PRIMARY KEY,  -- auto row id, also used as FTS rowid
@@ -70,6 +71,17 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
     content='entries',
     content_rowid='id',
     tokenize='unicode61'
+);
+
+-- Trigram index for substring searches ("reel" inside "reeling"). Unlike the
+-- word-token index above, a trigram index can accelerate LIKE '%...%' queries.
+-- It covers the definition text and the toneless pinyin reading.
+CREATE VIRTUAL TABLE entries_fts_trigram USING fts5(
+    english_normalized,
+    pinyin_toneless,
+    content='entries',
+    content_rowid='id',
+    tokenize='trigram'
 );
 
 -- Pronunciation-note prefixes ("pr. [x]"), extracted at import so pinyin
@@ -115,7 +127,11 @@ CREATE TABLE forms (
     variant_simp TEXT,           -- the variant's simplified form
     main_trad    TEXT NOT NULL,  -- the main form's traditional form
     main_simp    TEXT,           -- the main form's simplified form
-    pinyin       TEXT            -- the variant's own reading
+    pinyin       TEXT,           -- the variant's own reading
+    qualifier    TEXT,           -- "old", "erhua", ... ; empty for a plain variant
+    redirect     INTEGER NOT NULL DEFAULT 1
+                                 -- 1 = "see X" variant that redirects;
+                                 -- 0 = display-only "also written X" form
 );
 CREATE INDEX idx_forms_variant ON forms(variant_trad);
 CREATE INDEX idx_forms_main ON forms(main_trad);
@@ -132,7 +148,7 @@ def download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"downloading {url}")
     # Identify ourselves to the server (harmless, but good etiquette).
-    request = urllib.request.Request(url, headers={"User-Agent": "yabai-chaci/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "yabai-search/0.1"})
     # Read in 1 MiB chunks and write straight through (low memory use).
     with urllib.request.urlopen(request) as response, dest.open("wb") as out:
         while chunk := response.read(1 << 20):
@@ -177,25 +193,83 @@ _NOTE_RE = re.compile(
 )
 
 
-# A cross-reference-only definition: "see X[reading]" or "variant of X[reading]".
-# CEDICT uses these for forms that are only an alternative of another character.
-_SEE_RE = re.compile(r"^(?:see|variant of)\s+([^\[\];()\s]+?)(?:\[[^\]]+\])?$")
+# Qualifier words that can precede "see" / "variant of" in a cross-reference,
+# e.g. "old variant of 柿[shi4]" or "(literary) see 倘[tang3]". Kept explicit
+# so an English sense that merely contains the word "see" is not misread.
+_VARIANT_QUALIFIERS = (
+    "old|ancient|archaic|erhua|taiwan|euphemistic|popular|"
+    "nonstandard|simplified|classical|obscure|colloquial|literary|"
+    "less common|contracted|emphatic|japanese|korean|vietnamese|"
+    "cantonese|hakka|dialect|tw|hk|slang|idiom"
+)
+# A cross-reference-only definition: "see X[reading]" or "variant of X[reading]",
+# with optional qualifiers. CEDICT uses these for forms that are only an
+# alternative of another character.
+_SEE_RE = re.compile(
+    rf"^((?:\([^)]*\)\s*)*(?:(?:{_VARIANT_QUALIFIERS})\s+)*)"
+    r"(?:see(?:\s+also)?|variant of)\s+"
+    r"([^\[\];()\s]+?)(?:\[[^\]]+\])?$",
+    re.IGNORECASE,
+)
 
 
-def see_target(english: str) -> tuple[str, str] | None:
-    """The main form's (traditional, simplified) from a "see X" / "variant of X".
+def see_target(english: str) -> tuple[str, str, str] | None:
+    """The main form from a "see X" / "variant of X" cross-reference.
 
-    Such entries are only an alternative form/reading of another; we record them
-    as "other forms", not as definitions.
+    Returns `(traditional, simplified, qualifier)`, where the qualifier is the
+    text before "variant of" ("old", "erhua", "(literary)", ...) or an empty
+    string for a plain variant. Such entries are only an alternative
+    form/reading of another; we record them as "other forms", not definitions.
     """
     match = _SEE_RE.match(english.strip())
     if not match:
         return None
-    target = match.group(1)
+    qualifier = " ".join(match.group(1).split()).replace("(", "").replace(")", "")
+    target = match.group(2)
     if "|" in target:  # written "trad|simp"
         traditional, simplified = target.split("|", 1)
-        return traditional, simplified
-    return target, target
+        return traditional, simplified, qualifier
+    return target, target, qualifier
+
+
+# A variant note like "also written 沒精打彩|没精打彩[mei2 jing1 da3 cai3]".
+# These are not senses: the variant belongs under "Other forms" instead.
+_ALSO_WRITTEN_RE = re.compile(r"^also written\s+(.+)$", re.IGNORECASE)
+
+
+def also_written_target(item: str) -> tuple[str, str, str] | None:
+    """The (traditional, simplified, pinyin) from an "also written X" note.
+
+    Returns None for the ordinary sense "also written as" (the definition of
+    亦作) and for targets we cannot parse as a single headword. The pinyin is
+    tone-marked when the note supplies it, otherwise it is empty.
+    """
+    if item.strip().lower() == "also written as":
+        return None
+    match = _ALSO_WRITTEN_RE.match(item.strip())
+    if not match:
+        return None
+    body = match.group(1).strip()
+    # Drop a trailing ", see also ..." cross-reference for this purpose.
+    cut = body.lower().find(", see also")
+    if cut != -1:
+        body = body[:cut].strip()
+    pinyin = ""
+    pm = re.search(r"\[([^\]]+)\]", body)
+    if pm:
+        pinyin = numeric_to_marked(pm.group(1))
+        body = body[: pm.start()].strip()
+    if not body:
+        return None
+    if "|" in body:
+        traditional, simplified = body.split("|", 1)
+    else:
+        traditional = simplified = body
+    # A variant is one token; reject prose such as "Tuoketuo 托克托".
+    for value in (traditional, simplified):
+        if not value or re.search(r"[\s\[\];()]", value):
+            return None
+    return traditional, simplified, pinyin
 
 
 def split_senses(text: str) -> list[str]:
@@ -256,14 +330,16 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
         "VALUES (?,?,?,?,?)"
     )
     insert_form = (
-        "INSERT INTO forms (variant_trad, variant_simp, main_trad, main_simp, pinyin) "
-        "VALUES (?,?,?,?,?)"
+        "INSERT INTO forms "
+        "(variant_trad, variant_simp, main_trad, main_simp, pinyin, qualifier, "
+        " redirect) "
+        "VALUES (?,?,?,?,?,?,?)"
     )
     insert_alt = "INSERT INTO alt_prons (entry_id, text) VALUES (?,?)"
     rows: list[tuple] = []  # buffer of entry rows waiting to be written
     sense_rows: list[tuple] = []  # (word, position, text)
     cls_rows: list[tuple] = []  # (word, traditional, simplified, codes, note)
-    form_rows: list[tuple] = []  # (word, traditional, simplified, pinyin)
+    form_rows: list[tuple] = []  # (variant, main, pinyin, qualifier, redirect)
     alt_rows: list[tuple] = []  # (entry_id, "pr. [content")
     kept = 0  # entries accepted so far
     skipped = 0  # lines that didn't match the expected format
@@ -310,13 +386,42 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
                 # record it (so X lists the variant under "Other forms", and the
                 # variant itself shows X's result). Keyed by the traditional forms,
                 # which are distinct (e.g. 軟 vs 輭) even when simplified collide.
-                main_trad, main_simp = target
-                form_rows.append((traditional, simplified, main_trad, main_simp, pinyin))
+                main_trad, main_simp, qualifier = target
+                form_rows.append(
+                    (
+                        traditional,
+                        simplified,
+                        main_trad,
+                        main_simp,
+                        pinyin,
+                        qualifier,
+                        1,
+                    )
+                )
             else:
                 # Standardized senses (1., 2., ...) and classifiers, keyed by the
                 # simplified headword and tagged with their reading, so polyphonic
-                # words can be shown per reading.
-                for position, sense in enumerate(split_senses(normalized), start=1):
+                # words can be shown per reading. An "also written X" note is a
+                # form, not a sense, so it becomes a display-only forms row.
+                senses = []
+                for item in split_senses(normalized):
+                    note = also_written_target(item)
+                    if note:
+                        note_trad, note_simp, note_pinyin = note
+                        form_rows.append(
+                            (
+                                note_trad,
+                                note_simp,
+                                traditional,
+                                simplified,
+                                note_pinyin,
+                                "",
+                                0,
+                            )
+                        )
+                    else:
+                        senses.append(item)
+                for position, sense in enumerate(senses, start=1):
                     sense_rows.append((simplified, pinyin, position, sense))
                 for trad, simp in extract_classifiers(english):
                     cls_rows.append((simplified, trad, simp, "", ""))
@@ -330,11 +435,16 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
     if rows:
         flush()  # flush the last partial batch
 
-    # Populate the full-text index from the normalized English column.
-    print("building full-text index...")
+    # Populate the full-text indexes from the normalized English column and the
+    # pinyin search key.
+    print("building full-text indexes...")
     connection.execute(
         "INSERT INTO entries_fts(rowid, english_normalized) "
         "SELECT id, english_normalized FROM entries"
+    )
+    connection.execute(
+        "INSERT INTO entries_fts_trigram(rowid, english_normalized, pinyin_toneless) "
+        "SELECT id, english_normalized, pinyin_toneless FROM entries"
     )
     # Fill freq_rank from SUBTLEX once, so searches order by frequency without a
     # correlated subquery per row. The meta flag tells the app the column is

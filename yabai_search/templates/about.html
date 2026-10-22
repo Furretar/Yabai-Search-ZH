@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>About - Yabai Search</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <!-- Colour scheme variables; edit variables.css to retheme. -->
+    <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+</head>
+
+<body>
+    <main class="readme">
+        {{ content | safe }}
+    </main>
+
+    <footer>
+        <a href="/">← Back to search</a>
+    </footer>
+</body>
+
+</html>

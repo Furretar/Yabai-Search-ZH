@@ -1,7 +1,7 @@
 // IndexedDB fallback scanner for browsers without OPFS/SQLite support. The
 // exact/prefix tiers still come from the main thread's IDB indexes; this worker
 // handles the deferred substring and definition tiers without blocking the UI.
-const DB_NAME = "yabai-chaci-custom-dicts";
+const DB_NAME = "yabai-search-custom-dicts";
 const DB_VERSION = 3;
 const MAX_RESULTS = 50;
 

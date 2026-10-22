@@ -39,19 +39,20 @@
     /* Selected-text highlight: a lighter yellow than the accent. */
     --selection-bg: #f4d369;
 
-    /* Page background (light default; overridden for dark mode below). */
-    --bg: #ffffff;
+    /* Page background (the site is always dark). */
+    --bg: #201c23;
 
-    /* The search bar / options surface, and its outline. */
-    --panel-bg: color-mix(in srgb, currentColor 8%, transparent);
-    --panel-border: #cccccc;
+    /* The search bar / options surface, and its outline. A lighter surface so
+       the search bar stands out from the page background. */
+    --panel-bg: color-mix(in srgb, currentColor 15%, transparent);
+    --panel-border: #4a4a4a;
 
     /* Text input border. */
-    --border: #cccccc;
+    --border: #4a4a4a;
 
     /* Dividers. */
-    --options-divider: #e0e0e0;
-    --entry-divider: #e0e0e0;
+    --options-divider: #3a3a3a;
+    --entry-divider: #3a3a3a;
 
     /* Slider switches. */
     --switch-track: color-mix(in srgb, currentColor 35%, transparent);
@@ -66,18 +67,4 @@
     --tone3: #27ae60;
     --tone4: #2980b9;
     --tone5: #7f8c8d;
-}
-
-/* Dark mode: page background, borders and dividers. */
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg: #201c23;
-        /* A lighter search-panel surface so the search bar stands out from the
-           page background. */
-        --panel-bg: color-mix(in srgb, currentColor 15%, transparent);
-        --panel-border: #4a4a4a;
-        --border: #4a4a4a;
-        --options-divider: #3a3a3a;
-        --entry-divider: #3a3a3a;
-    }
 }

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import jieba
 
-from yabai_chaci.db import (
+from yabai_search.db import (
     DB_PATH,
     MOE_DB_PATH,
     MOE_REVISED_DB_PATH,

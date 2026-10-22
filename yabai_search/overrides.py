@@ -19,6 +19,9 @@ PREFERRED_READINGS: dict[str, str] = {
     # 了 on its own is the particle "le", not the verb liǎo, even though liǎo
     # has more senses.
     "了": "le",
+    # 没 on its own is usually the negating méi, not the verb mò ("to sink"),
+    # even though mò has more senses. Use méi when parsing single characters.
+    "没": "méi",
 }
 
 # Words whose "Other forms" row should be hidden (e.g. when it just repeats a

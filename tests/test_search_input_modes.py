@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from yabai_chaci.pinyin import to_numeric, to_toneless
+from yabai_search.pinyin import to_numeric, to_toneless
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 
@@ -70,21 +70,27 @@ def test_tonal_query_with_no_matches_offers_fuzzy(search):
     """A tonal query that finds nothing still offers tone-insensitive results."""
     data = search("dang4gan4")
     assert data["results"] == []
-    assert data["total"] == 0
+    assert data["total"] >= len(data["fuzzy"])
+    assert data["total"] > 0
     assert data["fuzzy"]
     assert all("danggan" in to_toneless(entry["pinyin"]) for entry in data["fuzzy"])
 
 
 def test_tonal_query_with_matches_also_offers_fuzzy(search):
-    """Tonal results still include a separate fuzzy list without duplicates."""
-    data = search("shi4shi")
-    assert data["results"]
-    assert data["fuzzy"]
+    """Fuzzy rows are placed after the official rows, on the last page."""
+    first = search("shi4shi")
+    assert first["results"]
+    assert first["fuzzy"] == []
+    last_offset = ((first["total"] - 1) // 25) * 25
+    last = search("shi4shi", offset=last_offset)
+    assert last["total"] == first["total"]
+    assert last["fuzzy"]
+    assert len(last["results"]) + len(last["fuzzy"]) <= 25
     result_keys = {
-        (entry["traditional"], entry["simplified"]) for entry in data["results"]
+        (entry["traditional"], entry["simplified"]) for entry in first["results"]
     }
     fuzzy_keys = {
-        (entry["traditional"], entry["simplified"]) for entry in data["fuzzy"]
+        (entry["traditional"], entry["simplified"]) for entry in last["fuzzy"]
     }
     assert result_keys.isdisjoint(fuzzy_keys)
 

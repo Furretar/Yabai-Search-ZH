@@ -27,7 +27,7 @@ from scripts.import_zhwiktionary import (
     download,
     read_pages,
 )
-from yabai_chaci.pinyin import split_pinyin
+from yabai_search.pinyin import split_pinyin
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_URL = (

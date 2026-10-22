@@ -1,4 +1,4 @@
-"""FastAPI app for Yabai-Chaci."""
+"""FastAPI app for Yabai Search."""
 
 from __future__ import annotations
 
@@ -12,20 +12,25 @@ import time
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from fastapi import FastAPI, HTTPException, Query, Request
+import markdown
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from yabai_chaci import db, segment
-from yabai_chaci.default_dictionaries import DEFAULTS
-from yabai_chaci.overrides import PREFERRED_READINGS
-from yabai_chaci.pinyin import to_toneless
+from yabai_search import db, segment
+from yabai_search.default_dictionaries import DEFAULTS
+from yabai_search.overrides import PREFERRED_READINGS
+from yabai_search.pinyin import to_toneless
 
-# Directory of this file (the yabai_chaci package). Used to locate assets
+# Directory of this file (the yabai_search package). Used to locate assets
 # regardless of the directory the server is launched from.
 BASE = Path(__file__).resolve().parent
+
+# The About page is rendered from this file on every request, so editing the
+# README updates the page without restarting the server.
+_README_PATH = BASE.parent / "README.md"
 
 # Directory holding the static assets served under /static/.
 _STATIC_DIR = BASE / "static"
@@ -225,7 +230,7 @@ def asset_version() -> str:
     return str(int(newest))
 
 # The application object that uvicorn imports and runs.
-app = FastAPI(title="Yabai-Chaci")
+app = FastAPI(title="Yabai Search")
 
 
 @app.on_event("startup")
@@ -234,7 +239,7 @@ def _warm_caches() -> None:
     db.warm_caches()
     segment.warm()
 
-# Serve files from yabai_chaci/static/ at the URL prefix /static/...
+# Serve files from yabai_search/static/ at the URL prefix /static/...
 # (e.g. /static/style.css, /static/app.js). Read-only, served verbatim.
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
@@ -281,20 +286,17 @@ def index(request: Request):
 
 @app.get("/about", response_class=HTMLResponse)
 def about(request: Request):
-    """About page: sources, licences and search tips."""
-    sources = db.sources()
-    # Per-source "Updated ..." dates and entry counts.
-    updated = {source["anchor"]: source["updated"] for source in sources}
-    counts = {source["anchor"]: source["entries"] for source in sources}
+    """About page: the README rendered on every request."""
+    content = markdown.markdown(
+        _README_PATH.read_text(encoding="utf-8"),
+        extensions=["tables", "fenced_code", "sane_lists"],
+    )
     return templates.TemplateResponse(
         request,
         "about.html",
         {
             "asset_version": asset_version(),
-            "updated": updated,
-            "counts": counts,
-            "freq": db.frequency_source(),
-            "hsk": db.hsk_source(),
+            "content": content,
         },
     )
 
@@ -385,7 +387,14 @@ def reports_page(request: Request):
     )
 
 def _reading_count(entry: dict) -> int:
-    """How many CEDICT definitions this entry's own reading has."""
+    """How many CEDICT definitions this entry's own reading has.
+
+    A lazy-hydration row (see db.search's `hydrate`) already carries the count
+    as `_reading_count`; rows from the normal, fully decorated path do not, and
+    the count is read from their definitions instead.
+    """
+    if "_reading_count" in entry:
+        return entry["_reading_count"]
     for definition in entry.get("definitions", []):
         if definition.get("anchor") == "cedict":
             for group in definition.get("groups", []):
@@ -489,20 +498,22 @@ def _record_search(
 
 @app.get("/api/search")
 def api_search(
+    response: Response,
     q: str = "",
-    limit: int = Query(50, ge=1, le=50),
+    limit: int = Query(25, ge=1, le=25),
     taiwan: bool = False,
     offset: int = Query(0, ge=0),
     part: str = Query("all"),
 ):
-    """JSON search endpoint. `q` is the term; `limit` is clamped to 1..50.
+    """JSON search endpoint. `q` is the term; `limit` is clamped to 1..25.
 
     `taiwan` lets a pinyin search also match Taiwan (MOE) readings.
     `pinyin_match` is true when the query was an exact Chinese reading - in which
     case `results` holds only those readings, no English-definition matches.
     A "*" query lists every headword from every source, `ALL_PAGE_SIZE` per page;
     `offset` selects the page and the response's `total` is the full count. Every
-    other search is capped at 50 results.
+    other search returns at most 25 rows per page; tone-insensitive "fuzzy"
+    matches are placed after all official results and paginated with them.
 
     `part="primary"` returns only the fast CEDICT tier, so the page can render
     results progressively; the plain request returns the complete final list.
@@ -510,37 +521,74 @@ def api_search(
     db.start_log()  # capture the SQL this search runs (for data/search.log)
     started = time.perf_counter()
     total = None
+    timings: dict[str, float] = {}
+    counters: dict[str, object] = {"part": part, "query_length": len(q)}
+
+    def mark(name: str, at: float) -> None:
+        """Add one debug phase duration without changing the search itself."""
+        timings[name] = round(timings.get(name, 0.0) + (time.perf_counter() - at) * 1000, 2)
+
     try:
         if not q.strip().strip("*"):
             # "*": every headword across all sources, 50 per page.
+            at = time.perf_counter()
             heads, total = db.all_headwords(offset, db.ALL_PAGE_SIZE)
+            mark("headwords", at)
+            at = time.perf_counter()
             results = db.entries_for_headwords(heads)
+            mark("hydrate", at)
+            counters["raw"] = len(heads)
+            counters["expanded"] = len(results)
             fuzzy = []
             pinyin_match = False
             english_match = False
         elif "*" in q and not (len(q) >= 2 and q.startswith('"') and q.endswith('"')):
             # A wildcard pattern is paged: the first (and only) response is
             # the requested page, with its total for the pager.
+            at = time.perf_counter()
             entries, total, pinyin_match = db.wildcard_search(
                 q, db.ALL_PAGE_SIZE, offset
             )
+            mark("db", at)
+            at = time.perf_counter()
             results = _expand_variants(entries)
+            mark("expand", at)
+            counters["raw"] = len(entries)
+            counters["expanded"] = len(results)
             fuzzy = []
             english_match = False
         elif part == "primary":
+            at = time.perf_counter()
             entries, pinyin_match = db.search(q, limit, taiwan, part="primary")
+            mark("db", at)
+            at = time.perf_counter()
             results = _expand_variants(entries)
+            mark("expand", at)
+            counters["raw"] = len(entries)
+            counters["expanded"] = len(results)
             fuzzy = []
             english_match = db.has_english_match(q.strip()) if pinyin_match else False
         else:
-            entries, pinyin_match = db.search(q, _MAX_NORMAL_RESULTS, taiwan)
+            at = time.perf_counter()
+            # Lazy hydration: rank every match (so the total stays exact) but
+            # only fetch definitions for the rows that reach the page.
+            entries, pinyin_match = db.search(
+                q, _MAX_NORMAL_RESULTS, taiwan, hydrate=0
+            )
+            mark("db", at)
+            at = time.perf_counter()
             results = _expand_variants(entries)
+            mark("expand", at)
+            counters["raw"] = len(entries)
+            counters["expanded"] = len(results)
             fuzzy = []
             variant = db.tonal_variant(q)
             if variant and not results:
                 # If a tonal reading matched nothing, offer a tone-insensitive
                 # "fuzzy" search.
+                at = time.perf_counter()
                 fuzzy, _ = db.search(variant, limit, taiwan)
+                mark("fuzzy_db", at)
             elif variant and _has_explicit_tones(q):
                 # A tonal search that did find results still shows the
                 # tone-insensitive matches under "Fuzzy match".
@@ -548,16 +596,21 @@ def api_search(
                     (entry.get("traditional"), entry.get("simplified"))
                     for entry in results
                 }
+                at = time.perf_counter()
                 variant_results, _ = db.search(variant, limit, taiwan)
+                mark("fuzzy_db", at)
+                at = time.perf_counter()
                 fuzzy = [
                     entry
                     for entry in _expand_variants(variant_results)
                     if (entry.get("traditional"), entry.get("simplified")) not in seen
                 ]
+                mark("fuzzy_expand", at)
             # Definition-only matches are hidden when the query also matched a
             # headword or reading. Number queries try every numeral spelling,
             # so 21 also keeps 二十一世纪 and 廿一 headwords.
             if not pinyin_match:
+                at = time.perf_counter()
                 forms = db.headword_query_forms(q)
                 if forms:
                     headword_matches = [
@@ -575,11 +628,18 @@ def api_search(
                     ]
                     if headword_matches:
                         results = headword_matches
+                mark("filter", at)
+                counters["filtered"] = len(results)
             # Variety labels live on source readings, not on headwords or
-            # glosses: searching "Chengdu" or "Sichuanese" must still find
-            # words labelled "Chengdu Sichuanese".
-            dialect = db.dialect_entries(q)
+            # glosses. Only search them when the query has no reading match:
+            # an unquoted query with a reading never falls through to
+            # definition-like searches.
+            at = time.perf_counter()
+            dialect = [] if pinyin_match else db.dialect_entries(q)
+            mark("dialect", at)
+            counters["dialect"] = len(dialect)
             if dialect:
+                at = time.perf_counter()
                 expanded = _expand_variants(dialect)
                 # A place/variety label search (e.g. "Chengdu") is about the
                 # labelled words, so show them first. For a language name the
@@ -588,21 +648,46 @@ def api_search(
                     results = db._merge_unique(results, expanded)
                 else:
                     results = db._merge_unique(expanded, results)
+                mark("dialect_merge", at)
             # Offer the English search only when it would actually find something.
             english_match = False
             if pinyin_match:
                 english_match = db.has_english_match(q.strip())
-            # Normal searches are paged like wildcard searches: the full match
-            # list gives the total, and the requested page is a slice of it.
-            total = len(results)
-            results = results[offset : offset + limit]
+            # Fuzzy matches are the tail of the combined list: they come after
+            # every official result, so they only appear on the last pages.
+            # The pager total covers both lists, and the requested page is a
+            # slice of that combined list.
+            official_total = len(results)
+            counters["official_total"] = official_total
+            counters["fuzzy_total"] = len(fuzzy)
+            total = official_total + len(fuzzy)
+            page_end = offset + limit
+            results = results[offset : min(page_end, official_total)]
+            fuzzy = fuzzy[
+                max(0, offset - official_total) : max(0, page_end - official_total)
+            ]
+            # Lazy hydration only ranked the official rows; fetch the
+            # definitions for the page we are actually returning.
+            results = db.decorate_entries(results)
     finally:
         statements = db.end_log()
     if total is None:
-        # Normal searches never return more than the 50-result cap.
+        # The primary tier never returns more than the 25-result cap.
         results = results[:limit]
         fuzzy = fuzzy[:limit]
     _record_search(q, (time.perf_counter() - started) * 1000, len(results), statements, part)
+    counters["total"] = total
+    counters["page"] = len(results)
+    counters["fuzzy"] = len(fuzzy)
+    counters["pinyin_match"] = pinyin_match
+    counters["english_match"] = english_match
+    total_ms = round((time.perf_counter() - started) * 1000, 2)
+    timing_parts = [f"{name};dur={value}" for name, value in timings.items()]
+    timing_parts.append(f"total;dur={total_ms}")
+    response.headers["Server-Timing"] = ", ".join(timing_parts)
+    response.headers["X-Yabai-Debug"] = json.dumps(
+        counters, separators=(",", ":"), ensure_ascii=True
+    )
     return {
         "query": q,
         "pinyin_match": pinyin_match,

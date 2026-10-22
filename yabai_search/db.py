@@ -7,19 +7,20 @@ import re
 import threading
 import sqlite3
 import time
+from bisect import bisect_left
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
 
 from opencc import OpenCC
 
-from yabai_chaci.overrides import (
+from yabai_search.overrides import (
     HIDE_FORMS,
     IDS_IMAGES,
     PREFERRED_READINGS,
     TAIWAN_READINGS,
 )
-from yabai_chaci.pinyin import numeric_to_marked, split_pinyin, to_numeric, to_toneless
+from yabai_search.pinyin import numeric_to_marked, split_pinyin, to_numeric, to_toneless
 
 # --- Simplified <-> Traditional conversion (OpenCC) -------------------------
 # OpenCC converts with word/phrase dictionaries, so it handles the one-to-many
@@ -223,7 +224,9 @@ def _connect(database) -> sqlite3.Connection:
                 factory=_PooledConnection,
             )
             connection.execute("PRAGMA mmap_size=268435456")
-            connection.execute("PRAGMA cache_size=-16384")
+            # 64 MB page cache per database (negative = KiB), so the large
+            # source indexes stay resident between searches.
+            connection.execute("PRAGMA cache_size=-64000")
             connection.execute("PRAGMA temp_store=MEMORY")
             _connection_pool[key] = connection
     return connection
@@ -256,8 +259,8 @@ _JP_SENSES_SQL = (
 # Variant forms ("see X" entries) - only some sources have a `forms` table. Each
 # row maps a variant to its main form.
 _FORMS_SQL = (
-    "SELECT variant_trad, variant_simp, main_trad, main_simp, pinyin FROM forms "
-    "WHERE variant_trad IN ({ph}) OR main_trad IN ({ph})"
+    "SELECT variant_trad, variant_simp, main_trad, main_simp, pinyin, qualifier, "
+    "redirect FROM forms WHERE variant_trad IN ({ph}) OR main_trad IN ({ph})"
 )
 # Wiktionary stores its senses as glosses in the `wiktionary` table, not `senses`.
 _WIKTIONARY_SENSES_SQL = (
@@ -289,6 +292,10 @@ _SOURCE_QUERIES = [
         "sql": "SELECT DISTINCT word FROM moe WHERE word IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM moe "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        # The trigram senses_fts table also indexes the headword column, so a
+        # 3+ character query can use it instead of scanning `moe`.
+        "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
+                        "WHERE word LIKE ? ORDER BY word",
         "all_sql": "SELECT DISTINCT word FROM moe WHERE word <> ''",
         "repeat": 1,
         "sense_sql": _SENSES_SQL,
@@ -307,6 +314,9 @@ _SOURCE_QUERIES = [
         "sql": "SELECT DISTINCT word FROM moe WHERE word IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM moe "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        # See the concise MOE source above.
+        "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
+                        "WHERE word LIKE ? ORDER BY word",
         "all_sql": "SELECT DISTINCT word FROM moe WHERE word <> ''",
         "repeat": 1,
         "sense_sql": _SENSES_SQL,
@@ -372,6 +382,9 @@ _SOURCE_QUERIES = [
         "sql": "SELECT DISTINCT word FROM headwords WHERE word IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM headwords "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        # The trigram senses_fts table indexes the headword column too.
+        "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
+                        "WHERE word LIKE ? ORDER BY word",
         "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
         "repeat": 1,
         "sense_sql": _SENSES_SQL,
@@ -392,6 +405,9 @@ _SOURCE_QUERIES = [
         "sql": "SELECT DISTINCT word FROM headwords WHERE word IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM headwords "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        # See the Chinese Wiktionary source above.
+        "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
+                        "WHERE word LIKE ? ORDER BY word",
         "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
         "repeat": 1,
         "sense_sql": _JP_SENSES_SQL,
@@ -1048,6 +1064,148 @@ def _classifier_readings(forms: set[str]) -> dict[str, str]:
     return readings
 
 
+def _variant_form_rows(words: list[str]) -> list[tuple]:
+    """Variant-form rows ("see X" links) for `words`, across every source.
+
+    Only some sources have a `forms` table (currently CC-CEDICT). Kept separate
+    from `_attach_definitions` so lazy hydration can attach just the variant
+    redirect (`main`) without fetching definitions.
+    """
+    if not words:
+        return []
+    placeholders = ",".join("?" * len(words))
+    params = tuple(words)
+    rows: list[tuple] = []
+    for source in _SOURCE_QUERIES:
+        if not source.get("forms_sql") or not source["database"].exists():
+            continue
+        connection = _connect(source["database"])
+        try:
+            # The forms SQL names the word list twice (variant and main column).
+            rows.extend(
+                connection.execute(
+                    source["forms_sql"].format(ph=placeholders), params * 2
+                ).fetchall()
+            )
+        finally:
+            connection.close()
+    return rows
+
+
+def _set_variant_fields(entries: list[dict], form_rows_all: list[tuple]) -> list[dict]:
+    """Set entry["main"] and entry["forms"] from variant-form rows.
+
+    `main` is the redirect target when this entry is a "see X" / "variant of X"
+    entry pointing at a *different* form (self-references like 血[xiě] ->
+    血[xuè] are ignored). `forms` lists the variants that point at this entry,
+    shown as "Other forms". Matching is by the traditional form, which stays
+    distinct even when simplified collide (軟 vs 輭, both simplified 软).
+    `redirect` marks a real cross-reference; "also written X" rows are
+    display-only and never set `main`. Duplicate variant/main pairs keep the
+    redirect row, so a form note cannot override a real cross-reference.
+    """
+    # Index the rows once, de-duplicating pairs and preferring redirect rows.
+    rows_by_pair: dict[tuple[str, str], tuple] = {}
+    for row in form_rows_all:
+        (
+            variant_trad,
+            _variant_simp,
+            main_trad,
+            _main_simp,
+            _pinyin,
+            _qualifier,
+            redirect,
+        ) = row
+        key = (main_trad, variant_trad)
+        current = rows_by_pair.get(key)
+        if current is None or (redirect and not current[6]):
+            rows_by_pair[key] = row
+
+    main_by_variant: dict[str, str] = {}
+    forms_by_main: dict[str, list[dict]] = {}
+    for (
+        variant_trad,
+        variant_simp,
+        main_trad,
+        _main_simp,
+        pinyin,
+        qualifier,
+        redirect,
+    ) in rows_by_pair.values():
+        if redirect and main_trad != variant_trad:
+            main_by_variant.setdefault(variant_trad, main_trad)
+        forms_by_main.setdefault(main_trad, []).append(
+            {
+                "traditional": variant_trad,
+                "simplified": variant_simp or variant_trad,
+                "pinyin": pinyin or "",
+                "qualifier": qualifier or "",
+            }
+        )
+    for entry in entries:
+        trad = entry["traditional"]
+        entry["main"] = main_by_variant.get(trad)
+        if trad in HIDE_FORMS or entry["simplified"] in HIDE_FORMS:
+            entry["forms"] = []
+        else:
+            entry["forms"] = forms_by_main.get(trad, [])
+    return entries
+
+
+def _cedict_reading_counts(words: list[str]) -> dict[str, dict[str, int]]:
+    """Count CEDICT senses per (headword, reading), capped like the definitions.
+
+    Mirrors the grouping in `_attach_definitions` so `_reading_count` (main.py)
+    can pick the same representative reading without fetching the definitions.
+    """
+    if not words:
+        return {}
+    placeholders = ",".join("?" * len(words))
+    connection = connect()
+    try:
+        rows = connection.execute(
+            "SELECT word, reading, COUNT(*) FROM senses "
+            f"WHERE word IN ({placeholders}) "
+            "AND text IS NOT NULL AND TRIM(text) <> '' "
+            "GROUP BY word, reading",
+            tuple(words),
+        ).fetchall()
+    finally:
+        connection.close()
+    counts: dict[str, dict[str, int]] = {}
+    for word, reading, count in rows:
+        counts.setdefault(word, {})[reading or ""] = min(count, _MAX_DEFS)
+    return counts
+
+
+def _light_decorate(entries: list[dict]) -> list[dict]:
+    """Attach the cheap fields needed to rank and de-duplicate rows.
+
+    Lazy hydration: a search still finds and scores every match, but only the
+    requested page gets full definitions. This pass adds the frequency (the
+    relevance tie-break), the variant redirect (`main`), and the CEDICT sense
+    count used to choose the best reading for a duplicate headword. The row is
+    fully decorated later by `decorate_entries` if it lands on the page.
+    """
+    if not entries:
+        return entries
+    _attach_freq(entries)
+    words = sorted(
+        {entry["traditional"] for entry in entries}
+        | {entry["simplified"] for entry in entries}
+    )
+    _set_variant_fields(entries, _variant_form_rows(words))
+    counts = _cedict_reading_counts(words)
+    for entry in entries:
+        by_reading = (
+            counts.get(entry["traditional"])
+            or counts.get(entry["simplified"])
+            or {}
+        )
+        entry["_reading_count"] = by_reading.get(entry.get("pinyin", ""), 0)
+    return entries
+
+
 def _attach_definitions(entries: list[dict]) -> list[dict]:
     """Set entry["definitions"] to each dictionary's senses and classifiers.
 
@@ -1066,10 +1224,11 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
     placeholders = ",".join("?" * len(words))
     params = tuple(words)
 
-    # Fetch every source's senses, classifiers and forms once for the result set.
+    # Fetch every source's senses and classifiers once for the result set, plus
+    # the variant-form redirects (cheap, and reused by the light path).
     senses: dict[str, dict[str, list[str]]] = {}
     classifiers: dict[str, dict[str, list[dict]]] = {}
-    form_rows_all: list[tuple] = []
+    form_rows_all = _variant_form_rows(words)
     # Classifier characters, collected so they can all get a furigana reading.
     classifier_forms: set[str] = set()
     for source in _SOURCE_QUERIES:
@@ -1125,12 +1284,6 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                         "codes": codes or "",
                         "note": note or "",
                     }
-                )
-            if source.get("forms_sql"):
-                form_rows_all.extend(
-                    connection.execute(
-                        source["forms_sql"].format(ph=placeholders), params * 2
-                    ).fetchall()
                 )
         finally:
             connection.close()
@@ -1188,25 +1341,7 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                     }
                 )
         entry["definitions"] = defs
-        # Variant forms. `main` is the redirect target when this entry is a
-        # "see X" / "variant of X" entry pointing at a *different* form (self-references
-        # like 血[xiě] -> 血[xuè] are ignored here). `forms` lists the variants that
-        # point at this entry, shown as "Other forms". Matching is by the
-        # traditional form, which stays distinct even when simplified collide
-        # (軟 vs 輭, both simplified 软).
-        trad = entry["traditional"]
-        entry["main"] = next(
-            (row[2] for row in form_rows_all if row[0] == trad and row[2] != trad),
-            None,
-        )
-        if trad in HIDE_FORMS or entry["simplified"] in HIDE_FORMS:
-            entry["forms"] = []
-        else:
-            entry["forms"] = [
-                {"traditional": row[0], "simplified": row[1] or row[0], "pinyin": row[4] or ""}
-                for row in form_rows_all
-                if row[2] == trad
-            ]
+    _set_variant_fields(entries, form_rows_all)
     return entries
 
 
@@ -1530,6 +1665,21 @@ def _decorate(entries: list[dict]) -> list[dict]:
     return entries
 
 
+def decorate_entries(entries: list[dict]) -> list[dict]:
+    """Fully decorate rows that a light (`hydrate`) search pass only ranked.
+
+    Lazy hydration leaves rows outside the response page without definitions;
+    call this on the page slice just before it is rendered.
+    """
+    pending = [entry for entry in entries if "definitions" not in entry]
+    if pending:
+        _decorate(pending)
+    # Drop the lightweight marker so the response looks like a normal one.
+    for entry in entries:
+        entry.pop("_reading_count", None)
+    return entries
+
+
 @lru_cache(maxsize=8192)
 def lookup(word: str) -> list[dict]:
     """Return entries whose simplified or traditional form is exactly `word`.
@@ -1817,8 +1967,6 @@ def _source_only_entries(
         (form, _like_pattern(form if "*" in text else f"*{form}*"))
         for form in forms
     ]
-    patterns = [pattern for _form, pattern in pairs]
-
     # Words CEDICT already covers are handled by the normal search.
     known = _cedict_heads()
 
@@ -1869,10 +2017,13 @@ def _source_only_entries(
                     source["sql"].format(ph=placeholders), params * source["repeat"]
                 ).fetchall()
             else:
-                # Match the query like the CEDICT search does (see patterns above).
+                # Match the query like the CEDICT search does (see pairs above).
                 rows = []
                 seen_rows: set[str] = set()
-                use_fts = source.get("like_sql_fts") is not None and _has_wiktionary_fts()
+                # Some sources already have a trigram index over the headword
+                # column (their senses_fts table); Wiktionary has its own.
+                fts_sql = source.get("head_fts_sql") or source.get("like_sql_fts")
+                use_fts = bool(fts_sql) and _source_has_fts(source)
                 head_source = {"wiktionary": "wikt_head", "moe": "moe_head"}.get(
                     source["anchor"], ""
                 )
@@ -1889,7 +2040,7 @@ def _source_only_entries(
                                 rows.append((head,))
                         continue
                     if use_fts and len(form) >= 3 and _simple_form(form):
-                        sql = source["like_sql_fts"]
+                        sql = fts_sql
                         query_pattern = f"%{form}%"
                     else:
                         sql = source["like_sql"]
@@ -1959,12 +2110,19 @@ def _source_only_entries(
             else:
                 rows = []
                 seen_rows = set()
-                for pattern in patterns:
-                    for (head,) in database.execute(
-                        "SELECT word FROM freq WHERE word LIKE ? ESCAPE '\\' "
-                        "ORDER BY rank",
-                        (pattern,),
-                    ):
+                # A 3+ character headword can use the trigram index; shorter
+                # ones fall back to the scan. freq_fts rows are in rank order.
+                use_fts = _has_freq_fts()
+                for form, pattern in pairs:
+                    if use_fts and len(form) >= 3:
+                        sql = ("SELECT word FROM freq_fts WHERE word LIKE ? "
+                               "ORDER BY freq_rank")
+                        query_pattern = f"%{form}%"
+                    else:
+                        sql = ("SELECT word FROM freq WHERE word LIKE ? ESCAPE '\\' "
+                               "ORDER BY rank")
+                        query_pattern = pattern
+                    for (head,) in database.execute(sql, (query_pattern,)):
                         if head not in seen_rows:
                             seen_rows.add(head)
                             rows.append((head,))
@@ -2034,6 +2192,35 @@ def _source_pinyin_rows() -> list[tuple[str, str, str, str, str]]:
     return rows
 
 
+# The same rows sorted by toneless reading, so a query can binary-search the
+# prefix instead of scanning every source reading (there are hundreds of
+# thousands after import). Rebuilt whenever _source_pinyin_rows_cache is.
+_source_pinyin_sorted_cache: tuple[tuple, list[str], list[tuple]] | None = None
+
+
+def _source_pinyin_sorted() -> tuple[list[str], list[tuple]]:
+    """Return (toneless keys, rows) sorted by reading for prefix searches."""
+    global _source_pinyin_sorted_cache
+    rows = _source_pinyin_rows()
+    stamp = _source_pinyin_rows_cache[0]
+    if (
+        _source_pinyin_sorted_cache is not None
+        and _source_pinyin_sorted_cache[0] == stamp
+    ):
+        return _source_pinyin_sorted_cache[1], _source_pinyin_sorted_cache[2]
+    ordered = sorted(rows, key=lambda row: row[3])
+    keys = [row[3] for row in ordered]
+    _source_pinyin_sorted_cache = (stamp, keys, ordered)
+    return keys, ordered
+
+
+def _prefix_rows(keys: list[str], rows: list[tuple], prefix: str) -> list[tuple]:
+    """The rows whose toneless reading starts with `prefix`."""
+    start = bisect_left(keys, prefix)
+    end = bisect_left(keys, prefix + "\uffff")
+    return rows[start:end]
+
+
 def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
     """Source-only entries whose reading matches a pinyin query.
 
@@ -2067,6 +2254,9 @@ def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
     known = _cedict_heads()
     # (rank key, word, marked reading, simplified word)
     found: list[tuple[tuple, str, str, str]] = []
+    # The tone/boundary constraints are fixed for this call, so a reading's rank
+    # can be memoised: the same numeric reading recurs across sources.
+    rank_cache: dict[str, int | None] = {}
 
     def consider(
         word: str,
@@ -2078,7 +2268,11 @@ def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
         if simplified in known:
             return
         if parsed:
-            rank = _reading_rank(numeric, letters, tones, boundaries)
+            if numeric in rank_cache:
+                rank = rank_cache[numeric]
+            else:
+                rank = _reading_rank(numeric, letters, tones, boundaries)
+                rank_cache[numeric] = rank
             if rank is None:
                 return
         elif rank is None:
@@ -2172,12 +2366,26 @@ def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
         finally:
             connection.close()
 
-    # MOE, zh.wiktionary and ja.wiktionary headword readings. These tables have
-    # no precomputed toneless column, so the list is built once and cached.
-    for word, simplified, marked, toneless, numeric in _source_pinyin_rows():
+    # MOE, zh.wiktionary and ja.wiktionary headword readings. The list is built
+    # once and sorted; a prefix query binary-searches it instead of scanning
+    # every reading.
+    keys, rows = _source_pinyin_sorted()
+    candidates = rows if wildcard_re is not None else _prefix_rows(keys, rows, letters)
+    for word, simplified, marked, toneless, numeric in candidates:
         if simplified in known:
             continue
         consider(word, marked, numeric, simplified)
+
+    # A tonal query can also match a reading that merely contains the letters
+    # (rank 2). Only look for those when the prefix matches did not fill the
+    # page, and skip the rows already handled above.
+    if parsed and len(found) < limit:
+        for word, simplified, marked, toneless, numeric in rows:
+            if toneless.startswith(letters) or letters not in toneless:
+                continue
+            if simplified in known:
+                continue
+            consider(word, marked, numeric, simplified)
 
     found.sort(key=lambda item: item[0])
     seen: set[tuple[str, str]] = set()
@@ -2338,6 +2546,27 @@ def _gram_candidates(source: str, form: str) -> list[str] | None:
     return [row[0] for row in rows]
 
 
+_cedict_trigram_cache: bool | None = None
+
+
+def _has_cedict_trigram() -> bool:
+    """True when the CEDICT database has the trigram entries_fts_trigram index."""
+    global _cedict_trigram_cache
+    if _cedict_trigram_cache is None:
+        connection = _connect(DB_PATH)
+        try:
+            _cedict_trigram_cache = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='entries_fts_trigram'"
+                ).fetchone()
+                is not None
+            )
+        finally:
+            connection.close()
+    return _cedict_trigram_cache
+
+
 _moe_fts_cache: bool | None = None
 
 
@@ -2437,6 +2666,45 @@ def _has_jpwiktionary_fts() -> bool:
         finally:
             connection.close()
     return _jpwiktionary_fts_cache
+
+
+_freq_fts_cache: bool | None = None
+
+
+def _has_freq_fts() -> bool:
+    """True when the SUBTLEX database has the trigram freq_fts table."""
+    global _freq_fts_cache
+    if _freq_fts_cache is None:
+        if not SUBTLEX_DB_PATH.exists():
+            return False
+        connection = _connect(SUBTLEX_DB_PATH)
+        try:
+            _freq_fts_cache = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='freq_fts'"
+                ).fetchone()
+                is not None
+            )
+        finally:
+            connection.close()
+    return _freq_fts_cache
+
+
+def _source_has_fts(source: dict) -> bool:
+    """True when this source's trigram headword index is available."""
+    anchor = source["anchor"]
+    if anchor == "moe":
+        return _has_moe_fts()
+    if anchor == "moe_revised":
+        return _has_moe_revised_fts()
+    if anchor == "wiktionary":
+        return _has_wiktionary_fts()
+    if anchor == "zhwiktionary":
+        return _has_zhwiktionary_fts()
+    if anchor == "jpwiktionary":
+        return _has_jpwiktionary_fts()
+    return False
 
 
 def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
@@ -2814,8 +3082,19 @@ def _extra_label_entries(phrase: str, limit: int) -> list[dict] | None:
     return None
 
 
-def _source_matches(query: str, limit: int = 20) -> list[dict]:
-    """Every source-only match for a query: headword, pinyin and English gloss."""
+def _source_matches(
+    query: str,
+    limit: int = 20,
+    heads_checked: bool = False,
+    pinyin_checked: bool = False,
+) -> list[dict]:
+    """Every source-only match for a query: headword, pinyin and English gloss.
+
+    `heads_checked`/`pinyin_checked` say the caller already ran the normal
+    (non-exact) headword scan or the pinyin scan for this query and found
+    nothing. Skipping them here avoids scanning the same source tables twice
+    in one search.
+    """
     text = (query or "").strip()
     if not text:
         return []
@@ -2825,13 +3104,15 @@ def _source_matches(query: str, limit: int = 20) -> list[dict]:
     entries = list(
         _source_only_entries(query, limit=limit, exact=True, allow_no_gloss=True)
     )
-    entries.extend(_source_only_entries(query, limit=limit))
+    if not heads_checked:
+        entries.extend(_source_only_entries(query, limit=limit))
     if has_cjk(text):
         # Searching a Chinese phrase also matches source definitions (e.g. the
         # IDS characters named inside a Wiktionary gloss).
         entries.extend(_source_definition_entries(query, limit=limit))
     else:
-        entries.extend(_source_pinyin_entries(query, limit=limit))
+        if not pinyin_checked:
+            entries.extend(_source_pinyin_entries(query, limit=limit))
         entries.extend(_source_gloss_entries(query, limit=limit))
     seen: set[str] = set()
     unique: list[dict] = []
@@ -2901,7 +3182,7 @@ def dialect_entries(query: str, limit: int = 200) -> list[dict]:
 
 
 # How many results a "list everything" (*) page shows.
-ALL_PAGE_SIZE = 50
+ALL_PAGE_SIZE = 25
 
 # Cache of every distinct simplified headword across all sources, sorted.
 _all_headwords_cache: list[str] | None = None
@@ -3558,20 +3839,6 @@ def _rank_language_matches(entries: list[dict], query: str) -> list[dict]:
     return tiers[0] + tiers[1] + tiers[2]
 
 
-def _split_language_matches(
-    entries: list[dict], query: str
-) -> tuple[list[dict], list[dict], list[dict]]:
-    """Split definition matches into (language, notes, other) for pinyin searches."""
-    language: list[dict] = []
-    notes: list[dict] = []
-    other: list[dict] = []
-    for entry in entries:
-        text = entry.get("english_normalized") or ""
-        tier = _language_match_tier(text, query)
-        (language if tier == 0 else notes if tier == 1 else other).append(entry)
-    return language, notes, other
-
-
 def _merge_unique(base: list[dict], extra: list[dict]) -> list[dict]:
     """Append `extra` entries that are not already in `base` (by headword)."""
     seen = {
@@ -3593,6 +3860,7 @@ def search(
     taiwan: bool = False,
     part: str = "all",
     _skip_pinyin: bool = False,
+    hydrate: int | None = None,
 ) -> tuple[list[dict], bool]:
     """Search the dictionary.
 
@@ -3606,10 +3874,28 @@ def search(
     `part="primary"` returns only the fast CEDICT tier and `part="secondary"`
     only the slow source-only tier, so the UI can render results progressively;
     the combined list is exactly the same either way.
+
+    `hydrate` turns on lazy hydration: only the first `hydrate` rows are fully
+    decorated, and the rest get just the cheap fields used to rank and
+    de-duplicate them (`_light_decorate`). Rows are fully decorated later by
+    `decorate_entries` when they reach the page. `None` decorates everything,
+    which is what `part="primary"`, fuzzy searches and the other callers want.
     """
     query = query.strip()
     if not query:
         return [], False  # nothing to search for
+
+    def decorate(rows: list[dict]) -> list[dict]:
+        """Fully decorate the first `hydrate` rows, light-decorate the rest."""
+        if hydrate is None or len(rows) <= hydrate:
+            return _decorate(rows)
+        head = rows[:hydrate]
+        tail = rows[hydrate:]
+        if head:
+            _decorate(head)
+        if tail:
+            _light_decorate(tail)
+        return head + tail
 
     # "Quoted" -> English phrase search only.
     if len(query) >= 2 and query.startswith('"') and query.endswith('"'):
@@ -3620,7 +3906,7 @@ def search(
         # dictionary: a quoted phrase from one of them returns those entries.
         extra = _extra_label_entries(phrase, limit)
         if extra is not None:
-            return _decorate(extra), False
+            return decorate(extra), False
         order = ", ".join(_freq_order() + ["length(simplified)", "id"])
         sql = (
             "SELECT simplified, traditional, pinyin, english, english_normalized "
@@ -3652,8 +3938,8 @@ def search(
             # A quoted Chinese headword or pinyin may not occur in any
             # definition. Fall back to the normal search so quoting does not
             # hide a word the dictionary knows.
-            return search(phrase, limit, taiwan, part=part)
-        decorated = _decorate(fts_unique + source_rows)
+            return search(phrase, limit, taiwan, part=part, hydrate=hydrate)
+        decorated = decorate(fts_unique + source_rows)
         if part == "primary":
             return decorated[: len(fts_unique)], False
         return decorated, False
@@ -3689,8 +3975,27 @@ def search(
             phases = [(prefix, None)]
             if not taiwan:
                 phases.append((contains, prefix))
+            # The trigram index answers the same substring test as LIKE, but
+            # only once the query has enough characters to form a trigram.
+            use_trigram = _has_cedict_trigram() and len(letters) >= 3
             for pattern, exclude in phases:
-                if exclude is None:
+                if use_trigram:
+                    # `letters` is plain a-z/ü, so no LIKE escaping is needed.
+                    if exclude is None:
+                        where = (
+                            "id IN (SELECT rowid FROM entries_fts_trigram "
+                            "WHERE pinyin_toneless LIKE ?)"
+                        )
+                        params = (note, f"{letters}%", note_pattern)
+                    else:
+                        where = (
+                            "id IN (SELECT rowid FROM entries_fts_trigram "
+                            "WHERE pinyin_toneless LIKE ?) "
+                            "AND id NOT IN (SELECT rowid FROM entries_fts_trigram "
+                            "WHERE pinyin_toneless LIKE ?)"
+                        )
+                        params = (note, f"%{letters}%", f"{letters}%", note_pattern)
+                elif exclude is None:
                     where = "pinyin_toneless LIKE ? ESCAPE '\\'"
                     params = (note, pattern, note_pattern)
                 else:
@@ -3754,7 +4059,7 @@ def search(
         # Decorate the CEDICT rows and the source-only rows in one pass: each
         # decorate call opens many connections.
         source_rows = [] if part == "primary" else _source_pinyin_entries(query, limit=limit)
-        decorated = _decorate(top + source_rows)
+        decorated = decorate(top + source_rows)
         result = decorated[: len(top)]
         # Within the relevance group (whole reading, starts with, contains), put
         # the most frequent words first; words with no frequency go last.
@@ -3768,23 +4073,8 @@ def search(
         for entry in result:
             entry.pop("_search_rank", None)
         if part == "primary":
-            if _is_language_query(query):
-                # A language name is also a reading (e.g. "xiang", "wu").
-                # Show the language's own definitions and notes first, then
-                # the reading matches, then unrelated mentions.
-                extra, _ = search(
-                    query, limit, taiwan, part="primary", _skip_pinyin=True
-                )
-                language, notes, other = _split_language_matches(extra, query)
-                result = _merge_unique(language + notes, result)
-                result = _merge_unique(result, other)
             return result, True
         result.extend(decorated[len(top):])
-        if _is_language_query(query):
-            extra, _ = search(query, limit, taiwan, part=part, _skip_pinyin=True)
-            language, notes, other = _split_language_matches(extra, query)
-            result = _merge_unique(language + notes, result)
-            result = _merge_unique(result, other)
         return result, True
 
     # Exact pinyin reading (e.g. "yabai" -> 牙白): if the query is a complete
@@ -3808,14 +4098,31 @@ def search(
             freq_order = ", ".join(_freq_order())
             freq_clause = f", {freq_order}" if freq_order else ""
             note_pattern = _like_pattern(f"*pr. [{pinyin_key}*")
+            # A plain Latin pinyin query can use the trigram index; a wildcard
+            # or a short query stays on the LIKE scan.
+            use_trigram = (
+                _has_cedict_trigram()
+                and not wildcard
+                and len(pinyin_key) >= 3
+                and re.fullmatch(r"[a-zü]+", pinyin_key) is not None
+            )
+            if use_trigram:
+                pinyin_clause = (
+                    "id IN (SELECT rowid FROM entries_fts_trigram "
+                    "WHERE pinyin_toneless LIKE ?)"
+                )
+                pinyin_params = (f"{pinyin_key}%",)
+            else:
+                pinyin_clause = "pinyin_toneless LIKE ? ESCAPE '\\'"
+                pinyin_params = (pattern,)
             rows = connection.execute(
                 "SELECT simplified, traditional, pinyin, english, english_normalized "
-                "FROM entries WHERE pinyin_toneless LIKE ? ESCAPE '\\' "
+                f"FROM entries WHERE {pinyin_clause} "
                 f"OR {_note_or()} "
                 "ORDER BY (pinyin_toneless = ?) DESC, "
                 "(english_normalized LIKE ? ESCAPE '\\') DESC"
                 f"{freq_clause}, length(simplified), id LIMIT ?",
-                (pattern, note_pattern, pinyin_key, note_pattern, limit),
+                (*pinyin_params, note_pattern, pinyin_key, note_pattern, limit),
             ).fetchall()
             # With the Taiwan toggle on, also match MOE (Taiwan) readings, so a
             # query like "lese" finds 垃圾.
@@ -3848,22 +4155,12 @@ def search(
             if key not in seen:
                 seen.add(key)
                 entries.append(dict(row))
-        if entries:
-            source_rows = [] if part == "primary" else _source_pinyin_entries(query, limit=limit)
-            decorated = _decorate(entries + source_rows)
+        source_rows = [] if part == "primary" else _source_pinyin_entries(query, limit=limit)
+        if entries or source_rows:
+            decorated = decorate(entries + source_rows)
             if part == "primary":
-                result = decorated[: len(entries)]
-            else:
-                result = decorated
-            if _is_language_query(query):
-                # A language name can also be a valid reading (e.g. "sichuan").
-                # Show the language's own definitions and notes first, then
-                # the reading matches, then unrelated mentions.
-                extra, _ = search(query, limit, taiwan, part=part, _skip_pinyin=True)
-                language, notes, other = _split_language_matches(extra, query)
-                result = _merge_unique(language + notes, result)
-                result = _merge_unique(result, other)
-            return result, True
+                return decorated[: len(entries)], True
+            return decorated, True
 
     # Chinese: convert to simplified. A plain query matches anywhere in the word,
     # ranked exact first, then words starting with the query, then the rest.
@@ -3895,6 +4192,117 @@ def search(
         contains_patterns = [_like_pattern(chinese)]
         prefix_patterns = contains_patterns
 
+    # Unquoted searches stop here when a headword matches. Definitions are only
+    # searched when there is no headword match. Source-only headwords count too.
+    headword_clause = ""
+    headword_params: list[str] = []
+    headword_order: list[str] = []
+    headword_order_params: list[str] = []
+    if is_chinese:
+        # A Chinese query can match either script form. This matters for
+        # traditional-only variants such as 柹 that OpenCC cannot convert to
+        # their simplified main form (柿): the row is still found here and
+        # `_expand_variants` redirects it to 柿.
+        headword_clause = "(" + " OR ".join(
+            "(simplified LIKE ? ESCAPE '\\' OR traditional LIKE ? ESCAPE '\\')"
+            for _ in headword_forms
+        ) + ")"
+        for pattern in contains_patterns:
+            headword_params += [pattern, pattern]
+        if len(headword_forms) > 1:
+            headword_order.append("(simplified = ? OR traditional = ?) DESC")
+            headword_order_params += [headword_forms[0], headword_forms[0]]
+            headword_order.append(
+                "(simplified LIKE ? ESCAPE '\\' "
+                "OR traditional LIKE ? ESCAPE '\\') DESC"
+            )
+            headword_order_params += [prefix_patterns[0], prefix_patterns[0]]
+        headword_order.append(
+            "(" + " OR ".join(
+                "(simplified = ? OR traditional = ?)" for _ in headword_forms
+            ) + ") DESC"
+        )
+        for form in headword_forms:
+            headword_order_params += [form, form]
+        headword_order.append(
+            "(" + " OR ".join(
+                "(simplified LIKE ? ESCAPE '\\' OR traditional LIKE ? ESCAPE '\\')"
+                for _ in headword_forms
+            ) + ") DESC"
+        )
+        for pattern in prefix_patterns:
+            headword_order_params += [pattern, pattern]
+    elif is_numeric:
+        headword_clause = "(" + " OR ".join(
+            "(simplified LIKE ? ESCAPE '\\' OR traditional LIKE ? ESCAPE '\\')"
+            for _ in headword_forms
+        ) + ")"
+        for pattern in contains_patterns:
+            headword_params += [pattern, pattern]
+        if len(headword_forms) > 1:
+            headword_order.append("(simplified = ? OR traditional = ?) DESC")
+            headword_order_params += [headword_forms[0], headword_forms[0]]
+            headword_order.append(
+                "(simplified LIKE ? ESCAPE '\\' "
+                "OR traditional LIKE ? ESCAPE '\\') DESC"
+            )
+            headword_order_params += [prefix_patterns[0], prefix_patterns[0]]
+            headword_order.append(
+                "(simplified LIKE ? ESCAPE '\\' "
+                "OR traditional LIKE ? ESCAPE '\\') DESC"
+            )
+            headword_order_params += [contains_patterns[0], contains_patterns[0]]
+        headword_order.append(
+            "(" + " OR ".join(
+                "(simplified = ? OR traditional = ?)" for _ in headword_forms
+            ) + ") DESC"
+        )
+        for form in headword_forms:
+            headword_order_params += [form, form]
+        headword_order.append(
+            "(" + " OR ".join(
+                "(simplified LIKE ? ESCAPE '\\' OR traditional LIKE ? ESCAPE '\\')"
+                for _ in headword_forms
+            ) + ") DESC"
+        )
+        for pattern in prefix_patterns:
+            headword_order_params += [pattern, pattern]
+        headword_order.append(
+            "(" + " OR ".join(
+                "(simplified LIKE ? ESCAPE '\\' OR traditional LIKE ? ESCAPE '\\')"
+                for _ in headword_forms
+            ) + ") DESC"
+        )
+        for pattern in contains_patterns:
+            headword_order_params += [pattern, pattern]
+    headword_rows: list = []
+    if headword_clause:
+        headword_sql = (
+            "SELECT simplified, traditional, pinyin, english, english_normalized "
+            "FROM entries WHERE " + headword_clause + " ORDER BY "
+            + ", ".join(
+                headword_order + _freq_order() + ["length(simplified)", "id"]
+            )
+            + " LIMIT ?"
+        )
+        connection = connect()
+        try:
+            headword_rows = connection.execute(
+                headword_sql,
+                [*headword_params, *headword_order_params, limit],
+            ).fetchall()
+        finally:
+            connection.close()
+    source_headwords = (
+        [] if part == "primary" else _source_only_entries(query, limit=limit)
+    )
+    if headword_rows or source_headwords:
+        entries = [dict(row) for row in headword_rows] + source_headwords
+        decorated = decorate(entries)
+        if part == "primary":
+            return decorated[: len(headword_rows)], False
+        return decorated, False
+
     # Definitions can use a different numeral spelling too (2026 vs 二零二六).
     if "*" in query:
         definition_patterns = [_like_pattern(query)]
@@ -3902,9 +4310,26 @@ def search(
         definition_patterns = [
             _like_pattern(f"*{form}*") for form in headword_forms
         ]
-    definition_clause = "(" + " OR ".join(
-        "english_normalized LIKE ? ESCAPE '\\'" for _ in definition_patterns
-    ) + ")"
+    # For a plain English word, let the trigram index find the definitions that
+    # contain it instead of scanning english_normalized.
+    use_definition_trigram = (
+        _has_cedict_trigram()
+        and not is_chinese
+        and not is_numeric
+        and "*" not in query
+        and len(query) >= 3
+        and re.fullmatch(r"[A-Za-z0-9üÜ' .\-]+", query) is not None
+    )
+    if use_definition_trigram:
+        definition_clause = (
+            "id IN (SELECT rowid FROM entries_fts_trigram "
+            "WHERE english_normalized LIKE ?)"
+        )
+        definition_patterns = [f"%{query}%"]
+    else:
+        definition_clause = "(" + " OR ".join(
+            "english_normalized LIKE ? ESCAPE '\\'" for _ in definition_patterns
+        ) + ")"
 
     # WHERE: the headword (hanzi or numeric queries) or the definitions.
     where_parts = [definition_clause]
@@ -4015,15 +4440,27 @@ def search(
         entries = _rank_language_matches(entries, query)[:limit]
     # Also surface headwords that only the secondary sources or the frequency
     # list have, so a word CEDICT lacks is still findable.
-    source_rows = [] if part == "primary" else _source_matches(query, limit=20)
-    decorated = _decorate(entries + source_rows)
+    # The non-exact headword scan already ran above (and found nothing, or the
+    # search would have returned), and the pinyin branches ran too unless
+    # pinyin was explicitly skipped. Tell _source_matches not to repeat them.
+    source_rows = (
+        []
+        if part == "primary"
+        else _source_matches(
+            query,
+            limit=20,
+            heads_checked=True,
+            pinyin_checked=not _skip_pinyin,
+        )
+    )
+    decorated = decorate(entries + source_rows)
     if part == "primary":
         return decorated[: len(entries)], False
     if not decorated:
         # Nothing matched at all: allow a headword that only exists without a
         # definition (e.g. 18禁), so an exact search still shows it with its
         # source link instead of an empty page.
-        return _decorate(
+        return decorate(
             _source_only_entries(query, limit=10, exact=True, allow_no_gloss=True)
         ), False
     return decorated, False
@@ -4097,3 +4534,4 @@ def warm_caches() -> None:
     _all_headwords_list()
     _zhuyin_map()
     _definition_grams()
+    _source_pinyin_sorted()

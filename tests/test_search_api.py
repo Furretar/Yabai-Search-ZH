@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from yabai_search.pinyin import to_toneless
+
 DATA = Path(__file__).resolve().parents[1] / "data"
 
 pytestmark = pytest.mark.skipif(
@@ -18,12 +20,12 @@ def _words(data):
 
 
 def test_star_lists_every_headword_in_pages(search):
-    """A bare * lists every headword, 50 per page, without overlap."""
+    """A bare * lists every headword, 25 per page, without overlap."""
     first = search("*")
-    second = search("*", offset=50)
+    second = search("*", offset=25)
     assert first["total"] > 200_000
-    assert len(first["results"]) == 50
-    assert first["page_size"] == 50
+    assert len(first["results"]) == 25
+    assert first["page_size"] == 25
     assert first["pinyin_match"] is False
     assert set(_words(first)).isdisjoint(set(_words(second)))
 
@@ -32,7 +34,7 @@ def test_blank_query_lists_all_headwords(search):
     """The API treats a blank query like * (the home page does not call this)."""
     data = search("")
     assert data["total"] > 200_000
-    assert len(data["results"]) == 50
+    assert len(data["results"]) == 25
 
 
 def test_quoted_empty_phrase_returns_nothing(search):
@@ -136,9 +138,9 @@ def test_unquoted_chinese_definition_search(search):
 
 
 def test_limit_validation(client, search):
-    """The API rejects limits outside 1..50 and honours a valid limit."""
+    """The API rejects limits outside 1..25 and honours a valid limit."""
     assert client.get("/api/search", params={"q": "档案", "limit": 0}).status_code == 422
-    assert client.get("/api/search", params={"q": "档案", "limit": 51}).status_code == 422
+    assert client.get("/api/search", params={"q": "档案", "limit": 26}).status_code == 422
     assert len(search("档案", limit=1)["results"]) == 1
 
 
@@ -152,15 +154,56 @@ def test_offset_paginates_normal_search(search):
     assert set(_words(page0)).isdisjoint(set(_words(page1)))
 
 
+def test_fuzzy_results_are_paged_after_official_results(search):
+    """Fuzzy rows wait until the last pages and never inflate a page past 25."""
+    first = search("shi4")
+    assert first["results"]
+    assert first["fuzzy"] == []
+    total = first["total"]
+    assert total > len(first["results"])
+
+    second = search("shi4", offset=25)
+    assert second["fuzzy"] == []
+    assert len(second["results"]) <= 25
+
+    last_offset = ((total - 1) // 25) * 25
+    last = search("shi4", offset=last_offset)
+    assert last["offset"] == last_offset
+    assert last["total"] == total
+    assert last["fuzzy"]
+    assert len(last["results"]) + len(last["fuzzy"]) <= 25
+
+
+def test_old_variant_is_an_other_form_not_a_result(search):
+    """柹 is merged into 柿 as an "other form" instead of a duplicate row."""
+    data = search("柿")
+    shi = [entry for entry in data["results"] if entry["simplified"] == "柿"]
+    assert shi
+    forms = shi[0].get("forms") or []
+    zhi = [form for form in forms if form["traditional"] == "柹"]
+    assert zhi
+    assert zhi[0]["qualifier"] == "old"
+    assert not any(entry["traditional"] == "柹" for entry in data["results"])
+
+
+def test_traditional_variant_query_redirects_to_main(search):
+    """A traditional-only variant (柹) is found and shown as its main form."""
+    data = search("柹")
+    assert data["total"] >= 1
+    shi = [entry for entry in data["results"] if entry["simplified"] == "柿"]
+    assert shi
+    assert any(form["traditional"] == "柹" for form in shi[0].get("forms", []))
+
+
 def test_offset_paginates_wildcard_search(search):
-    """Wildcard pages use the fixed 50-result page size, with stable totals."""
+    """Wildcard pages use the fixed 25-result page size, with stable totals."""
     page0 = search("*字", limit=10, offset=0)
-    page1 = search("*字", limit=10, offset=50)
+    page1 = search("*字", limit=10, offset=25)
     assert page0["total"] == page1["total"]
-    assert len(page0["results"]) == 50
+    assert len(page0["results"]) == 25
     # A raw page can lose a row when two script forms collapse to one headword,
     # and a collapsed headword can repeat once at a page boundary.
-    assert 0 < len(page1["results"]) <= 50
+    assert 0 < len(page1["results"]) <= 25
     assert set(_words(page1)) - set(_words(page0))
     assert all(word.endswith("字") for word in _words(page0))
 
@@ -265,26 +308,29 @@ def test_shanghainese_ranks_language_entry_first(search):
     assert "大拐" in words[:10]
 
 
-def test_pinyin_language_query_shows_note_matches():
-    """sichuan is a reading and a dialect name, so its notes stay visible."""
-    from yabai_chaci import db
+def test_pinyin_language_query_skips_definition_matches():
+    """sichuan matches readings, so dialect notes must not be searched."""
+    from yabai_search import db
 
     entries, pinyin_match = db.search("sichuan", 50)
     assert pinyin_match is True
     words = [entry["simplified"] for entry in entries]
-    assert "巴适" in words
-    assert words.index("巴适") < words.index("四川")
+    assert "巴适" not in words
+    assert all(
+        to_toneless(entry["pinyin"]).startswith("sichuan") for entry in entries
+    )
 
 
-def test_pinyin_language_query_shows_language_entry_first():
-    """xiang shows the Xiang language entry before its reading matches."""
-    from yabai_chaci import db
+def test_xiang_reading_query_returns_only_readings():
+    """xiang returns reading matches and no definition-only entries."""
+    from yabai_search import db
 
     entries, pinyin_match = db.search("xiang", 50)
     assert pinyin_match is True
-    words = [entry["simplified"] for entry in entries]
-    assert words[0] == "湘语"
-    assert words.index("湘语") < words.index("想")
+    assert entries
+    assert all(
+        to_toneless(entry["pinyin"]).startswith("xiang") for entry in entries
+    )
 
 
 def test_chinese_phrase_finds_exact_source_headword(search, find_result):
@@ -300,8 +346,8 @@ def test_chinese_phrase_finds_exact_source_headword(search, find_result):
 
 
 def test_dialect_label_search_finds_labelled_words(search):
-    """Searching a variety name matches its Wiktionary reading label."""
-    data = search("Chengdu")
+    """A query with no reading match may still search variety labels."""
+    data = search("Sichuanese")
     labelled = [
         entry
         for entry in data["results"]
@@ -311,6 +357,16 @@ def test_dialect_label_search_finds_labelled_words(search):
     assert any(
         any(source["anchor"] == "wiktionary" for source in entry["sources"])
         for entry in labelled
+    )
+
+
+def test_dialect_label_is_skipped_when_query_has_a_reading(search):
+    """Chengdu matches a reading, so label/definition search is skipped."""
+    data = search("Chengdu")
+    assert data["pinyin_match"] is True
+    assert not any(
+        entry.get("pinyin_label") == "Chengdu Sichuanese"
+        for entry in data["results"]
     )
 
 
@@ -327,24 +383,19 @@ def test_dialect_reading_pinyin_search(search, find_result):
     )
 
 
-def test_wu_language_query_shows_notes_before_readings():
-    """wu shows the Wu entry and note-only words before reading matches."""
-    from yabai_chaci import db
+def test_wu_reading_query_skips_definition_notes():
+    """wu matches readings, so note-only entries like 侬 are not returned."""
+    from yabai_search import db
 
     entries, pinyin_match = db.search("wu", 50)
     assert pinyin_match is True
     words = [entry["simplified"] for entry in entries]
-    assert words[0] == "吴语"
-    assert "侬" in words[:10]
-    assert words.index("吴语") < words.index("巫")
+    assert "侬" not in words
+    assert all(to_toneless(entry["pinyin"]).startswith("wu") for entry in entries)
 
 
-def test_sichuan_language_query_shows_dialect_notes():
-    """sichuan keeps its Chengdu dialect note words on the first page."""
-    from yabai_chaci import db
-
-    entries, pinyin_match = db.search("sichuan", 50)
-    assert pinyin_match is True
-    words = [entry["simplified"] for entry in entries]
-    assert "巴适" in words
-    assert words.index("巴适") < words.index("四川")
+def test_unquoted_definition_fallback_when_no_headword_or_reading(search, find_result):
+    """Definitions are still searched when there is no headword or reading."""
+    data = search("trash")
+    assert data["pinyin_match"] is False
+    assert find_result(data, "垃圾") is not None

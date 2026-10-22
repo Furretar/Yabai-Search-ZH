@@ -51,7 +51,7 @@ def open_url(url: str):
     OpenSSL rejects (curl happens to accept it). We only relax verification for
     that fallback.
     """
-    request = urllib.request.Request(url, headers={"User-Agent": "yabai-chaci/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "yabai-search/0.1"})
     try:
         return urllib.request.urlopen(request, timeout=30)
     except (urllib.error.URLError, ssl.SSLError):

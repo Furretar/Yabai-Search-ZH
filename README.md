@@ -1,8 +1,54 @@
 # Yabai-Search-ZH
+
 牙白查词 / Yabai Search
 
-A Chinese dictionary web app with Chinese-English, Chinese-Chinese, and Taiwanese Mandarin support. It is built on many open license dictionaries, such as CC-CEDICT and Wiktionary, with Taiwan
-readings from the MOE 國語辭典簡編本.
+A Chinese dictionary web app with Chinese-English, Chinese-Chinese, and Taiwanese Mandarin support. It is built on many open license dictionaries, such as CC-CEDICT and Wiktionary, with Taiwan readings from the MOE 國語辭典簡編本.
+
+The interface design was inspired by [jisho.org](https://jisho.org/).
+
+## Search tips
+
+- 漢字/汉字 - Search Simplified or Traditional Chinese
+- `dangan` - Pinyin, any tone (matches 档案 单干)
+- `*字` - Wildcard, search all words that end with 字
+- `shi4shi2` - Specify tones
+- `shi4shi` - Leaving a tone blank matches any tone for that syllable
+
+<h2 id="sources">Sources &amp; Licenses</h2>
+
+### English
+
+- <span id="cedict"></span>**[CC-CEDICT](https://www.mdbg.net/chinese/dictionary?page=cedict)** 125,271 entries · CC BY-SA 4.0 · Updated 2026-10-23. An open-source Chinese-English dictionary project.
+- <span id="wiktionary"></span>**[Wiktionary](https://en.wiktionary.org/)** 272,848 entries · CC BY-SA 4.0 / GFDL · Updated 2026-10-18. Chinese entries from the community-built Wiktionary - English definitions, usage notes and etymology (read from the [kaikki.org](https://kaikki.org/dictionary/Chinese/) extract).
+
+### Mainland
+
+- <span id="zhwiktionary"></span>**[中文维基词典](https://zh.wiktionary.org/)** 55,538 entries · CC BY-SA 4.0 · Updated 2026-10-18. Chinese-language definitions from the community-built Chinese Wiktionary.
+
+### Taiwan
+
+- <span id="moe"></span>**[《國語辭典簡編本》](https://language.moe.gov.tw/001/Upload/Files/site_content/M0001/respub/dict_concised_download.html)** 45,178 entries · CC BY-ND 3.0 TW · Updated 2026-09-29. Taiwan's Ministry of Education concise Mandarin dictionary - Taiwanese pronunciations and monolingual definitions written in Chinese.
+- <span id="moe_revised"></span>**[《重編國語辭典修訂本》](https://language.moe.gov.tw/001/Upload/Files/site_content/M0001/respub/dict_reviseddict_download.html)** 163,909 entries · CC BY-ND 3.0 TW · Updated 2026-09-29. Taiwan's Ministry of Education comprehensive Mandarin dictionary - fuller definitions and additional Taiwanese readings.
+
+### Japanese
+
+- <span id="jpwiktionary"></span>**[ウィクショナリー](https://ja.wiktionary.org/)** 16,342 entries · CC BY-SA 4.0 · Updated 2026-10-18. Chinese headwords with Japanese-language definitions from Japanese Wiktionary.
+
+### Frequency
+
+- <span id="subtlex"></span>**[SUBTLEX-CH](https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexch)** 99,121 words · CC BY 4.0 · Updated 2026-10-16. Chinese word frequencies from film and TV subtitles (Cai & Brysbaert, 2010), used to rank results.
+
+### Vocabulary
+
+- <span id="hsk"></span>**[HSK Vocabulary](https://github.com/drkameleon/complete-hsk-vocabulary)** 11,470 words · MIT · Updated 2026-10-19. HSK 2.0, HSK 3.0, and 2026 syllabus vocabulary levels, shown next to the frequency rank.
+
+### Software
+
+- <span id="opencc"></span>**[OpenCC](https://github.com/BYVoid/OpenCC)** · Apache-2.0. Simplified and Traditional Chinese conversion (used to match and display both scripts).
+
+## Contact
+
+You can email me at wyattpetrock2@gmail.com or woahzers@proton.me. Or add furretar2 on discord.
 
 ## How does it work
 
@@ -128,7 +174,7 @@ The Wiktionary importer fails loudly if CEDICT is missing, because its
 precomputed coverage flags and syllable split depend on it.
 
 ## How to run
-nix develop -c uv run uvicorn yabai_chaci.main:app --reload --host 0.0.0.0 --port 8000
+nix develop -c uv run uvicorn yabai_search.main:app --reload --host 0.0.0.0 --port 8000
 
 
 Serve at <http://127.0.0.1:8000>.
@@ -154,7 +200,7 @@ The databases are `cedict.sqlite` (CC-CEDICT, table `entries` + FTS5
 `wiktionary.sqlite` (kaikki.org / Wiktextract), `zhwiktionary.sqlite`
 (Chinese Wiktionary, `headwords`/`senses` + trigram `senses_fts`), and
 `jpwiktionary.sqlite` (Chinese entries from Japanese Wiktionary). They’re
-registered in `_SOURCE_QUERIES` (`yabai_chaci/db.py`).
+registered in `_SOURCE_QUERIES` (`yabai_search/db.py`).
 
 ### Variant forms (`forms`)
 

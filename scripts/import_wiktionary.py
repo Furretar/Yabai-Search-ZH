@@ -31,7 +31,7 @@ from pathlib import Path
 
 from opencc import OpenCC
 
-from yabai_chaci.pinyin import split_pinyin, to_numeric, to_toneless
+from yabai_search.pinyin import split_pinyin, to_numeric, to_toneless
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_URL = "https://kaikki.org/dictionary/Chinese/kaikki.org-dictionary-Chinese.jsonl.gz"
@@ -391,7 +391,7 @@ def download(url: str, dest: Path) -> None:
     """Stream `url` to `dest` so we cache the file instead of re-fetching it."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"downloading {url}")
-    request = urllib.request.Request(url, headers={"User-Agent": "yabai-chaci/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "yabai-search/0.1"})
     with urllib.request.urlopen(request) as response, dest.open("wb") as out:
         while chunk := response.read(1 << 20):
             out.write(chunk)

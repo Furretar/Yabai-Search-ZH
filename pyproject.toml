@@ -2,7 +2,7 @@
 # `uv` reads it to build uv.lock and create the virtual environment.
 
 [project]
-name = "yabai-chaci"
+name = "yabai-search"
 version = "0.1.0"
 description = "A CC-CEDICT Chinese-English dictionary web app"
 requires-python = ">=3.12"       # minimum interpreter version
@@ -12,6 +12,7 @@ dependencies = [                  # runtime dependencies
     "jinja2>=3.1",                # HTML templating
     "jieba>=0.42",                # Chinese word segmentation
     "opencc>=1.4.2",
+    "markdown>=3.11.2",           # renders README.md on the About page
 ]
 
 # Dev-only dependencies (installed in dev checkouts, left out of production).

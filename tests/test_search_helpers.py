@@ -8,17 +8,35 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from yabai_chaci import db
-from yabai_chaci.default_dictionaries import DEFAULTS
-from yabai_chaci.main import _clean_report_settings, _report_search_url
-from yabai_chaci.normalize import normalize_english
-from yabai_chaci.pinyin import numeric_to_marked, to_numeric, to_toneless
+from yabai_search import db
+from yabai_search.default_dictionaries import DEFAULTS
+from yabai_search.main import _clean_report_settings, _report_search_url
+from yabai_search.normalize import normalize_english
+from yabai_search.pinyin import numeric_to_marked, to_numeric, to_toneless
+from scripts.import_cedict import see_target
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 
 pytestmark = pytest.mark.skipif(
     not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
 )
+
+
+def test_see_target_reads_qualified_variant_notes():
+    """"old variant of X" is a form link, not a definition."""
+    assert see_target("old variant of 柿[shi4]") == ("柿", "柿", "old")
+    assert see_target("erhua variant of 一個勁|一个劲[yi1 ge4 jin4]") == (
+        "一個勁",
+        "一个劲",
+        "erhua",
+    )
+    assert see_target("(literary) variant of 倘[tang3]") == ("倘", "倘", "literary")
+    assert see_target("variant of 逼格[bi1 ge2]") == ("逼格", "逼格", "")
+    # An English sense that merely uses the word "see" is not a form link.
+    assert see_target("to see incidentally") is None
+    assert see_target("as you see fit") is None
+    # A sense that mentions a variant in passing stays a sense.
+    assert see_target("crispy, deep-fried (variant of 卡拉[ka3 la1])") is None
 
 
 def test_opencc_converts_between_scripts():
@@ -50,6 +68,12 @@ def test_has_cjk_recognizes_han_and_rejects_latin():
     assert db.has_cjk("档案")
     assert db.has_cjk("字1")
     assert not db.has_cjk("dangan")
+
+
+def test_preferred_reading_for_mei():
+    """没 defaults to méi for parsed single characters, despite mò's senses."""
+    assert db.lookup("没")[0]["pinyin"] == "méi"
+    assert db.lookup("沒")[0]["pinyin"] == "méi"
 
 
 def test_parse_pinyin_query_reads_one_tone():
@@ -202,7 +226,7 @@ def test_report_search_url_carries_display_settings():
 
 def test_report_search_url_reads_old_logs():
     """Older reports have no settings field; their debug log is the fallback."""
-    log = "Yabai-Chaci debug log\n" + json.dumps(
+    log = "Yabai Search debug log\n" + json.dumps(
         {
             "currentState": {
                 "script": "simplified",

@@ -58,7 +58,7 @@ def download(url: str, dest: Path, force: bool = False) -> None:
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"downloading {url}")
-    request = urllib.request.Request(url, headers={"User-Agent": "yabai-chaci/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "yabai-search/0.1"})
     with urllib.request.urlopen(request, timeout=60) as response, dest.open("wb") as out:
         while chunk := response.read(1 << 20):
             out.write(chunk)

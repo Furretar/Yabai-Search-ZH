@@ -12,7 +12,7 @@ import {
     normalize,
     searchChunkedEntries,
     searchEntries,
-} from "../yabai_chaci/static/custom_dict_search.mjs";
+} from "../yabai_search/static/custom_dict_search.mjs";
 
 const db = new DatabaseSync(":memory:");
 db.exec(`
