@@ -47,6 +47,10 @@
     --panel-bg: color-mix(in srgb, currentColor 15%, transparent);
     --panel-border: #4a4a4a;
 
+    /* Surfaces. */
+    --surface-bg: #121016;
+    --chip-bg: #17141a;
+
     /* Text input border. */
     --border: #4a4a4a;
 

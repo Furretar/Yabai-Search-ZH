@@ -195,8 +195,8 @@ button {
    read as a dropdown connected to the search bar. The surface is a shade
    darker than the quick-button background. */
 .search-panel {
-    background: #121016;
-    color: #d2ccd8;
+    background: var(--surface-bg);
+    color: var(--control);
     border: 1px solid var(--panel-border);
     border-radius: .5rem;
     margin-bottom: 1.5rem;
@@ -225,7 +225,7 @@ button {
     border-top: none;
     border-radius: 0 0 .5rem .5rem;
     /* Match the search panel, so the tab reads as part of it when attached. */
-    background: #121016;
+    background: var(--surface-bg);
     color: var(--muted);
     font-size: .8rem;
     line-height: 1.3rem;
@@ -276,7 +276,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
     border-top-left-radius: 0;
     border-top-right-radius: 0;
     z-index: 31;
-    background: #121016; /* the panel's dark surface, fully opaque */
+    background: var(--surface-bg); /* the panel's dark surface, fully opaque */
     box-shadow: 0 .5rem 1.5rem color-mix(in srgb, currentColor 20%, transparent);
     /* Growing the panel must not scroll its own content either. */
     overflow-anchor: none;
@@ -432,7 +432,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
     left: 50%;
     width: 3.5rem;
     height: 1px;
-    background: #121016;
+    background: var(--surface-bg);
     transform: translateX(-50%);
     pointer-events: none;
 }
@@ -606,8 +606,8 @@ body:has(.search-panel:focus-within) .pull-arrow {
     list-style: none;
     min-width: 11rem;
     /* The menu drops out of the dark panel, so it uses the same surface. */
-    background: #121016;
-    border: 1px solid #4a4452;
+    background: var(--surface-bg);
+    border: 1px solid var(--border);
     border-radius: .35rem;
     box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
 }
@@ -877,8 +877,8 @@ body:has(.search-panel:focus-within) .pull-arrow {
     /* Every quick control shares the same height. */
     height: 1.8rem;
     overflow: hidden;
-    background: #17141a;
-    border: 1px solid #4a4452;
+    background: var(--chip-bg);
+    border: 1px solid var(--border);
     border-radius: .35rem;
 }
 
@@ -917,7 +917,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
     border-radius: 0;
     /* Transparent so the sliding highlight shows through. */
     background: transparent;
-    color: #d2ccd8;
+    color: var(--control);
     font: inherit;
     font-size: 1.1rem;
     font-weight: 900;
@@ -929,7 +929,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
 }
 
 .quick-pair .quick-square + .quick-square {
-    border-left: 1px solid #4a4452;
+    border-left: 1px solid var(--border);
 }
 
 /* Each square is rounded only on its outer edge; the edge where the two
@@ -946,7 +946,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
 
 /* Hovering only lights up the square's outline, never its background. */
 .quick-pair .quick-square:hover {
-    box-shadow: inset 0 0 0 1px #cfcfcf;
+    box-shadow: inset 0 0 0 1px var(--border);
 }
 
 /* The enabled option keeps dark bold text over the sliding gold highlight. */
@@ -979,7 +979,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
 }
 
 .custom-dicts-button[aria-pressed="false"] {
-    color: #8a8490;
+    color: var(--muted);
 }
 
 /* The tone control is a single dark chip matching the rows. */
@@ -994,9 +994,9 @@ body:has(.search-panel:focus-within) .pull-arrow {
     height: 1.8rem;
     padding: .2rem .35rem;
     /* Off: the same outline as the rest of the buttons. */
-    border: 1px solid #4a4452;
+    border: 1px solid var(--border);
     border-radius: .35rem;
-    background: #17141a;
+    background: var(--chip-bg);
     font: inherit;
     font-size: 1.1rem;
     font-weight: 900;
@@ -1040,7 +1040,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
 
 /* Off: the whole sample uses the same light gray as the other buttons. */
 .quick-toggle[aria-pressed="false"] .tone-phrase span {
-    color: #d2ccd8;
+    color: var(--control);
 }
 
 .quick-pair .quick-square:focus-visible,
@@ -2004,9 +2004,9 @@ body:has(.search-panel:focus-within) .pull-arrow {
     padding: .4rem .5rem;
     border: 1px solid var(--panel-border);
     border-radius: .3rem;
-    background: #121016;
+    background: var(--surface-bg);
     box-shadow: 0 .4rem 1rem rgba(0, 0, 0, .45);
-    color: #d2ccd8;
+    color: var(--control);
     font-family: system-ui, sans-serif;
     font-size: .75rem;
     font-weight: 400;
@@ -2284,8 +2284,8 @@ body:has(.search-panel:focus-within) .pull-arrow {
     padding: 1rem 1.1rem;
     border: 1px solid var(--panel-border);
     border-radius: .5rem;
-    background: #121016;
-    color: #d2ccd8;
+    background: var(--surface-bg);
+    color: var(--control);
     box-shadow: 0 1rem 2rem rgba(0, 0, 0, .55);
 }
 
@@ -2322,8 +2322,8 @@ body:has(.search-panel:focus-within) .pull-arrow {
     padding: .45rem .55rem;
     border: 1px solid var(--panel-border);
     border-radius: .3rem;
-    background: #17141a;
-    color: #d2ccd8;
+    background: var(--chip-bg);
+    color: var(--control);
     font: inherit;
 }
 
@@ -2341,8 +2341,8 @@ body:has(.search-panel:focus-within) .pull-arrow {
     padding: .45rem .55rem;
     border: 1px solid var(--panel-border);
     border-radius: .3rem;
-    background: #17141a;
-    color: #d2ccd8;
+    background: var(--chip-bg);
+    color: var(--control);
     font: inherit;
 }
 
@@ -2505,8 +2505,8 @@ body:has(.search-panel:focus-within) .pull-arrow {
     padding: 1rem 1.1rem;
     border: 1px solid var(--panel-border);
     border-radius: .5rem;
-    background: #121016;
-    color: #d2ccd8;
+    background: var(--surface-bg);
+    color: var(--control);
     box-shadow: 0 .8rem 2rem rgba(0, 0, 0, .5);
 }
 
@@ -2860,6 +2860,11 @@ html.theme-light .search-panel {
     color: #222222;
 }
 
+html.theme-light {
+    --surface-bg: #ffffff;
+    --chip-bg: #e8e8e8;
+}
+
 html.theme-light .quick-pair {
     background: #e8e8e8;
     border-color: #b0b0b0;
@@ -2871,6 +2876,19 @@ html.theme-light .quick-pair .quick-square:hover {
 
 html.theme-light .lang-menu li:hover {
     background: #e8e8e8;
+}
+
+html.theme-light .quick-toggle {
+    background: #e8e8e8;
+    border-color: #b0b0b0;
+}
+
+html.theme-light .quick-toggle[aria-pressed="false"] .tone-phrase span {
+    color: #555555;
+}
+
+html.theme-light .custom-dicts-button[aria-pressed="false"] {
+    color: #555555;
 }
 
 /* The copy-log control looks like a link but is a button (no form submit). */
@@ -3086,7 +3104,7 @@ body:has(.search-panel.pulled.docked) #parsed {
     transform: translateX(-50%);
     border: 1px solid var(--panel-border);
     border-radius: .35rem;
-    background: #121016;
+    background: var(--surface-bg);
     box-shadow: 0 .4rem 1rem rgba(0, 0, 0, .45);
     color: var(--control);
     font-size: .8rem;
