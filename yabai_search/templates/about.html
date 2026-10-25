@@ -15,7 +15,7 @@
     <!-- Colour scheme variables; edit variables.css to retheme. -->
     <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
     <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
-    <script>try{if(localStorage.getItem("yabai-theme")==="light")document.documentElement.classList.add("theme-light")}catch(e){}</script>
+    <script>try{document.documentElement.style.setProperty("--theme-transition","0s");if(localStorage.getItem("yabai-theme")==="light")document.documentElement.classList.add("theme-light")}catch(e){}</script>
 </head>
 
 <body>

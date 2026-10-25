@@ -895,7 +895,7 @@ body:has(.search-panel:focus-within) .pull-arrow {
     background: var(--accent);
     border-radius: .35rem 0 0 .35rem;
     transform: translateX(0);
-    transition: transform 180ms ease, border-radius 180ms ease;
+    transition: transform var(--theme-transition, 180ms) ease, border-radius var(--theme-transition, 180ms) ease;
     z-index: -1;
 }
 

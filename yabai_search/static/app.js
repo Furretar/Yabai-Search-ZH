@@ -4137,3 +4137,6 @@ function fitTitle() {
 }
 fitTitle();
 window.addEventListener("resize", fitTitle);
+
+// Re-enable theme toggle animation after the initial render.
+document.documentElement.style.setProperty("--theme-transition", "180ms");
