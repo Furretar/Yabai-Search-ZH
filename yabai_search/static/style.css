@@ -2854,13 +2854,13 @@ html.theme-light body {
 }
 
 html.theme-light .search-panel {
-    background: #dcdcf0;
+    background: #e6e6fa;
     color: #222222;
 }
 
 html.theme-light {
-    --surface-bg: #dcdcf0;
-    --chip-bg: #dcdcf0;
+    --surface-bg: #e6e6fa;
+    --chip-bg: #e6e6fa;
 }
 
 html.theme-light .quick-pair {
