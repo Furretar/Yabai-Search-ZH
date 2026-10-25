@@ -863,6 +863,9 @@ body:has(.search-panel:focus-within) .pull-arrow {
 
 #tone-description {
     color: var(--control);
+    /* "Tone Color Off" is the only description with spaces; keep it on one
+       line so it does not wrap and clip against the 3rem cap. */
+    white-space: nowrap;
 }
 
 #tone-description.on {
@@ -1043,7 +1046,8 @@ body:has(.search-panel:focus-within) .pull-arrow {
     color: var(--tone4);
 }
 
-/* Off: the whole sample uses the same light gray as the other buttons. */
+/* Off: the whole sample uses the same gray as the inactive quick-square text
+   (e.g. the Simplified/Traditional buttons). */
 .quick-toggle[aria-pressed="false"] .tone-phrase span {
     color: var(--control);
 }
@@ -2929,10 +2933,6 @@ html:not(.theme-light) .theme-toggle .quick-square[data-theme="dark"] {
 html.theme-light .quick-toggle {
     background: #e8e8e8;
     border-color: #b0b0b0;
-}
-
-html.theme-light .quick-toggle[aria-pressed="false"] .tone-phrase span {
-    color: #555555;
 }
 
 html.theme-light .custom-dicts-button[aria-pressed="false"] {
