@@ -11,6 +11,11 @@
     color: var(--on-accent);
 }
 
+/* Slightly larger default text size (~110% zoom) for readability. */
+html {
+    font-size: 110%;
+}
+
 /* Page body: centered column, readable line length and spacing. */
 body {
     font-family: system-ui, sans-serif;
