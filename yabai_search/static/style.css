@@ -2850,6 +2850,11 @@ html.theme-light body {
     color: #222222;
 }
 
+html.theme-light .search-panel {
+    background: #ffffff;
+    color: #222222;
+}
+
 /* The copy-log control looks like a link but is a button (no form submit). */
 .copy-log-button {
     padding: 0;
