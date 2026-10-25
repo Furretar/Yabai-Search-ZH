@@ -1465,7 +1465,7 @@ html.theme-light .defs {
 /* Only lines that actually carry furigana (whose reading floats up into the
    line above) get the taller line-height, so plain definition rows stay tight. */
 .def-source-line:has(.furigana) {
-    line-height: 2.4;
+    line-height: 2.5;
 }
 
 /* The copy button sits right after the last word. It has no width until the
@@ -1600,7 +1600,7 @@ html.theme-light .defs {
 
 /* Classifier/detail lines with furigana get extra room for the floating reading. */
 .def-source-cls:has(.furigana) {
-    line-height: 2.2;
+    line-height: 2.3;
 }
 
 /* The Classifier line (inside a dictionary block) gets a bit more space above it. */
