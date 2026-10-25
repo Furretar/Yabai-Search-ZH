@@ -228,6 +228,12 @@ def _connect(database) -> sqlite3.Connection:
             # source indexes stay resident between searches.
             connection.execute("PRAGMA cache_size=-64000")
             connection.execute("PRAGMA temp_store=MEMORY")
+            # SQLite's LIKE is case-insensitive by default, which forces full
+            # table scans even with a B-tree index. Our queries are already
+            # lowercased (pinyin) or Han characters (no case), so case folding
+            # is unnecessary and enabling case-sensitivity lets LIKE use the
+            # index (SEARCH ... (col>? AND col<?) instead of SCAN).
+            connection.execute("PRAGMA case_sensitive_like=ON")
             _connection_pool[key] = connection
     return connection
 
@@ -2484,22 +2490,26 @@ def _source_gloss_entries(query: str, limit: int = 20) -> list[dict]:
     text = (query or "").strip()
     if not text or has_cjk(text) or not WIKTIONARY_DB_PATH.exists():
         return []
+    text_lower = text.lower()
     pattern = _like_pattern(text if "*" in text else f"*{text}*")
     connection = _connect(WIKTIONARY_DB_PATH)
     try:
         # A three-or-more character query uses the trigram index (which covers
         # the gloss column) and keeps the table's rowid order for the LIMIT.
+        # lower() on both sides keeps the match case-insensitive even when
+        # case_sensitive_like is on (which makes LIKE use the B-tree index for
+        # Chinese/pinyin queries).
         if "*" not in text and len(text) >= 3 and _has_wiktionary_fts():
             rows = connection.execute(
-                "SELECT word FROM wiktionary_fts WHERE gloss LIKE ? "
+                "SELECT word FROM wiktionary_fts WHERE lower(gloss) LIKE ? "
                 "ORDER BY rowid LIMIT ?",
-                (f"%{text}%", limit * 3),
+                (f"%{text_lower}%", limit * 3),
             ).fetchall()
         else:
             rows = connection.execute(
                 "SELECT DISTINCT word FROM wiktionary "
-                "WHERE gloss IS NOT NULL AND gloss LIKE ? ESCAPE '\\' LIMIT ?",
-                (pattern, limit * 3),
+                "WHERE gloss IS NOT NULL AND lower(gloss) LIKE ? ESCAPE '\\' LIMIT ?",
+                (_like_pattern(f"*{text_lower}*"), limit * 3),
             ).fetchall()
     finally:
         connection.close()
@@ -3208,10 +3218,10 @@ def dialect_entries(query: str, limit: int = 200) -> list[dict]:
         return []
     if not WIKTIONARY_DB_PATH.exists():
         return []
-    label_pattern = _like_pattern(f"*{text}*")
+    label_pattern = _like_pattern(f"*{text.lower()}*")
     letters = to_toneless(text)
 
-    where = "kind <> 'mandarin' AND label <> '' AND label LIKE ? ESCAPE '\\'"
+    where = "kind <> 'mandarin' AND label <> '' AND lower(label) LIKE ? ESCAPE '\\'"
     params: list[str] = [label_pattern]
     if letters:
         # A whole dialect reading only (not a prefix): common Mandarin-ish
@@ -3990,6 +4000,10 @@ def search(
     query = query.strip()
     if not query:
         return [], False  # nothing to search for
+    # Lowercase the query so LIKE comparisons on already-lowercased columns
+    # (english_normalized, pinyin_toneless) stay correct even when
+    # case_sensitive_like is ON. Han characters and pinyin are unaffected.
+    query = query.lower()
 
     def decorate(rows: list[dict]) -> list[dict]:
         """Fully decorate the first `hydrate` rows, light-decorate the rest."""
@@ -4429,12 +4443,12 @@ def search(
     if use_definition_trigram:
         definition_clause = (
             "id IN (SELECT rowid FROM entries_fts_trigram "
-            "WHERE english_normalized LIKE ?)"
+            "WHERE lower(english_normalized) LIKE ?)"
         )
         definition_patterns = [f"%{query}%"]
     else:
         definition_clause = "(" + " OR ".join(
-            "english_normalized LIKE ? ESCAPE '\\'" for _ in definition_patterns
+            "lower(english_normalized) LIKE ? ESCAPE '\\'" for _ in definition_patterns
         ) + ")"
 
     # WHERE: the headword (hanzi or numeric queries) or the definitions.
@@ -4512,7 +4526,7 @@ def search(
         order_parts.append(clause + " DESC")
         for pattern in contains_patterns:
             order_params += [pattern, pattern]
-    order_parts.append("(english_normalized LIKE ? ESCAPE '\\') DESC")
+    order_parts.append("(lower(english_normalized) LIKE ? ESCAPE '\\') DESC")
     order_params.append(_like_pattern(f"{query}*"))
     if "*" not in query:
         # Whole-word boost via the FTS index (it is tokenized, so "country" does
@@ -4641,3 +4655,29 @@ def warm_caches() -> None:
     _zhuyin_map()
     _definition_grams()
     _source_pinyin_sorted()
+    # Pre-fault the SQLite files into the OS page cache so the first real
+    # search after a restart does not pay cold-read latency.
+    for _db_path in (
+        DB_PATH,
+        MOE_DB_PATH,
+        MOE_REVISED_DB_PATH,
+        WIKTIONARY_DB_PATH,
+        ZHWIKTIONARY_DB_PATH,
+        JPWIKTIONARY_DB_PATH,
+        SUBTLEX_DB_PATH,
+        DEFINITION_GRAMS_DB_PATH,
+        GRAM_WORDS_DB_PATH,
+        ENGLISH_WORDS_DB_PATH,
+    ):
+        try:
+            if _db_path.exists():
+                with _db_path.open("rb") as _f:
+                    # Read the first 64 KiB to fault in the first pages.
+                    _f.read(65536)
+                    # Hint the OS to read the whole file ahead.
+                    try:
+                        os.posix_fadvise(_f.fileno(), 0, 0, os.POSIX_FADV_WILLNEED)
+                    except (AttributeError, OSError):
+                        pass
+        except OSError:
+            pass
