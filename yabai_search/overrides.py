@@ -43,3 +43,41 @@ IDS_IMAGES: dict[str, str] = {
     "⿱寶⿰寶寶": "/static/ids_images/ids_0d0f1a1c7626.png",
     "⿱𡩧⿺進⿰貝招": "/static/ids_images/ids_7567c4aaf284.png",
 }
+
+
+# ---------------------------------------------------------------------------
+# English normalization (moved here from normalize.py).
+# CC-CEDICT uses a compact style with abbreviations ("sb." = somebody, etc.).
+# This module expands a small, explicit set of them so definitions read
+# naturally and are searchable by the full words. The raw text is kept untouched
+# in the `english` column; the normalized form is stored separately in
+# `english_normalized`, so nothing is lost.
+# ---------------------------------------------------------------------------
+import re as _re
+
+# Ordered list of (pattern, replacement). Each pattern is matched as a whole
+# word (word boundaries) and case-sensitively, so we never rewrite text by
+# accident. Add new rules here, grouped and commented.
+NORMALIZE_RULES: list[tuple[str, str]] = [
+    # people / things (CEDICT writes "sb" with no trailing period)
+    (r"\bsb\b", "somebody"),
+    # references
+    (r"\babbr\.", "abbreviation"),
+    # grammar / register
+    (r"\bonom\.", "onomatopoeia"),
+    (r"\bsth\b", "something"),
+    # "cf." (compare) reads more naturally as "see".
+    (r"\bcf\.", "see"),
+]
+
+# Compile the rules once, at import time (regex compilation is not free).
+_NORMALIZE_COMPILED = [
+    (_re.compile(pattern), replacement) for pattern, replacement in NORMALIZE_RULES
+]
+
+
+def normalize_english(text: str) -> str:
+    """Apply every normalization rule to `text` and return the expanded version."""
+    for pattern, replacement in _NORMALIZE_COMPILED:
+        text = pattern.sub(replacement, text)
+    return text

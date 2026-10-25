@@ -19,7 +19,7 @@ import urllib.request
 from pathlib import Path
 
 # Expand CEDICT abbreviations for the normalized column.
-from yabai_search.normalize import normalize_english
+from yabai_search.overrides import normalize_english
 
 # Reuse the pinyin helpers so the database gets the same marked/toneless forms
 # that the search layer computes at query time.

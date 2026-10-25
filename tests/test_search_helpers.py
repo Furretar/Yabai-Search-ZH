@@ -11,7 +11,7 @@ import pytest
 from yabai_search import db
 from yabai_search.default_dictionaries import DEFAULTS
 from yabai_search.main import _clean_report_settings, _report_search_url
-from yabai_search.normalize import normalize_english
+from yabai_search.overrides import normalize_english
 from yabai_search.pinyin import numeric_to_marked, to_numeric, to_toneless
 from scripts.import_cedict import see_target
 
