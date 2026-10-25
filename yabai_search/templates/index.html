@@ -315,14 +315,14 @@
     </dialog>
     <!-- Browser-side dictionary imports (IndexedDB). Load before app.js so the
        search hook can wait for the imported term index. -->
-    <script src="/static/custom_dicts.js?v={{ asset_version }}"></script>
+    <script src="/static/custom_dicts.js?v={{ asset_version }}" defer></script>
     <!-- MOE glyph pictures: defines renderGlyphs() that app.js calls after
        building each result row. -->
-    <script src="/static/glyphs.js?v={{ asset_version }}"></script>
+    <script src="/static/glyphs.js?v={{ asset_version }}" defer></script>
     <!-- Front-end script served from the /static mount (static/app.js). -->
-    <script src="/static/app.js?v={{ asset_version }}"></script>
+    <script src="/static/app.js?v={{ asset_version }}" defer></script>
     <!-- Local scanner: moves inline pinyin in definition text into furigana. -->
-    <script src="/static/inline_furigana.js?v={{ asset_version }}"></script>
+    <script src="/static/inline_furigana.js?v={{ asset_version }}" defer></script>
     <!-- Registers the service worker for installable web-app behaviour. -->
     <script src="/static/pwa.js" defer></script>
 </body>
