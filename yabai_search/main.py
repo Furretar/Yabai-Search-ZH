@@ -332,8 +332,8 @@ def index(request: Request):
             "defaults": DEFAULTS,
             "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
             "show_reports": _request_is_local(request),
-            # The debug log button is only for the local admin, not every visitor.
-            "show_debug": _request_is_local(request),
+            # The debug log button is useful for every client, not just local.
+            "show_debug": True,
         },
     )
 
