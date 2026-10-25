@@ -2089,7 +2089,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     // Phase 1: the fast CEDICT tier. Render it as soon as the server replies.
     const primaryUrl = url + "&part=primary";
     const primaryFetchStart = performance.now();
-    const firstResponse = await fetch(primaryUrl, { cache: "no-store" });
+    const firstResponse = await fetch(primaryUrl, { cache: "no-store", priority: "high" });
     recordPhase("primary fetch", primaryFetchStart, { status: firstResponse.status });
     recordServerDebug("primary", firstResponse);
     const primaryParseStart = performance.now();
@@ -2143,7 +2143,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         // Phase 2: the complete final list, slow source tiers included. Start
         // it without waiting for the local dictionary search.
         const fullFetchStart = performance.now();
-        const fullResponse = await fetch(url, { cache: "no-store" });
+        const fullResponse = await fetch(url, { cache: "no-store", priority: "high" });
         recordPhase("full fetch", fullFetchStart, { status: fullResponse.status });
         recordServerDebug("full", fullResponse);
         const fullParseStart = performance.now();
@@ -2714,25 +2714,23 @@ window.addEventListener("beforeunload", saveScroll);
 // looked up directly.
 async function annotate(text) {
     releaseClearScrollGuard();
-    const response = await fetch("/api/annotate", {
+    clearResults();
+    // Fire annotation and search in parallel: annotation only feeds the
+    // parsed-words row and the fallback, so it need not block the search.
+    const annotatePromise = fetch("/api/annotate", {
         method: "POST",
         cache: "no-store",
+        priority: "high",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
-    });
-    const data = await response.json();
-    clearResults();
-    // Show the parsed words for any multi-word input, even when the words only
-    // exist outside CEDICT (e.g. 一償宿願 from MOE) and so have no entries.
-    if (data.tokens.length > 1) renderParsed(data.tokens);
-    // Search what was typed first: a direct query (including a wildcard like
-    // 一償*) must be searched as-is. Only when the whole input finds nothing (a
-    // pasted sentence) fall back to the first parsed word.
-    const found = await search(text);
-    if (!found && data.tokens.length && data.tokens[0].text !== text) {
+    }).then((response) => response.json()).catch(() => ({ tokens: [] }));
+    const searchPromise = search(text);
+    const data = await annotatePromise;
+    if (data.tokens && data.tokens.length > 1) renderParsed(data.tokens);
+    const found = await searchPromise;
+    if (!found && data.tokens && data.tokens.length && data.tokens[0].text !== text) {
         await search(data.tokens[0].text);
     }
-    // Restore the saved position only now that the results are in the DOM.
     restoreScroll();
 }
 
