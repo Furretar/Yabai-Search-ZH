@@ -519,9 +519,25 @@ def _expand_variants(results: list[dict]) -> list[dict]:
     """
     best: dict[tuple, tuple[int, dict]] = {}
     order: list[tuple] = []
+    # Pre-index results by headword so a "see X" / "variant of X" redirect
+    # whose target is already in this result set can reuse the already-decorated
+    # entry instead of triggering another db.lookup() (which fully decorates it).
+    # Only reuse when there is exactly one entry for the target headword, so we
+    # don't accidentally pick a lower-scoring reading.
+    by_head: dict[str, list[dict]] = {}
+    for entry in results:
+        if entry.get("traditional"):
+            by_head.setdefault(entry["traditional"], []).append(entry)
+        if entry.get("simplified"):
+            by_head.setdefault(entry["simplified"], []).append(entry)
     for entry in results:
         if entry.get("main"):
-            shown = [e for e in db.lookup(entry["main"]) if not e.get("main")]
+            target = entry["main"]
+            candidates = by_head.get(target, [])
+            if len(candidates) == 1 and not candidates[0].get("main"):
+                shown = [candidates[0]]
+            else:
+                shown = [e for e in db.lookup(target) if not e.get("main")]
         else:
             shown = [entry]
         for e in shown:
