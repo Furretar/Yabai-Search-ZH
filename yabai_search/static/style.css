@@ -2832,8 +2832,8 @@ footer {
 /* Light theme: override the dark defaults when <html> has .theme-light. */
 html.theme-light {
     color-scheme: light;
-    background: #e8e4dc;
-    --bg: #e8e4dc;
+    background: #e6e6fa;
+    --bg: #e6e6fa;
     --panel-bg: #ffffff;
     --panel-border: #c9c9c9;
     --border: #c9c9c9;
