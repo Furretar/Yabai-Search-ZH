@@ -2147,9 +2147,16 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
 
     // Phase 1: the fast CEDICT tier. Render it as soon as the server replies.
     const primaryUrl = url + "&part=primary";
-    const cached = pageCache.get(pageCacheKey(query, offset));
+    // Use server-embedded primary results if available (avoids the fetch).
+    const embeddedPrimary = (window.__initialPrimary && window.__initialPrimary.query === query && offset === 0)
+        ? window.__initialPrimary
+        : null;
+    if (embeddedPrimary) delete window.__initialPrimary;
+    const cached = embeddedPrimary || pageCache.get(pageCacheKey(query, offset));
     let first;
-    if (cached) {
+    if (embeddedPrimary) {
+        first = embeddedPrimary;
+    } else if (cached) {
         first = cached.first;
     } else {
         const primaryFetchStart = performance.now();

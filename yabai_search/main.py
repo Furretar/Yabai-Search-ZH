@@ -320,8 +320,16 @@ templates = Jinja2Templates(directory=str(BASE / "templates"))
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request):
+def index(request: Request, q: str = ""):
     """Home page: render the (currently blank) index.html template."""
+    initial_primary = None
+    if q:
+        try:
+            from fastapi.responses import Response as _Resp
+            _resp = _Resp()
+            initial_primary = api_search(_resp, q=q, part="primary")
+        except Exception:
+            initial_primary = None
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -331,6 +339,8 @@ def index(request: Request):
             "dictionaries": db.dictionaries(),
             "defaults": DEFAULTS,
             "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
+            "q": q,
+            "initial_primary": initial_primary,
             "show_reports": _request_is_local(request),
             # The debug log button is useful for every client, not just local.
             "show_debug": True,

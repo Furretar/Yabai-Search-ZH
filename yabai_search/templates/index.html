@@ -19,6 +19,14 @@
     <style>{{ variables_css | safe }}</style>
     <!-- Stylesheet served from the /static mount (yabai_search/static/style.css). -->
     <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+    {% if initial_primary is not none %}
+    <!-- Embedded primary search results for instant first paint. -->
+    <script>window.__initialPrimary = {{ initial_primary | tojson }};</script>
+    {% endif %}
+    {% if q %}
+    <!-- Preload the search API so results fetch starts before JS runs. -->
+    <link rel="preload" as="fetch" href="/api/search?q={{ q | urlencode }}&taiwan=0&offset=0&part=primary" crossorigin>
+    {% endif %}
     <!-- Browser-side dictionary imports (IndexedDB). Load before app.js so the
        search hook can wait for the imported term index. -->
     <script>
@@ -44,7 +52,8 @@
     <!-- Local scanner: moves inline pinyin in definition text into furigana. -->
     <script src="/static/inline_furigana.js?v={{ asset_version }}" defer></script>
     <!-- Registers the service worker for installable web-app behaviour. -->
-    <script src="/static/pwa.js" defer></script>
+    <!-- Service worker disabled for instant updates (standard HTTP caching used instead). -->
+    <!-- <script src="/static/pwa.js" defer></script> -->
     </head>
 
 <body>
