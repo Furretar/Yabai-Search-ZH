@@ -954,6 +954,11 @@ body:has(.search-panel:focus-within) .pull-arrow {
     color: #1b1b1b;
 }
 
+/* The moon emoji is a colour glyph, so darken it to black when active. */
+.quick-pair .quick-square[data-theme="dark"][aria-pressed="true"] {
+    filter: grayscale(1) brightness(0.25);
+}
+
 /* The phonetic pair sits one weight lighter than the other controls. */
 .quick-pair .quick-pinyin,
 .quick-pair .quick-zhuyin {
@@ -2853,6 +2858,19 @@ html.theme-light body {
 html.theme-light .search-panel {
     background: #ffffff;
     color: #222222;
+}
+
+html.theme-light .quick-pair {
+    background: #e8e8e8;
+    border-color: #b0b0b0;
+}
+
+html.theme-light .quick-pair .quick-square:hover {
+    box-shadow: inset 0 0 0 1px #888888;
+}
+
+html.theme-light .lang-menu li:hover {
+    background: #e8e8e8;
 }
 
 /* The copy-log control looks like a link but is a button (no form submit). */
