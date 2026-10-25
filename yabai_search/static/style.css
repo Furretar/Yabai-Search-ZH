@@ -2854,7 +2854,7 @@ html.theme-light {
     --control: color-mix(in srgb, currentColor 85%, transparent);
     --accent: #d97706;
     --title: var(--accent);
-    --tone1: #eb1600;
+    --tone1: #a93226;
     --tone3: #00a244;
     --tone4: #0067ac;
     --reading: #222222;
