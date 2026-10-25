@@ -72,6 +72,8 @@ NORMALIZE_RULES: list[tuple[str, str]] = [
     (r"\(Tw\)", "(Taiwan)"),
     # "fig." = figurative.
     (r"\bfig\.", "figurative"),
+    # "coll." = colloquial.
+    (r"\bcoll\.", "colloquial"),
 
     
 ]
