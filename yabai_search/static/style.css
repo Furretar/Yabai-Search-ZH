@@ -1459,7 +1459,12 @@ html.theme-light .defs {
 .def-source-line {
     margin-top: .15rem;
     font-size: var(--definition-size);
-    /* Room for the floating furigana reading above cross-referenced words. */
+    line-height: 1.5;
+}
+
+/* Only lines that actually carry furigana (whose reading floats up into the
+   line above) get the taller line-height, so plain definition rows stay tight. */
+.def-source-line:has(.furigana) {
     line-height: 2.4;
 }
 
@@ -1589,8 +1594,13 @@ html.theme-light .defs {
     /* Same size as the definition text, but muted (classifier, also-pronounced,
        other-form lines). */
     font-size: var(--definition-size);
-    line-height: 2.2;
+    line-height: 1.25;
     color: var(--muted);
+}
+
+/* Classifier/detail lines with furigana get extra room for the floating reading. */
+.def-source-cls:has(.furigana) {
+    line-height: 2.2;
 }
 
 /* The Classifier line (inside a dictionary block) gets a bit more space above it. */
