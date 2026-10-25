@@ -2889,13 +2889,6 @@ html.theme-light .quick-square[data-region] {
     filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
 }
 
-html.theme-light .tone1,
-html.theme-light .tone2,
-html.theme-light .tone3,
-html.theme-light .tone4,
-html.theme-light .tone5 {
-    text-shadow: 0 1px 0 #000;
-}
 
 html.theme-light .quick-toggle {
     background: #e8e8e8;
