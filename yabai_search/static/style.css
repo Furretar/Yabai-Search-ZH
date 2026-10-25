@@ -2843,6 +2843,8 @@ html.theme-light {
     --switch-knob: #ffffff;
     --muted: color-mix(in srgb, currentColor 50%, transparent);
     --control: color-mix(in srgb, currentColor 60%, transparent);
+    --accent: #ff9900;
+    --title: var(--accent);
     --reading: #222222;
     --on-accent: #000000;
     --selection-bg: #f4d369;
