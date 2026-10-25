@@ -824,7 +824,6 @@ body:has(.search-panel:focus-within) .pull-arrow {
     text-align: center;
     /* A larger max-height than the content so it can animate shut. */
     max-height: 3rem;
-    overflow: hidden;
     opacity: 1;
     visibility: visible;
     transition:
