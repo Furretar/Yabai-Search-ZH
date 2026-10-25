@@ -1,3 +1,4 @@
+window.__glyphsLoaded = true;
 // MOE glyph pictures: some characters in the 重編國語辭典修訂本 could not be
 // written in Unicode, so the data keeps them as a picture reference like
 // "&8ff0._104_0.gif;". This module swaps each reference for a
@@ -57,6 +58,8 @@ function maskGlyphs(text) {
     return text.replace(MOE_GLYPH_RE, (_whole, name) => placeholderFor(name));
 }
 
+
+
 // Replace glyph references and placeholders inside `root`'s text nodes with
 // picture spans. Safe to call more than once: the spans hold no text nodes of
 // their own, so later passes find nothing new. Each text node is split around
@@ -108,3 +111,6 @@ if (document.readyState === "loading") {
     const main = document.querySelector(".word-main");
     if (main) renderGlyphs(main);
 }
+
+window.renderGlyphs = renderGlyphs;
+window.maskGlyphs = maskGlyphs;

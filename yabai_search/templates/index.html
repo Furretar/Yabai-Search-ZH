@@ -19,17 +19,26 @@
     <style>{{ variables_css | safe }}</style>
     <!-- Stylesheet served from the /static mount (yabai_search/static/style.css). -->
     <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
-    <!-- Preload deferred scripts so they download in parallel with HTML parsing. -->
-    <link rel="preload" href="/static/custom_dicts.js?v={{ asset_version }}" as="script">
-    <link rel="preload" href="/static/glyphs.js?v={{ asset_version }}" as="script">
-    <link rel="preload" href="/static/app.js?v={{ asset_version }}" as="script">
-    <link rel="preload" href="/static/inline_furigana.js?v={{ asset_version }}" as="script">
     <!-- Browser-side dictionary imports (IndexedDB). Load before app.js so the
        search hook can wait for the imported term index. -->
-    <script src="/static/custom_dicts.js?v={{ asset_version }}" defer></script>
+    <script>
+    (function () {
+        window.__customDictsSrc = "/static/custom_dicts.js?v={{ asset_version }}";
+        var need = true;
+        try {
+            var on = localStorage.getItem("yabai-search-custom-dicts") === "true";
+            var has = localStorage.getItem("yabai-search-custom-dicts-has");
+            var url = new URLSearchParams(location.search).has("custom");
+            need = on || url || has !== "false";
+        } catch (e) { need = true; }
+        if (need) {
+            document.write('<script src="' + window.__customDictsSrc + '" defer><\\/script>');
+        }
+    })();
+    </script>
     <!-- MOE glyph pictures: defines renderGlyphs() that app.js calls after
        building each result row. -->
-    <script src="/static/glyphs.js?v={{ asset_version }}" defer></script>
+    <script src="/static/glyphs.js?v={{ asset_version }}"></script>
     <!-- Front-end script served from the /static mount (static/app.js). -->
     <script src="/static/app.js?v={{ asset_version }}" defer></script>
     <!-- Local scanner: moves inline pinyin in definition text into furigana. -->

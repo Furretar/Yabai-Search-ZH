@@ -7,6 +7,8 @@
 (() => {
     "use strict";
 
+    const LOADED_LATE = Boolean(document.currentScript?.dataset?.late);
+
     const SCRIPT_VERSION = (() => {
         try {
             const src = document.currentScript?.src;
@@ -18,6 +20,7 @@
     const DB_NAME = "yabai-search-custom-dicts";
     const DB_VERSION = 6;
     const OPEN_KEY = "yabai-search-dict-open";
+    const HAS_DICTS_KEY = "yabai-search-custom-dicts-has";
     const MAX_SEARCH_RESULTS = 50;
 
     let dbPromise = null;
@@ -4189,6 +4192,11 @@
     }
 
     window.addEventListener("pagehide", () => {
+        try {
+            localStorage.setItem(HAS_DICTS_KEY, String(dictionaries.length > 0));
+        } catch (error) {
+            // Storage unavailable - nothing to remember.
+        }
         if (sqliteWorker) {
             sqliteWorker.terminate();
             sqliteWorker = null;
@@ -4203,9 +4211,17 @@
         terms: termIndex ? termIndex.length : 0,
     });
 
-    document.addEventListener("DOMContentLoaded", () => {
+    // init() must run after the DOM is ready. When the script is injected
+    // late (dataset.late = "1") the document is already loaded, so start
+    // immediately; otherwise wait for DOMContentLoaded.
+    function start() {
         init()
             .catch((error) => console.error(error))
             .finally(() => readyResolve());
-    });
+    }
+    if (LOADED_LATE || document.readyState !== "loading") {
+        start();
+    } else {
+        document.addEventListener("DOMContentLoaded", start, { once: true });
+    }
 })();

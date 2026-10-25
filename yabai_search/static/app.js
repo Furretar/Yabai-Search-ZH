@@ -6,6 +6,22 @@ const form = document.getElementById("search-form");
 const input = document.getElementById("q");
 const clearButton = document.getElementById("clear-button");
 const results = document.getElementById("results");
+// MOE glyph masking (duplicated from glyphs.js so it is always available).
+const MOE_GLYPH_RE_APP = /&([A-Za-z0-9][A-Za-z0-9._-]*\.(?:gif|png));/g;
+const _glyphNamesApp = new Map();
+const _glyphCharsApp = new Map();
+function maskGlyphs(text) {
+    return text.replace(MOE_GLYPH_RE_APP, (_whole, name) => {
+        let char = _glyphCharsApp.get(name);
+        if (char === undefined) {
+            char = String.fromCodePoint(0xe000 + _glyphCharsApp.size);
+            _glyphCharsApp.set(name, char);
+            _glyphNamesApp.set(char, name);
+        }
+        return char;
+    });
+}
+
 const resultTiming = document.getElementById("result-timing");
 const pagination = document.getElementById("pagination");
 const paginationTop = document.getElementById("pagination-top");
@@ -1707,7 +1723,7 @@ function fillEntryRow(row, entry) {
     row.append(head, defsBox);
     // Swap any glyph references (raw in definitions, placeholders in the
     // headword) for the tinted MOE pictures. See static/glyphs.js.
-    renderGlyphs(row);
+    if (typeof window.renderGlyphs === "function") window.renderGlyphs(row);
 }
 
 // --- Bug report dialog --------------------------------------------------
@@ -2008,21 +2024,29 @@ function render(entries, query) {
     mainResultCount = merged.length;
     count.textContent = `${merged.length} RESULT${merged.length === 1 ? "" : "S"}`;
     results.append(count);
+    window.__debugRender = { merged: merged.length, withDefs: withDefs.length, otherReading: otherReading.length, headwordsOnly: headwordsOnly.length, withoutReadingWithDefs: withoutReadingWithDefs.length, withoutReadingOnly: withoutReadingOnly.length, otherEntries: otherEntries.length, idsMain: idsMain.length, dialectMain: dialectMain.length, customDicts: state.customDicts, dicts: [...state.dicts], compact: state.compact };
     updateTiming();
 
-    for (const entry of withDefs) results.append(entryRow(entry));
-    for (const entry of withoutReadingWithDefs) results.append(entryRow(entry));
-    for (const entry of idsMain) results.append(entryRow(entry));
-    for (const entry of dialectMain) results.append(entryRow(entry));
-    if (otherEntries.length) {
-        const heading = document.createElement("p");
-        heading.className = "other-heading";
-        heading.textContent = "Other Dictionaries";
-        results.append(heading);
-        for (const entry of otherEntries) results.append(entryRow(entry));
+    try {
+        for (const entry of withDefs) results.append(entryRow(entry));
+        for (const entry of withoutReadingWithDefs) results.append(entryRow(entry));
+        for (const entry of idsMain) results.append(entryRow(entry));
+        for (const entry of dialectMain) results.append(entryRow(entry));
+        if (otherEntries.length) {
+            const heading = document.createElement("p");
+            heading.className = "other-heading";
+            heading.textContent = "Other Dictionaries";
+            results.append(heading);
+            for (const entry of otherEntries) results.append(entryRow(entry));
+        }
+        for (const entry of headwordsOnly) results.append(entryRow(entry));
+        for (const entry of withoutReadingOnly) results.append(entryRow(entry));
+    } catch (err) {
+        window.__renderError = String(err);
+        const errEl = document.createElement("p");
+        errEl.textContent = "RENDER ERROR: " + String(err);
+        results.append(errEl);
     }
-    for (const entry of headwordsOnly) results.append(entryRow(entry));
-    for (const entry of withoutReadingOnly) results.append(entryRow(entry));
 }
 
 // Move the query timings to the line above the footer.
@@ -3217,6 +3241,28 @@ taiwanToggle.addEventListener("change", () => {
         search(currentQuery, 0, false, false);
     }
 });
+// Load custom_dicts.js on demand, so pages that never use it skip the 163 KB.
+// Cached so repeated toggles don't load it twice.
+let customDictsLoadPromise = null;
+function loadCustomDicts() {
+    if (window.customDictionaryMatches || !window.__customDictsSrc) {
+        return Promise.resolve();
+    }
+    if (customDictsLoadPromise) return customDictsLoadPromise;
+    customDictsLoadPromise = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = window.__customDictsSrc;
+        script.dataset.late = "1";
+        script.onload = () => resolve();
+        script.onerror = () => {
+            customDictsLoadPromise = null;
+            reject(new Error("Failed to load custom_dicts.js"));
+        };
+        document.head.appendChild(script);
+    });
+    return customDictsLoadPromise;
+}
+
 customDictsToggle.addEventListener("change", () => {
     state.customDicts = customDictsToggle.checked;
     // Turning custom dictionaries off returns the dictionary settings to the
@@ -3227,6 +3273,7 @@ customDictsToggle.addEventListener("change", () => {
         updateDictMode();
         resetDictSettings();
     } else {
+        loadCustomDicts().catch((error) => console.error(error));
         entryDictState.clear();
     }
     savePrefs();
