@@ -2087,6 +2087,39 @@ function redraw() {
     renderFuzzy(currentFuzzy);
 }
 
+// Prefetch cache for next/previous pages: Map<"query|offset", { first, full }>.
+const pageCache = new Map();
+const PAGE_CACHE_MAX = 8;
+
+function pageCacheKey(query, offset) {
+    return `${query}|${offset}`;
+}
+
+// Prefetch a page's API responses in the background and cache them.
+async function prefetchPage(query, offset) {
+    if (offset < 0) return;
+    const key = pageCacheKey(query, offset);
+    if (pageCache.has(key)) return;
+    try {
+        const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}`;
+        const primaryUrl = url + "&part=primary";
+        const firstResponse = await fetch(primaryUrl, { cache: "no-store", priority: "low" });
+        const first = await firstResponse.json();
+        let full = null;
+        if (first.total == null) {
+            const fullResponse = await fetch(url, { cache: "no-store", priority: "low" });
+            full = await fullResponse.json();
+        }
+        if (pageCache.size >= PAGE_CACHE_MAX) {
+            const oldest = pageCache.keys().next().value;
+            pageCache.delete(oldest);
+        }
+        pageCache.set(key, { first, full, url });
+    } catch (error) {
+        // Prefetch is best-effort.
+    }
+}
+
 // Query the API and hand the results to render().
 // A monotonically increasing id per search, so a late response from an old
 // query is ignored once the user has typed a new one.
@@ -2114,16 +2147,22 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
 
     // Phase 1: the fast CEDICT tier. Render it as soon as the server replies.
     const primaryUrl = url + "&part=primary";
-    const primaryFetchStart = performance.now();
-    const firstResponse = await fetch(primaryUrl, { cache: "no-store", priority: "high" });
-    recordPhase("primary fetch", primaryFetchStart, { status: firstResponse.status });
-    recordServerDebug("primary", firstResponse);
-    const primaryParseStart = performance.now();
-    const first = await firstResponse.json();
-    recordPhase("primary parse", primaryParseStart, {
-        results: Array.isArray(first.results) ? first.results.length : 0,
-    });
-    recordNetworkTiming("primary network", primaryUrl);
+    const cachedPage = pageCache.get(pageCacheKey(query, offset));
+    let first;
+    if (cachedPage) {
+        first = cachedPage.first;
+    } else {
+        const primaryFetchStart = performance.now();
+        const firstResponse = await fetch(primaryUrl, { cache: "no-store", priority: "high" });
+        recordPhase("primary fetch", primaryFetchStart, { status: firstResponse.status });
+        recordServerDebug("primary", firstResponse);
+        const primaryParseStart = performance.now();
+        first = await firstResponse.json();
+        recordPhase("primary parse", primaryParseStart, {
+            results: Array.isArray(first.results) ? first.results.length : 0,
+        });
+        recordNetworkTiming("primary network", primaryUrl);
+    }
     if (seq !== searchSeq) return 0;
     if (currentDebugSearch) {
         currentDebugSearch.official = {
@@ -2166,19 +2205,23 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
 
     // A "*" page comes complete in one response (its `total` is set).
     if (first.total == null) {
-        // Phase 2: the complete final list, slow source tiers included. Start
-        // it without waiting for the local dictionary search.
-        const fullFetchStart = performance.now();
-        const fullResponse = await fetch(url, { cache: "no-store", priority: "high" });
-        recordPhase("full fetch", fullFetchStart, { status: fullResponse.status });
-        recordServerDebug("full", fullResponse);
-        const fullParseStart = performance.now();
-        const full = await fullResponse.json();
-        recordPhase("full parse", fullParseStart, {
-            results: Array.isArray(full.results) ? full.results.length : 0,
-            total: full.total,
-        });
-        recordNetworkTiming("full network", url);
+        // Phase 2: the complete final list, slow source tiers included.
+        let full;
+        if (cachedPage && cachedPage.full) {
+            full = cachedPage.full;
+        } else {
+            const fullFetchStart = performance.now();
+            const fullResponse = await fetch(url, { cache: "no-store", priority: "high" });
+            recordPhase("full fetch", fullFetchStart, { status: fullResponse.status });
+            recordServerDebug("full", fullResponse);
+            const fullParseStart = performance.now();
+            full = await fullResponse.json();
+            recordPhase("full parse", fullParseStart, {
+                results: Array.isArray(full.results) ? full.results.length : 0,
+                total: full.total,
+            });
+            recordNetworkTiming("full network", url);
+        }
         if (seq !== searchSeq) return 0;
         recordDebug(
             "response",
@@ -2294,6 +2337,19 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
                 scrollMode
             );
         }
+        // Cache this page and prefetch adjacent pages for instant navigation.
+        if (!cachedPage) {
+            if (pageCache.size >= PAGE_CACHE_MAX) {
+                const oldest = pageCache.keys().next().value;
+                pageCache.delete(oldest);
+            }
+            pageCache.set(cacheKey, { first, full, url });
+        }
+        const pageSize = full.page_size || RESULTS_PAGE_SIZE;
+        const totalResults = full.total || 0;
+        if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
+        if (offset > 0) prefetchPage(query, offset - pageSize);
+
         return full.results.length;
     }
 
@@ -2378,6 +2434,19 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
                 `Custom wildcard page returned no entries (source: ${source})`
             );
         }
+        // Cache this page and prefetch adjacent pages.
+        if (!cachedPage) {
+            if (pageCache.size >= PAGE_CACHE_MAX) {
+                const oldest = pageCache.keys().next().value;
+                pageCache.delete(oldest);
+            }
+            pageCache.set(cacheKey, { first, full: null, url });
+        }
+        const pageSize = first.page_size || RESULTS_PAGE_SIZE;
+        const totalResults = first.total || 0;
+        if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
+        if (offset > 0) prefetchPage(query, offset - pageSize);
+
         return first.results.length;
     }
 
@@ -2422,6 +2491,19 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             applyPagerScroll(scrollMode);
         }
     }
+    // Cache this page and prefetch adjacent pages.
+    if (!cachedPage) {
+        if (pageCache.size >= PAGE_CACHE_MAX) {
+            const oldest = pageCache.keys().next().value;
+            pageCache.delete(oldest);
+        }
+        pageCache.set(cacheKey, { first, full: null, url });
+    }
+    const pageSize = first.page_size || RESULTS_PAGE_SIZE;
+    const totalResults = first.total || 0;
+    if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
+    if (offset > 0) prefetchPage(query, offset - pageSize);
+
     return first.results.length;
 }
 
