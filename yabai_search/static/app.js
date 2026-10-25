@@ -3315,13 +3315,8 @@ taiwanToggle.addEventListener("change", () => {
     state.taiwan = taiwanToggle.checked;
     savePrefs();
     updateQuickToggles();
-    // Re-render the readings, then re-run the search so Taiwan readings move
-    // entries between the main list and Fuzzy match. Keep the timing line from
-    // the last search-bar search.
+    // Re-render with the new readings (client-side, no URL change, no page reset).
     redraw();
-    if (currentQuery && currentQuery.trim() !== "*") {
-        search(currentQuery, 0, false, false);
-    }
 });
 // Load custom_dicts.js on demand, so pages that never use it skip the 163 KB.
 // Cached so repeated toggles don't load it twice.
