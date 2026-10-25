@@ -5,8 +5,25 @@ A Chinese dictionary web app with Chinese-English, Chinese-Chinese, and Taiwanes
 The interface design was inspired by [jisho.org](https://jisho.org/).
 
 
----
+## Search tips
 
+<span id="search-tips"></span>
+
+| Search with | Example | Matches |
+|---|---|---|
+| Chinese | `国家` or `國家` | 国家, 国家级, 发展中国家… |
+| English | `house` | 房子, 屋… |
+| Pinyin | `side` | 四德… |
+| English phrase | `"side"` | Entries containing the English word "side" |
+| Pinyin, any tone | `dangan` | 档案, 单干, 胆敢 |
+| Syllable break | `dang'an` | 档案 only |
+| Pinyin with tones | `shi4shi2` | 事实 |
+| Pinyin, some tones | `shi4shi` | Any tone on the second syllable |
+| Single Character Wildcard | `国家?` or `guo2jia1?` | 国家级, 国家队 |
+| Multiple Character Wildcard | `国家*` | 国家, 国家安全部… (All words starting with 国家) |
+| Zhuyin (Bopomofo) | `ㄉㄢㄍㄢˋ` | 单干 |
+
+---
 
 <h2 id="sources">Sources &amp; Licenses</h2>
 
