@@ -4,7 +4,7 @@
 // reload paints instantly. The search results, API responses, and other HTML
 // pages always go to the network.
 
-const CACHE_NAME = "yabai-shell-v3";
+const CACHE_NAME = "yabai-shell-v4";
 
 // Fetch the home page, cache it under "/", and pre-cache the /static/*?v=*
 // assets it references. Then prune any versioned assets the new shell no
@@ -70,13 +70,21 @@ self.addEventListener("fetch", (event) => {
     if (event.request.method !== "GET") return;
     if (url.origin !== self.location.origin) return;
 
-    // Home page navigations: serve the cached shell instantly, then refresh.
+    // Home page navigations: try the network first so updates appear
+    // immediately, falling back to the cached shell only when offline.
     if (event.request.mode === "navigate" && url.pathname === "/") {
         event.respondWith(
-            caches.match("/").then((cached) => {
-                event.waitUntil(refreshShell().catch(() => {}));
-                return cached || fetch(event.request);
-            })
+            fetch(event.request)
+                .then((response) => {
+                    if (response.ok) {
+                        const clone = response.clone();
+                        caches.open(CACHE_NAME).then((cache) => {
+                            cache.put("/", clone);
+                        });
+                    }
+                    return response;
+                })
+                .catch(() => caches.match("/").then((cached) => cached || new Response("Offline", { status: 503 })))
         );
         return;
     }
