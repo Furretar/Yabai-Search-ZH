@@ -2801,7 +2801,7 @@ footer {
 }
 
 .search-tips th {
-    background: var(--panel-bg);
+    background: var(--surface-bg);
     color: var(--title);
 }
 
