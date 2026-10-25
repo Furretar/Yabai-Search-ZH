@@ -2147,10 +2147,10 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
 
     // Phase 1: the fast CEDICT tier. Render it as soon as the server replies.
     const primaryUrl = url + "&part=primary";
-    const cachedPage = pageCache.get(pageCacheKey(query, offset));
+    const cached = pageCache.get(pageCacheKey(query, offset));
     let first;
-    if (cachedPage) {
-        first = cachedPage.first;
+    if (cached) {
+        first = cached.first;
     } else {
         const primaryFetchStart = performance.now();
         const firstResponse = await fetch(primaryUrl, { cache: "no-store", priority: "high" });
@@ -2207,8 +2207,8 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     if (first.total == null) {
         // Phase 2: the complete final list, slow source tiers included.
         let full;
-        if (cachedPage && cachedPage.full) {
-            full = cachedPage.full;
+        if (cached && cached.full) {
+            full = cached.full;
         } else {
             const fullFetchStart = performance.now();
             const fullResponse = await fetch(url, { cache: "no-store", priority: "high" });
@@ -2338,7 +2338,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             );
         }
         // Cache this page and prefetch adjacent pages for instant navigation.
-        if (!cachedPage) {
+        if (!cached) {
             if (pageCache.size >= PAGE_CACHE_MAX) {
                 const oldest = pageCache.keys().next().value;
                 pageCache.delete(oldest);
@@ -2435,7 +2435,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             );
         }
         // Cache this page and prefetch adjacent pages.
-        if (!cachedPage) {
+        if (!cached) {
             if (pageCache.size >= PAGE_CACHE_MAX) {
                 const oldest = pageCache.keys().next().value;
                 pageCache.delete(oldest);
@@ -2492,7 +2492,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         }
     }
     // Cache this page and prefetch adjacent pages.
-    if (!cachedPage) {
+    if (!cached) {
         if (pageCache.size >= PAGE_CACHE_MAX) {
             const oldest = pageCache.keys().next().value;
             pageCache.delete(oldest);
