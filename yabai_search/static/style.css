@@ -1402,6 +1402,10 @@ body:has(.search-panel:focus-within) .pull-arrow {
     font-size: var(--definition-size);
 }
 
+html.theme-light .defs {
+    color: #000000;
+}
+
 /* A labeled block of one dictionary's definitions. */
 .def-source {
     margin-top: .4rem;
