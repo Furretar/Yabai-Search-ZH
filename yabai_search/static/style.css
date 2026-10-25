@@ -2894,7 +2894,7 @@ html.theme-light .tone2,
 html.theme-light .tone3,
 html.theme-light .tone4,
 html.theme-light .tone5 {
-    text-shadow: 0 2px 0 #000;
+    text-shadow: 0 1px 0 #000;
 }
 
 html.theme-light .quick-toggle {
