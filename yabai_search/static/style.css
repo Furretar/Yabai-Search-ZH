@@ -2841,8 +2841,8 @@ html.theme-light {
     --entry-divider: #d8d8d8;
     --switch-track: #b0b0b0;
     --switch-knob: #ffffff;
-    --muted: color-mix(in srgb, currentColor 50%, transparent);
-    --control: color-mix(in srgb, currentColor 60%, transparent);
+    --muted: color-mix(in srgb, currentColor 75%, transparent);
+    --control: color-mix(in srgb, currentColor 85%, transparent);
     --accent: #ff9900;
     --title: var(--accent);
     --reading: #222222;
