@@ -47,15 +47,24 @@
                         class="site-meta"><span class="site-zh">ZH</span><span
                             class="site-version">BETA v0.1</span></span></span></a>
         </h1>
-        <!-- Theme toggle, top right. -->
-        <div class="theme-toggle" role="group" aria-label="Theme">
-            <div class="quick-pair">
-                <button type="button" class="quick-square" data-theme="light" title="Light"
-                    aria-label="Light" aria-pressed="false">☀</button>
-                <button type="button" class="quick-square" data-theme="dark" title="Dark"
-                    aria-label="Dark" aria-pressed="true">🌙</button>
+        <!-- Hamburger menu, top right. -->
+        <div class="menu-toggle-wrap">
+            <button type="button" class="menu-toggle" aria-label="Menu" aria-expanded="false">
+                <span class="menu-line"></span>
+                <span class="menu-line"></span>
+                <span class="menu-line"></span>
+            </button>
+            <div class="menu-dropdown" hidden>
+                <div class="theme-toggle" role="group" aria-label="Theme">
+                    <div class="quick-pair">
+                        <button type="button" class="quick-square" data-theme="light" title="Light"
+                            aria-label="Light" aria-pressed="false">☀</button>
+                        <button type="button" class="quick-square" data-theme="dark" title="Dark"
+                            aria-label="Dark" aria-pressed="true">🌙</button>
+                    </div>
+                    <span class="theme-label">Theme</span>
+                </div>
             </div>
-            <span class="theme-label">Theme</span>
         </div>
         <!-- Search bar and its options share one surface, so the expanded options
        look like a dropdown connected to the search bar. Wired up by app.js. -->

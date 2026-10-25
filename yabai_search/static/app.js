@@ -17,6 +17,8 @@ const phoneticToggle = document.getElementById("phonetic-toggle");
 // Quick display controls in the Search options panel.
 const quickSquares = [...document.querySelectorAll(".quick-script .quick-square")];
 const themeSquares = [...document.querySelectorAll("[data-theme]")];
+const menuToggle = document.querySelector(".menu-toggle");
+const menuDropdown = document.querySelector(".menu-dropdown");
 const quickTone = document.getElementById("quick-tone");
 const quickPinyin = document.querySelector(".quick-pinyin");
 const quickZhuyin = document.querySelector(".quick-zhuyin");
@@ -3109,6 +3111,23 @@ applyTheme(savedTheme);
 for (const square of themeSquares) {
     square.addEventListener("click", () => {
         applyTheme(square.dataset.theme);
+    });
+}
+
+// Hamburger menu: toggle the dropdown.
+if (menuToggle && menuDropdown) {
+    menuToggle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const open = menuDropdown.hidden;
+        menuDropdown.hidden = !open;
+        menuToggle.setAttribute("aria-expanded", String(open));
+    });
+    // Close when clicking outside.
+    document.addEventListener("click", (event) => {
+        if (!menuDropdown.hidden && !menuToggle.contains(event.target) && !menuDropdown.contains(event.target)) {
+            menuDropdown.hidden = true;
+            menuToggle.setAttribute("aria-expanded", "false");
+        }
     });
 }
 
