@@ -4,22 +4,6 @@ A Chinese dictionary web app with Chinese-English, Chinese-Chinese, and Taiwanes
 
 The interface design was inspired by [jisho.org](https://jisho.org/).
 
-## Search tips
-
-| Search for | Try | Finds |
-|---|---|---|
-| Chinese | `国家` or `國家` | 国家, 国家级, 发展中国家… |
-| English | `house` | 房子, 屋… |
-| Pinyin | `side` | 四德... |
-| English phrase | `"side"` | entries containing the English word "side" |
-| Pinyin, any tone | `dangan` | 档案, 单干, 胆敢 |
-| Syllable break | `dang'an` | 档案 only |
-| Pinyin with tones | `shi4shi2` | 事实 |
-| Pinyin, some tones | `shi4shi` | any tone on the second syllable |
-| Wildcard | `*字` | words ending in 字 |
-| Wildcard with tones | `*xinu4*` | 息怒, 喜怒哀乐 |
-| Zhuyin (Bopomofo) | `ㄉㄢㄍㄢˋ` | 单干 |
-
 <h2 id="sources">Sources &amp; Licenses</h2>
 
 ### English

@@ -186,13 +186,24 @@
             <a href="/about">About Page</a>.
         </p>
         <p class="tagline">Search Tips:</p>
-        <ul class="tagline">
-            <li>漢字/汉字 - Search Simplified or Traditional Chinese</li>
-            <li>dangan - Pinyin, any tone (matches 档案 单干)</li>
-            <li>*字 - Wildcard, search all words that end with 字</li>
-            <li>shi4shi2 - Specify tones</li>
-            <li>shi4shi - Leave tone blank, matches any tone</li>
-        </ul>
+        <table class="tagline search-tips">
+            <thead>
+                <tr><th>Search with</th><th>Example</th><th>Matches</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Chinese</td><td><code>国家</code> or <code>國家</code></td><td>国家, 国家级, 发展中国家…</td></tr>
+                <tr><td>English</td><td><code>house</code></td><td>房子, 屋…</td></tr>
+                <tr><td>Pinyin</td><td><code>side</code></td><td>四德…</td></tr>
+                <tr><td>English phrase</td><td><code>"side"</code></td><td>Entries containing the English word "side"</td></tr>
+                <tr><td>Pinyin, any tone</td><td><code>dangan</code></td><td>档案, 单干, 胆敢</td></tr>
+                <tr><td>Syllable break</td><td><code>dang'an</code></td><td>档案 only</td></tr>
+                <tr><td>Pinyin with tones</td><td><code>shi4shi2</code></td><td>事实</td></tr>
+                <tr><td>Pinyin, some tones</td><td><code>shi4shi</code></td><td>Any tone on the second syllable</td></tr>
+                <tr><td>Single Character Wildcard</td><td><code>国家?</code> or <code>guo2jia1?</code></td><td>国家级, 国家队</td></tr>
+                <tr><td>Multiple Character Wildcard</td><td><code>国家*</code></td><td>国家, 国家安全部… (All words starting with 国家)</td></tr>
+                <tr><td>Zhuyin (Bopomofo)</td><td><code>ㄉㄢㄍㄢˋ</code></td><td>单干</td></tr>
+            </tbody>
+        </table>
         <!-- Parsed words from the input; each is clickable. -->
         <div id="parsed"></div>
         <!-- Reminder shown for latin (pinyin) searches. -->

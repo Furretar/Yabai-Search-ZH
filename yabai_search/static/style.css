@@ -2774,6 +2774,34 @@ footer {
     color: var(--accent);
 }
 
+/* Search tips table on the home page. */
+.search-tips {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .8rem;
+    margin: .5rem 0 1rem;
+}
+
+.search-tips th,
+.search-tips td {
+    padding: .3rem .5rem;
+    border: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+}
+
+.search-tips th {
+    background: var(--panel-bg);
+    color: var(--title);
+}
+
+.search-tips code {
+    background: var(--panel-bg);
+    padding: .1rem .25rem;
+    border-radius: .25rem;
+    font-size: .9em;
+}
+
 /* The copy-log control looks like a link but is a button (no form submit). */
 .copy-log-button {
     padding: 0;
