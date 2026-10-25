@@ -92,7 +92,7 @@ h1 {
 
 /* Lift the language tag and push the version further down. */
 .site-zh {
-    transform: translateY(-.32em);
+    transform: translateY(-.5em);
 }
 
 .site-version {
