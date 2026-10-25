@@ -36,9 +36,9 @@ Searches have 6 levels of priority. Results within the same level will be sorted
 5. All words from Wiktionary with a **reading but no definition**.
 6. All words with **no reading and no definition**.
 
-By default, searches will attempt to match headwords or readings. Definitions will be searched as a fallback if there are no matching headwords or readings.
+By default, searches will attempt to match headwords or readings. Definitions will be searched as a fallback if there are no matching headwords or readings for your search.
 
-Definitions can be searched by using quotes `""`.
+Definitions can be searched explicitly by using quotes `""`.
 
 #### Pinyin
 

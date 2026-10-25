@@ -2811,6 +2811,13 @@ footer {
     color: var(--accent);
 }
 
+/* Quick Search Tips link inside the Search Options dropdown. */
+.search-tips-link {
+    margin: .1rem 0 .35rem;
+    text-align: center;
+    font-size: .85rem;
+}
+
 /* Search tips table on the home page. */
 .search-tips {
     width: 100%;
