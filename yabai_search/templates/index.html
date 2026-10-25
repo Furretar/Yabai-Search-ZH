@@ -19,6 +19,18 @@
     <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
     <!-- Stylesheet served from the /static mount (yabai_search/static/style.css). -->
     <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+    <!-- Browser-side dictionary imports (IndexedDB). Load before app.js so the
+       search hook can wait for the imported term index. -->
+    <script src="/static/custom_dicts.js?v={{ asset_version }}" defer></script>
+    <!-- MOE glyph pictures: defines renderGlyphs() that app.js calls after
+       building each result row. -->
+    <script src="/static/glyphs.js?v={{ asset_version }}" defer></script>
+    <!-- Front-end script served from the /static mount (static/app.js). -->
+    <script src="/static/app.js?v={{ asset_version }}" defer></script>
+    <!-- Local scanner: moves inline pinyin in definition text into furigana. -->
+    <script src="/static/inline_furigana.js?v={{ asset_version }}" defer></script>
+    <!-- Registers the service worker for installable web-app behaviour. -->
+    <script src="/static/pwa.js" defer></script>
     </head>
 
 <body>
@@ -188,6 +200,176 @@
                 </div>
             </div>
         </div>
+        <!-- Pre-hydrate the controls from localStorage before first paint, so a
+           reload shows the saved state instantly instead of flashing the defaults
+           and then correcting them after app.js loads. -->
+        <script>
+        (function () {
+            try {
+                var get = function (key) { return localStorage.getItem(key); };
+                var set = function (el, attr, val) { if (el) el.setAttribute(attr, String(val)); };
+
+                // Theme: light unless a stored value says otherwise.
+                var theme = get("yabai-theme") === "light" ? "light" : "dark";
+                document.querySelectorAll("[data-theme]").forEach(function (btn) {
+                    set(btn, "aria-pressed", btn.getAttribute("data-theme") === theme);
+                });
+
+                // Script: simplified unless stored as traditional.
+                var traditional = get("yabai-search-script") === "traditional";
+                document.querySelectorAll(".quick-script .quick-square").forEach(function (btn) {
+                    set(btn, "aria-pressed", (btn.getAttribute("data-script") === "traditional") === traditional);
+                });
+                var scriptDesc = document.getElementById("script-description");
+                if (scriptDesc) scriptDesc.querySelectorAll("[data-script]").forEach(function (word) {
+                    word.classList.toggle("active", (word.getAttribute("data-script") === "traditional") === traditional);
+                });
+
+                // Tone coloring: on unless explicitly "false".
+                var toneOn = get("yabai-search-tone") !== "false";
+                var quickTone = document.getElementById("quick-tone");
+                set(quickTone, "aria-pressed", toneOn);
+                if (quickTone) {
+                    var phrase = traditional ? ["花", "紅", "柳", "綠"] : ["花", "红", "柳", "绿"];
+                    quickTone.querySelectorAll(".tone-phrase span").forEach(function (node, i) {
+                        if (phrase[i]) node.textContent = phrase[i];
+                    });
+                }
+                var toneDesc = document.getElementById("tone-description");
+                if (toneDesc) {
+                    toneDesc.textContent = toneOn ? "Tone Color On" : "Tone Color Off";
+                    toneDesc.classList.toggle("on", toneOn);
+                }
+
+                // Phonetic system: pinyin unless zhuyin.
+                var zhuyin = get("yabai-search-phonetic") === "zhuyin";
+                var pinyinBtn = document.querySelector(".quick-pinyin");
+                var zhuyinBtn = document.querySelector(".quick-zhuyin");
+                set(pinyinBtn, "aria-pressed", !zhuyin);
+                set(zhuyinBtn, "aria-pressed", zhuyin);
+                var phonDesc = document.getElementById("phonetic-description");
+                if (phonDesc) phonDesc.querySelectorAll("[data-phonetic]").forEach(function (word) {
+                    word.classList.toggle("active", word.getAttribute("data-phonetic") === (zhuyin ? "zhuyin" : "pinyin"));
+                });
+
+                // Region: Mainland unless Taiwan.
+                var taiwan = get("yabai-search-taiwan") === "true";
+                var chinaBtn = document.querySelector('[data-region="china"]');
+                var taiwanBtn = document.querySelector('[data-region="taiwan"]');
+                set(chinaBtn, "aria-pressed", !taiwan);
+                set(taiwanBtn, "aria-pressed", taiwan);
+                var dialDesc = document.getElementById("dialect-description");
+                if (dialDesc) dialDesc.querySelectorAll("[data-region]").forEach(function (word) {
+                    word.classList.toggle("active", word.getAttribute("data-region") === (taiwan ? "taiwan" : "china"));
+                });
+
+                // Custom dictionaries button.
+                var customDicts = get("yabai-search-custom-dicts") === "true";
+                set(document.getElementById("custom-dicts-button"), "aria-pressed", customDicts);
+
+                // Compact / Detailed dictionary mode.
+                var compact = get("yabai-search-compact") === "true";
+                document.querySelectorAll(".dict-mode-option").forEach(function (btn) {
+                    set(btn, "aria-pressed", (btn.getAttribute("data-mode") === "compact") === compact);
+                });
+
+                // Search language dropdown.
+                var lang = get("yabai-search-lang") || "EN";
+                var langButton = document.querySelector(".lang-button");
+                if (langButton) langButton.textContent = lang;
+                document.querySelectorAll(".lang-menu [role='option']").forEach(function (item) {
+                    set(item, "aria-selected", item.getAttribute("data-value") === lang);
+                });
+
+                // Dictionary checkboxes: stored list, or the language's defaults.
+                var langSelect = document.querySelector(".lang-select");
+                var defaults = {};
+                if (langSelect && langSelect.dataset.defaults) {
+                    try { defaults = JSON.parse(langSelect.dataset.defaults); } catch (e) {}
+                }
+                var stored = null;
+                try { stored = JSON.parse(get("yabai-search-dicts")); } catch (e) {}
+                var dicts = (stored === null || !customDicts)
+                    ? (defaults[lang] || defaults["EN"] || ["cedict"])
+                    : stored;
+                document.querySelectorAll(".dict-toggle").forEach(function (toggle) {
+                    toggle.checked = dicts.indexOf(toggle.dataset.anchor) !== -1;
+                });
+
+                // Open panels: the last one saved as open wins (accordion).
+                var panels = document.querySelectorAll(".options");
+                var openPanel = null;
+                panels.forEach(function (panel) {
+                    var toggle = panel.querySelector(".options-toggle");
+                    var key = "yabai-search-panel-" + (toggle ? toggle.getAttribute("aria-controls") : "");
+                    if (get(key) === "true") openPanel = panel;
+                });
+                panels.forEach(function (panel) {
+                    var toggle = panel.querySelector(".options-toggle");
+                    var open = panel === openPanel;
+                    panel.classList.toggle("open", open);
+                    if (toggle) set(toggle, "aria-expanded", open);
+                });
+
+                // Open dictionary columns (only one on narrow screens).
+                var openLangs = [];
+                try {
+                    var saved = JSON.parse(get("yabai-search-dict-open") || "[]");
+                    if (Array.isArray(saved)) openLangs = saved;
+                } catch (e) {}
+                var columns = document.querySelectorAll(".dict-column");
+                columns.forEach(function (column, i) {
+                    var langName = column.dataset.lang;
+                    var open = openLangs.indexOf(langName) !== -1;
+                    if (open && window.matchMedia("(max-width: 600px)").matches && i > 0) open = false;
+                    column.classList.toggle("open", open);
+                    var disclosure = column.querySelector(".dict-disclosure");
+                    if (disclosure) set(disclosure, "aria-expanded", open);
+                });
+            } catch (e) { /* storage unavailable: keep defaults */ }
+
+            // Reloaded page: fill the search box, title, clear button and
+            // "has results" layout before the first paint.
+            try {
+                var params = new URLSearchParams(location.search);
+                var query = params.get("q") || "";
+                var input = document.getElementById("q");
+                var clearBtn = document.getElementById("clear-button");
+                if (query) {
+                    if (input) input.value = query;
+                    if (clearBtn) clearBtn.hidden = false;
+                    document.title = query + " - Yabai Search ZH";
+                    document.body.classList.add("has-query");
+                }
+
+                // Reserve space and restore the saved scroll position.
+                var saved = [];
+                try { saved = JSON.parse(sessionStorage.getItem("yabai-search-scroll") || "[]"); } catch (e) {}
+                if (!Array.isArray(saved) && saved && saved.url) saved = [saved];
+                var y = null;
+                if (Array.isArray(saved)) {
+                    for (var i = saved.length - 1; i >= 0; i--) {
+                        if (saved[i] && saved[i].url === location.href) { y = saved[i].y; break; }
+                    }
+                }
+                if (y) {
+                    document.body.style.minHeight = (y + window.innerHeight) + "px";
+                    window.scrollTo(0, y);
+                }
+            } catch (e) {}
+
+            // Fit the title to the screen width now, so it does not shrink
+            // visibly after app.js loads.
+            try {
+                var heading = document.querySelector("h1");
+                var link = document.getElementById("home-link");
+                if (heading && link && link.scrollWidth > heading.clientWidth) {
+                    var size = parseFloat(getComputedStyle(heading).fontSize);
+                    heading.style.fontSize = (size * (heading.clientWidth - 1) / link.scrollWidth).toFixed(2) + "px";
+                }
+            } catch (e) {}
+        })();
+        </script>
         <!-- Pull handle: hangs from the middle of the search bar, follows it while
        scrolling, and sticks to the top center once the bar scrolls away. -->
         <button type="button" id="pull-arrow" class="pull-arrow" aria-label="Open search" aria-expanded="false"
@@ -211,6 +393,9 @@
                 <tr><td>Zhuyin (Bopomofo)</td><td><code>ㄉㄢㄍㄢˋ</code></td><td>单干</td></tr>
             </tbody>
         </table>
+        <!-- Hide the tips table immediately when a query is in the URL, so a
+           search page does not flash the home-page tips before app.js runs. -->
+        <script>try{if(new URLSearchParams(location.search).get("q")){document.querySelectorAll(".tagline").forEach(function(el){el.hidden=true})}}catch(e){}</script>
         <!-- Parsed words from the input; each is clickable. -->
         <div id="parsed"></div>
         <!-- Reminder shown for latin (pinyin) searches. -->
@@ -313,18 +498,6 @@
             </div>
         </form>
     </dialog>
-    <!-- Browser-side dictionary imports (IndexedDB). Load before app.js so the
-       search hook can wait for the imported term index. -->
-    <script src="/static/custom_dicts.js?v={{ asset_version }}" defer></script>
-    <!-- MOE glyph pictures: defines renderGlyphs() that app.js calls after
-       building each result row. -->
-    <script src="/static/glyphs.js?v={{ asset_version }}" defer></script>
-    <!-- Front-end script served from the /static mount (static/app.js). -->
-    <script src="/static/app.js?v={{ asset_version }}" defer></script>
-    <!-- Local scanner: moves inline pinyin in definition text into furigana. -->
-    <script src="/static/inline_furigana.js?v={{ asset_version }}" defer></script>
-    <!-- Registers the service worker for installable web-app behaviour. -->
-    <script src="/static/pwa.js" defer></script>
 </body>
 
 </html>

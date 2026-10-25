@@ -1,11 +1,54 @@
 // Service worker for Yabai Search.
-// Uses stale-while-revalidate for static assets: serves cached content
-// instantly, then fetches fresh content in the background. API responses
-// and HTML pages are never cached.
+//
+// Caches the home-page shell together with its versioned static assets so a
+// reload paints instantly. The search results, API responses, and other HTML
+// pages always go to the network.
 
-const CACHE_NAME = "yabai-static-v1";
+const CACHE_NAME = "yabai-shell-v1";
+
+// Fetch the home page, cache it under "/", and pre-cache the /static/*?v=*
+// assets it references. Then prune any versioned assets the new shell no
+// longer uses, so the cache stays small and consistent.
+async function refreshShell() {
+    const response = await fetch("/", { cache: "no-store" });
+    if (!response.ok) return;
+    const cache = await caches.open(CACHE_NAME);
+    await cache.put("/", response.clone());
+
+    const html = await response.text();
+    const urls = new Set();
+    const re = /(?:src|href)="(\/static\/[^"]+\?v=[^"]+)"/g;
+    let match;
+    while ((match = re.exec(html)) !== null) {
+        urls.add(match[1]);
+    }
+    await Promise.all(
+        [...urls].map(async (url) => {
+            if (await cache.match(url)) return;
+            try {
+                await cache.add(url);
+            } catch (error) {
+                // A single missing asset should not fail the whole refresh.
+            }
+        })
+    );
+
+    // Prune versioned assets that the new shell no longer references.
+    const keys = await cache.keys();
+    await Promise.all(
+        keys.map(async (request) => {
+            const path = new URL(request.url).pathname;
+            if (path.startsWith("/static/") && request.url.includes("?v=")) {
+                if (![...urls].some((u) => u.startsWith(path))) {
+                    await cache.delete(request);
+                }
+            }
+        })
+    );
+}
 
 self.addEventListener("install", (event) => {
+    event.waitUntil(refreshShell().catch(() => {}));
     self.skipWaiting();
 });
 
@@ -24,27 +67,52 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
     const url = new URL(event.request.url);
-
-    // Only handle GET requests for static assets.
     if (event.request.method !== "GET") return;
-    if (!url.pathname.startsWith("/static/") && url.pathname !== "/manifest.webmanifest") return;
+    if (url.origin !== self.location.origin) return;
 
-    const cacheKey = url.pathname;
+    // Home page navigations: serve the cached shell instantly, then refresh.
+    if (event.request.mode === "navigate" && url.pathname === "/") {
+        event.respondWith(
+            caches.match("/").then((cached) => {
+                event.waitUntil(refreshShell().catch(() => {}));
+                return cached || fetch(event.request);
+            })
+        );
+        return;
+    }
 
-    event.respondWith(
-        caches.open(CACHE_NAME).then((cache) => {
-            return cache.match(cacheKey).then((cached) => {
-                // Fetch fresh content in the background.
-                const fetchPromise = fetch(event.request).then((response) => {
+    // Versioned static assets: immutable, cache-first.
+    if (url.pathname.startsWith("/static/") && url.searchParams.has("v")) {
+        event.respondWith(
+            caches.match(event.request).then((cached) => {
+                if (cached) return cached;
+                return fetch(event.request).then((response) => {
                     if (response.ok) {
-                        cache.put(cacheKey, response.clone());
+                        const clone = response.clone();
+                        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
                     }
                     return response;
-                }).catch(() => cached);
+                });
+            })
+        );
+        return;
+    }
 
-                // Return cached immediately if available, otherwise wait for fetch.
-                return cached || fetchPromise;
-            });
-        })
-    );
+    // Other static assets: stale-while-revalidate.
+    if (url.pathname.startsWith("/static/")) {
+        event.respondWith(
+            caches.open(CACHE_NAME).then((cache) =>
+                cache.match(event.request).then((cached) => {
+                    const fetched = fetch(event.request).then((response) => {
+                        if (response.ok) cache.put(event.request, response.clone());
+                        return response;
+                    }).catch(() => cached);
+                    return cached || fetched;
+                })
+            )
+        );
+        return;
+    }
+
+    // Everything else (API, about, word, reports, manifest) goes to network.
 });

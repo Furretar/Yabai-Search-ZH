@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode
 
 import markdown
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -234,11 +235,32 @@ app = FastAPI(title="Yabai Search")
 
 
 @app.middleware("http")
-async def no_cache_html(request, call_next):
+async def cache_headers(request, call_next):
+    """Set cache headers so static assets reload only when they change.
+
+    HTML pages and the service worker are never cached (the app must re-read
+    them, and the theme must apply before paint). Versioned static assets are
+    immutable, because asset_version() changes every ?v= URL on any edit.
+    """
     response = await call_next(request)
-    if request.url.path in ("/", "/about", "/reports") or request.url.path.startswith("/word/"):
+    path = request.url.path
+    if response.headers.get("content-type", "").startswith("text/html"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    elif path == "/sw.js":
+        response.headers["Cache-Control"] = "no-cache"
+    elif path.startswith("/static/") and response.status_code in (200, 304):
+        if "v" in request.query_params or path.startswith("/static/ids_images/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif path.startswith("/static/vendor/"):
+            response.headers["Cache-Control"] = "public, max-age=604800"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+    elif path.startswith("/moe-glyphs/") and response.status_code == 200:
+        response.headers["Cache-Control"] = "public, max-age=604800"
     return response
+
+
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
 @app.on_event("startup")
