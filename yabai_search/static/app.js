@@ -725,7 +725,7 @@ function trailingTones(chars, syllables) {
     return tones;
 }
 
-function furigana(text, pinyin, allowTones = true, wrapPairs = false) {
+function furigana(text, pinyin, allowTones = true) {
     const chars = [...text];
     const syllables = pinyinSyllables(pinyin).filter(
         (syllable) => syllable && !PUNCT_TOKEN_RE.test(syllable)
@@ -773,43 +773,6 @@ function furigana(text, pinyin, allowTones = true, wrapPairs = false) {
                 index += 1;
             });
         }
-    }
-
-    // A long headword wraps as a series of character/reading pairs. Each pair
-    // stays together when the line breaks, so the reading remains directly
-    // above its character instead of forming separate reading and character
-    // paragraphs.
-    if (wrapPairs && readingsByChar) {
-        node.classList.add("wrap");
-        chars.forEach((ch, i) => {
-            const pair = document.createElement("span");
-            pair.className = "furi-pair";
-
-            const readingCell = document.createElement("span");
-            readingCell.className = "reading-cell";
-            if (readingsByChar[i]) {
-                readingCell.append(
-                    readingContent(
-                        [readingsByChar[i]],
-                        [syllablesByChar[i]],
-                        colored
-                    )
-                );
-            }
-
-            const charCell = document.createElement("span");
-            charCell.className = "char-cell";
-            const glyph = document.createElement("span");
-            glyph.textContent = ch;
-            if (colored && syllablesByChar[i]) {
-                glyph.className = `tone${toneOf(syllablesByChar[i])}`;
-            }
-            charCell.append(glyph);
-
-            pair.append(readingCell, charCell);
-            node.append(pair);
-        });
-        return node;
     }
 
     // The reading row. When each character has a reading, one cell per
@@ -1513,8 +1476,7 @@ function fillEntryRow(row, entry) {
             furigana(
                 primaryMasked,
                 reading,
-                !entry.pinyin_no_tone,
-                longHeadword
+                !entry.pinyin_no_tone
             )
         );
     }
@@ -2484,6 +2446,7 @@ async function appendCustomChunked(
         mode === "pinyin" &&
         (/\p{Script=Han}/u.test(query) ||
             query.includes("*") ||
+            query.includes("?") ||
             /[1-5]/.test(query) ||
             /\s/.test(query.trim()))
     ) {

@@ -6,13 +6,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ word }} - Yabai Search</title>
     <link rel="icon" type="image/png" href="/static/favicon.png">
+    <!-- Web app manifest and icons, so the dictionary can be installed as an app. -->
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#ffca28">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/pwa-icon-180.png">
     <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
     <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
 </head>
 
 <body class="word-page">
     <header class="word-header">
-        <a class="word-home" href="/">牙白查词 / Yabai Search</a>
+        <h1 class="word-title">
+            <a class="word-home" href="/">牙白查词<span class="site-subtitle">Yabai Search<span
+                        class="site-meta"><span class="site-zh">ZH</span><span
+                            class="site-version">BETA v0.1</span></span></span></a>
+        </h1>
         <a class="word-back" href="/">Back to search</a>
     </header>
 
@@ -111,6 +121,8 @@
     <!-- MOE glyph pictures: swaps "&8ff0._104_0.gif;" references in the
        rendered text for tinted images (this page has no app.js). -->
     <script src="/static/glyphs.js?v={{ asset_version }}"></script>
+    <!-- Registers the service worker for installable web-app behaviour. -->
+    <script src="/static/pwa.js" defer></script>
 </body>
 
 </html>

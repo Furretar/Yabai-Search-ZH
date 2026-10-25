@@ -672,11 +672,68 @@ def _like_pattern(text: str) -> str:
     """Turn a user query into a SQL LIKE pattern.
 
     '*' is the wildcard and becomes '%', which matches zero or more characters,
-    so "*a*" also matches just "a". Literal '%', '_' and '\\' are escaped so they
-    match themselves rather than acting as wildcards.
+    so "*a*" also matches just "a". '?' becomes '_', which matches exactly one
+    character (one Han character or one letter). Literal '%', '_' and '\\' are
+    escaped so they match themselves rather than acting as wildcards.
     """
     escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return escaped.replace("*", "%")
+    return escaped.replace("*", "%").replace("?", "_")
+
+
+def _pinyin_wildcard_pattern(text: str) -> str:
+    """A broad SQL LIKE pattern for a pinyin wildcard query.
+
+    '*' and '?' both become '%' here; '?' is narrowed to exactly one syllable
+    afterwards by _pinyin_wildcard_regex(). Keeping the literal pieces in the
+    SQL pattern limits how many readings Python has to inspect.
+    """
+    pieces = []
+    for piece in re.split(r"([*?])", text):
+        if piece in ("*", "?"):
+            pieces.append("%")
+        else:
+            pieces.append(_like_pattern(to_toneless(piece)))
+    return "".join(pieces)
+
+
+def _pinyin_wildcard_regex(text: str) -> re.Pattern[str] | None:
+    """Regex for a pinyin wildcard query, with '?' matching one whole syllable.
+
+    The entry key is its syllables joined by NUL bytes. A '?' consumes one
+    syllable plus the separator after it, and must start at a syllable boundary
+    (start of the key or just after a separator), so it cannot match a partial
+    syllable or several syllables. '*' keeps its existing zero-or-more-
+    characters meaning. Returns None when the query has no letters to match.
+    """
+    if not to_toneless(text.replace("*", "").replace("?", "")):
+        return None
+    pieces = []
+    tokens = re.split(r"([*?])", text)
+    for index, piece in enumerate(tokens):
+        if piece == "*":
+            pieces.append(".*")
+        elif piece == "?":
+            # A literal chunk before '?' already ends with a required separator,
+            # so the lookbehind is enough to keep '?' on a syllable boundary.
+            pieces.append(r"(?:\A|(?<=\x00))[a-zü]+\x00")
+        else:
+            letters = to_toneless(piece)
+            if not letters:
+                continue
+            # A syllable boundary may appear between any two query letters, so
+            # "guojia" matches guo + jia without requiring an apostrophe.
+            literal = r"\x00?".join(re.escape(char) for char in letters)
+            following = tokens[index + 1] if index + 1 < len(tokens) else None
+            if following == "?":
+                # '?' starts a new syllable, so the literal must end at a
+                # boundary rather than in the middle of the next syllable.
+                literal += r"\x00"
+            elif following is None:
+                # Let a final complete syllable consume its trailing separator;
+                # a partial final syllable simply leaves it unconsumed.
+                literal += r"\x00?"
+            pieces.append(literal)
+    return re.compile("".join(pieces))
 
 
 def _moe_db_paths() -> list[Path]:
@@ -1964,7 +2021,7 @@ def _source_only_entries(
     # (form, LIKE pattern) pairs, one per script variant, for a normal
     # (non-exact) search.
     pairs = [
-        (form, _like_pattern(form if "*" in text else f"*{form}*"))
+        (form, _like_pattern(form if "*" in text or "?" in text else f"*{form}*"))
         for form in forms
     ]
     # Words CEDICT already covers are handled by the normal search.
@@ -2486,7 +2543,7 @@ def _is_han(char: str) -> bool:
 
 def _simple_form(form: str) -> bool:
     """True when the form has no LIKE/FTS wildcard characters."""
-    return not any(char in form for char in "*%_")
+    return not any(char in form for char in "*?%_")
 
 
 def _definition_possible(form: str) -> bool:
@@ -3407,16 +3464,18 @@ def source_entries(word: str) -> list[dict]:
 def wildcard_search(
     query: str, limit: int = 50, offset: int = 0
 ) -> tuple[list[dict], int, bool]:
-    """Paged results for a "*" pattern query.
+    """Paged results for a "*" or "?" pattern query.
 
     Returns (entries, total, pinyin_match). Chinese patterns match the headword;
     latin patterns match the pinyin reading, mirroring the normal wildcard
-    search, with the same ordering but an OFFSET for pagination.
+    search, with the same ordering but an OFFSET for pagination. In a Chinese
+    query "?" matches exactly one Han character; in a pinyin query it matches
+    exactly one whole syllable.
     """
     text = (query or "").strip()
-    if "*" not in text:
+    if "*" not in text and "?" not in text:
         return [], 0, False
-    literal = to_simplified(text).replace("*", "")
+    literal = to_simplified(text).replace("*", "").replace("?", "")
     is_chinese = has_cjk(literal)
     source_page: list[dict] = []
     connection = connect()
@@ -3458,30 +3517,62 @@ def wildcard_search(
                 ]
             pinyin_match = False
         else:
-            pinyin_key = to_toneless(text)
-            if not pinyin_key:
-                return [], 0, False
-            pattern = _like_pattern(
-                "*".join(to_toneless(part) for part in text.split("*"))
-            )
-            note_pattern = _like_pattern(f"*pr. [{pinyin_key}*")
-            where = f"pinyin_toneless LIKE ? ESCAPE '\\' OR {_note_or()}"
-            count_params = (pattern, note_pattern)
-            order = (
-                "(pinyin_toneless = ?) DESC, "
-                "(english_normalized LIKE ? ESCAPE '\\') DESC"
-                f"{freq_clause}, length(simplified), id"
-            )
-            order_params = (pinyin_key, note_pattern)
-            total = connection.execute(
-                f"SELECT COUNT(*) FROM entries WHERE {where}", count_params
-            ).fetchone()[0]
-            rows = connection.execute(
-                "SELECT simplified, traditional, pinyin, english, english_normalized "
-                f"FROM entries WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
-                (*count_params, *order_params, limit, offset),
-            ).fetchall()
-            pinyin_match = True
+            if "?" in text:
+                # "?" means one whole syllable, which SQL LIKE cannot express.
+                # Use a broad LIKE pattern to narrow the candidates, then check
+                # the entry's syllable boundaries in Python.
+                regex = _pinyin_wildcard_regex(text)
+                if regex is None:
+                    return [], 0, False
+                pattern = _pinyin_wildcard_pattern(text)
+                candidates = connection.execute(
+                    "SELECT simplified, traditional, pinyin, pinyin_numeric, "
+                    "english, english_normalized, freq_rank "
+                    "FROM entries WHERE pinyin_toneless LIKE ? ESCAPE '\\'",
+                    (pattern,),
+                ).fetchall()
+                matched = []
+                for candidate in candidates:
+                    syllables = (candidate["pinyin_numeric"] or "").split()
+                    key = "\x00".join(to_toneless(part) for part in syllables) + "\x00"
+                    if regex.fullmatch(key):
+                        matched.append(dict(candidate))
+                matched.sort(
+                    key=lambda entry: (
+                        entry["freq_rank"] is None,
+                        entry["freq_rank"] or 0,
+                        len(entry["simplified"]),
+                        entry["simplified"],
+                    )
+                )
+                total = len(matched)
+                rows = matched[offset : offset + limit]
+                pinyin_match = True
+            else:
+                pinyin_key = to_toneless(text)
+                if not pinyin_key:
+                    return [], 0, False
+                pattern = _like_pattern(
+                    "*".join(to_toneless(part) for part in text.split("*"))
+                )
+                note_pattern = _like_pattern(f"*pr. [{pinyin_key}*")
+                where = f"pinyin_toneless LIKE ? ESCAPE '\\' OR {_note_or()}"
+                count_params = (pattern, note_pattern)
+                order = (
+                    "(pinyin_toneless = ?) DESC, "
+                    "(english_normalized LIKE ? ESCAPE '\\') DESC"
+                    f"{freq_clause}, length(simplified), id"
+                )
+                order_params = (pinyin_key, note_pattern)
+                total = connection.execute(
+                    f"SELECT COUNT(*) FROM entries WHERE {where}", count_params
+                ).fetchone()[0]
+                rows = connection.execute(
+                    "SELECT simplified, traditional, pinyin, english, english_normalized "
+                    f"FROM entries WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                    (*count_params, *order_params, limit, offset),
+                ).fetchall()
+                pinyin_match = True
     finally:
         connection.close()
 

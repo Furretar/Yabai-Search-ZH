@@ -14,7 +14,7 @@ from urllib.parse import quote, urlencode
 
 import markdown
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -243,6 +243,29 @@ def _warm_caches() -> None:
 # (e.g. /static/style.css, /static/app.js). Read-only, served verbatim.
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
+
+# Serve the web app manifest at the root so its scope covers the whole site.
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def pwa_manifest() -> FileResponse:
+    """Return the manifest used when installing Yabai Search as an app."""
+    return FileResponse(
+        _STATIC_DIR / "manifest.webmanifest",
+        media_type="application/manifest+json",
+    )
+
+
+# Serve the service worker at the root so it can control every page. The
+# Service-Worker-Allowed header permits the root scope even without this route.
+@app.get("/sw.js", include_in_schema=False)
+def pwa_service_worker() -> FileResponse:
+    """Return the service worker used for installable web-app behaviour."""
+    return FileResponse(
+        _STATIC_DIR / "sw.js",
+        media_type="text/javascript",
+        headers={"Service-Worker-Allowed": "/"},
+    )
+
+
 # MOE glyph pictures (data/moe_glyphs/, unpacked by scripts/import_moe.py from
 # the 字圖 zip). Definitions reference them as "&8ff0._104_0.gif;", which the
 # frontend swaps for one of these images so the rare character shows inline.
@@ -385,6 +408,37 @@ def reports_page(request: Request):
             },
         },
     )
+
+
+@app.post("/reports/delete", response_class=RedirectResponse, status_code=303)
+def delete_report(request: Request, received_at: str = Query(...)):
+    """Delete one locally stored report. Only this device may do it."""
+    if not _request_is_local(request):
+        raise HTTPException(status_code=404)
+    path = BASE.parent / "data" / "bug_reports.jsonl"
+    if path.exists():
+        try:
+            kept = []
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    kept.append(line)
+                    continue
+                if record.get("received_at") == received_at:
+                    continue
+                kept.append(line)
+            path.write_text(
+                "".join(line + "\n" for line in kept), encoding="utf-8"
+            )
+        except OSError as error:
+            raise HTTPException(
+                status_code=500, detail="Could not delete the report."
+            ) from error
+    return RedirectResponse(url="/reports", status_code=303)
 
 def _reading_count(entry: dict) -> int:
     """How many CEDICT definitions this entry's own reading has.
@@ -542,7 +596,9 @@ def api_search(
             fuzzy = []
             pinyin_match = False
             english_match = False
-        elif "*" in q and not (len(q) >= 2 and q.startswith('"') and q.endswith('"')):
+        elif ("*" in q or "?" in q) and not (
+            len(q) >= 2 and q.startswith('"') and q.endswith('"')
+        ):
             # A wildcard pattern is paged: the first (and only) response is
             # the requested page, with its total for the pager.
             at = time.perf_counter()

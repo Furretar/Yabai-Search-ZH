@@ -8,6 +8,12 @@
     <title>Yabai Search ZH</title>
     <!-- Browser tab icon (served from the /static mount). -->
     <link rel="icon" type="image/png" href="/static/favicon.png">
+    <!-- Web app manifest and icons, so the dictionary can be installed as an app. -->
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#ffca28">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/pwa-icon-180.png">
     <!-- Colour scheme variables; edit variables.css to retheme. -->
     <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
     <!-- Stylesheet served from the /static mount (yabai_search/static/style.css). -->
@@ -299,6 +305,8 @@
     <script src="/static/app.js?v={{ asset_version }}"></script>
     <!-- Local scanner: moves inline pinyin in definition text into furigana. -->
     <script src="/static/inline_furigana.js?v={{ asset_version }}"></script>
+    <!-- Registers the service worker for installable web-app behaviour. -->
+    <script src="/static/pwa.js" defer></script>
 </body>
 
 </html>

@@ -1,0 +1,33 @@
+{
+  "id": "/",
+  "name": "Yabai Search",
+  "short_name": "Yabai",
+  "description": "Chinese-English dictionary with Mandarin, Taiwanese, and Japanese lookups.",
+  "lang": "en",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#201c23",
+  "theme_color": "#ffca28",
+  "icons": [
+    {
+      "src": "/static/pwa-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/pwa-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/pwa-icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

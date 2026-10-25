@@ -46,6 +46,28 @@ def test_home_page_has_search_title_and_debug_button(client):
     assert 'title="Clear" hidden' in html
 
 
+def test_secondary_pages_keep_the_site_title_and_badges(client):
+    """About and word pages show the same title, ZH tag and BETA version."""
+    pages = [
+        client.get("/about").text,
+        client.get("/word/国家").text,
+    ]
+    for html in pages:
+        assert 'class="site-subtitle"' in html
+        assert 'class="site-zh"' in html
+        assert ">ZH<" in html
+        assert "BETA" in html
+
+    # The reports page is local-only, so check its template directly.
+    reports = (ROOT / "yabai_search/templates/reports.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'class="site-subtitle"' in reports
+    assert 'class="site-zh"' in reports
+    assert ">ZH<" in reports
+    assert "BETA" in reports
+
+
 def test_clear_button_and_search_icon_contracts():
     """The clear button follows the input and the search icon has no border."""
     js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
@@ -93,15 +115,22 @@ def test_clear_button_keeps_scroll_in_pulled_mode():
     assert js.count("releaseClearScrollGuard();") >= 3
 
 
-def test_frontend_wraps_long_headwords_as_pairs():
-    """Long headwords use the paired furigana layout with normal reading size."""
+def test_frontend_keeps_reading_and_character_lines_separate():
+    """Readings and characters are separate rows, so double-clicking either
+    line selects that whole line and copies only that line."""
     js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
     css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
-    assert "allowTones = true, wrapPairs = false" in js
-    assert 'node.classList.add("wrap")' in js
-    assert "longHeadword" in js
-    assert ".furigana.wrap {" in css
-    assert ".furigana.wrap .furi-pair {" in css
-    assert ".furigana.wrap .reading-cell {" in css
-    assert "font-size: var(--furigana-reading);" in css
+    assert "allowTones = true" in js
+    # All readings are inserted before all characters, so a range over one kind
+    # stays contiguous for the double-click handler and the copy handler.
+    reading_row = js.index('reading.className = "reading";')
+    char_row = js.index('char.className = "char";')
+    assert reading_row < char_row
+    assert 'event.target.closest?.(".reading")' in js
+    assert 'event.target.closest?.(".char")' in js
+    assert 'node.classList.add("wrap")' not in js
+    assert ".furigana.wrap {" not in css
+    assert ".furi-pair" not in css
+    assert ".furigana .reading {" in css
+    assert ".furigana .char {" in css
     assert ".entry.long-headword .hanzi {" in css

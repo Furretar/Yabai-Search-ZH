@@ -1280,39 +1280,14 @@ body:has(.search-panel:focus-within) .pull-arrow {
     white-space: nowrap;
 }
 
-/* A long headword wraps instead of forcing the page sideways. Each character
-   and its reading form one pair, so a line break keeps them together. */
+/* A long headword keeps the same two-line layout (readings above, characters
+   below) so double-clicking either line selects just that line. If it is wider
+   than the screen, the word scrolls sideways instead of forcing the whole page
+   to widen. */
 .entry.long-headword .hanzi {
     display: block;
     max-width: 100%;
-}
-
-.furigana.wrap {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    max-width: 100%;
-}
-
-.furigana.wrap .furi-pair {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    white-space: nowrap;
-}
-
-.furigana.wrap .reading-cell,
-.furigana.wrap .char-cell {
-    display: block;
-    white-space: nowrap;
-}
-
-/* The normal reading row sets this on .reading; the wrapped layout has no row
-   wrapper, so apply the same size and color directly to the reading cell. */
-.furigana.wrap .reading-cell {
-    font-size: var(--furigana-reading);
-    line-height: 1;
-    color: var(--reading);
+    overflow-x: auto;
 }
 
 /* Furigana inside a definition (cross-referenced words) has its own size. */
@@ -2611,10 +2586,22 @@ body:not(.has-query) .result-timing {
 /* Standalone word details page (no search controls). */
 .word-header {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: baseline;
     gap: 1rem;
     margin-bottom: 1rem;
+}
+
+/* The word page uses a compact copy of the site title, not the big home-page
+   heading, so it fits beside the "Back to search" link. */
+.word-title {
+    margin: 0;
+    font-size: 1.15rem;
+}
+
+.word-title .word-home {
+    font-size: inherit;
 }
 
 .word-home {
@@ -2766,6 +2753,27 @@ footer {
     font-size: .75rem;
 }
 
+/* Delete control for a single report. */
+.report-delete-form {
+    display: inline;
+    margin: 0 0 .5rem;
+}
+
+.report-delete {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: .8rem;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.report-delete:hover {
+    color: var(--accent);
+}
+
 /* The copy-log control looks like a link but is a button (no form submit). */
 .copy-log-button {
     padding: 0;
@@ -2774,6 +2782,7 @@ footer {
     color: var(--accent);
     font: inherit;
     cursor: pointer;
+    text-decoration: underline;
 }
 
 .copy-log-button:hover {
@@ -3028,6 +3037,12 @@ body:has(.search-panel.pulled.docked) #parsed {
 
 /* About page: the README rendered as HTML. Keep code and tables readable
    without pulling in a separate stylesheet. */
+.readme > p:first-child {
+    /* The page header above already shows the README's first line (the site
+       title), so hide the duplicate plain-text copy Markdown produced. */
+    display: none;
+}
+
 .readme pre {
     overflow-x: auto;
     padding: .75rem;
