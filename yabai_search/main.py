@@ -626,7 +626,7 @@ def api_search(
             fuzzy = []
             pinyin_match = False
             english_match = False
-        elif ("*" in q or "?" in q) and not (
+        elif ("*" in q or "?" in q or "＊" in q or "？" in q) and not (
             len(q) >= 2 and q.startswith('"') and q.endswith('"')
         ):
             # A wildcard pattern is paged: the first (and only) response is

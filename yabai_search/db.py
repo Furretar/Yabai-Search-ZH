@@ -668,19 +668,31 @@ def _reading_counts() -> dict[str, int]:
     return _reading_count_cache
 
 
+_FULLWIDTH_WILDCARDS = str.maketrans("＊？", "*?")
+
+
+def _normalize_wildcards(text: str) -> str:
+    """Turn full-width '＊'/'？' into their ASCII counterparts."""
+    return (text or "").translate(_FULLWIDTH_WILDCARDS)
+
+
 def _like_pattern(text: str) -> str:
     """Turn a user query into a SQL LIKE pattern.
 
     '*' is the wildcard and becomes '%', which matches zero or more characters,
     so "*a*" also matches just "a". '?' becomes '_', which matches exactly one
-    character (one Han character or one letter). Literal '%', '_' and '\\' are
-    escaped so they match themselves rather than acting as wildcards.
+    character (one Han character or one letter). The full-width forms '＊' and
+    '？' (common in Chinese/Japanese input) are treated the same way. Literal
+    '%', '_' and '\\' are escaped so they match themselves rather than acting
+    as wildcards.
     """
+    text = _normalize_wildcards(text)
     escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return escaped.replace("*", "%").replace("?", "_")
 
 
 def _pinyin_wildcard_pattern(text: str) -> str:
+    text = _normalize_wildcards(text)
     """A broad SQL LIKE pattern for a pinyin wildcard query.
 
     '*' and '?' both become '%' here; '?' is narrowed to exactly one syllable
@@ -688,8 +700,8 @@ def _pinyin_wildcard_pattern(text: str) -> str:
     SQL pattern limits how many readings Python has to inspect.
     """
     pieces = []
-    for piece in re.split(r"([*?])", text):
-        if piece in ("*", "?"):
+    for piece in re.split(r"([*?＊？])", text):
+        if piece in ("*", "?", "＊", "？"):
             pieces.append("%")
         else:
             pieces.append(_like_pattern(to_toneless(piece)))
@@ -697,6 +709,7 @@ def _pinyin_wildcard_pattern(text: str) -> str:
 
 
 def _pinyin_wildcard_regex(text: str) -> re.Pattern[str] | None:
+    text = _normalize_wildcards(text)
     """Regex for a pinyin wildcard query, with '?' matching one whole syllable.
 
     The entry key is its syllables joined by NUL bytes. A '?' consumes one
@@ -708,11 +721,11 @@ def _pinyin_wildcard_regex(text: str) -> re.Pattern[str] | None:
     if not to_toneless(text.replace("*", "").replace("?", "")):
         return None
     pieces = []
-    tokens = re.split(r"([*?])", text)
+    tokens = re.split(r"([*?＊？])", text)
     for index, piece in enumerate(tokens):
-        if piece == "*":
+        if piece in ("*", "＊"):
             pieces.append(".*")
-        elif piece == "?":
+        elif piece in ("?", "？"):
             # A literal chunk before '?' already ends with a required separator,
             # so the lookbehind is enough to keep '?' on a syllable boundary.
             pieces.append(r"(?:\A|(?<=\x00))[a-zü]+\x00")
@@ -1822,7 +1835,7 @@ def _parse_pinyin_query(query: str) -> tuple[str, dict[int, str], set[int]] | No
             boundaries.add(len(letters))
         elif char in "'’ \t":
             boundaries.add(len(letters))
-        elif char == "*":
+        elif char in "*＊":
             continue  # a wildcard doesn't constrain the tonal matcher
         elif "a" <= char <= "z" or char == "ü":
             letters.append(char)
@@ -2021,7 +2034,7 @@ def _source_only_entries(
     # (form, LIKE pattern) pairs, one per script variant, for a normal
     # (non-exact) search.
     pairs = [
-        (form, _like_pattern(form if "*" in text or "?" in text else f"*{form}*"))
+        (form, _like_pattern(form if any(c in text for c in "*?＊？") else f"*{form}*"))
         for form in forms
     ]
     # Words CEDICT already covers are handled by the normal search.
@@ -2543,7 +2556,7 @@ def _is_han(char: str) -> bool:
 
 def _simple_form(form: str) -> bool:
     """True when the form has no LIKE/FTS wildcard characters."""
-    return not any(char in form for char in "*?%_")
+    return not any(char in form for char in "*?＊？%_")
 
 
 def _definition_possible(form: str) -> bool:
@@ -3473,9 +3486,11 @@ def wildcard_search(
     exactly one whole syllable.
     """
     text = (query or "").strip()
-    if "*" not in text and "?" not in text:
+    if not any(c in text for c in "*?＊？"):
         return [], 0, False
-    literal = to_simplified(text).replace("*", "").replace("?", "")
+    literal = to_simplified(text)
+    for _c in ("*", "?", "＊", "？"):
+        literal = literal.replace(_c, "")
     is_chinese = has_cjk(literal)
     source_page: list[dict] = []
     connection = connect()
@@ -3517,7 +3532,7 @@ def wildcard_search(
                 ]
             pinyin_match = False
         else:
-            if "?" in text:
+            if "?" in text or "？" in text:
                 # "?" means one whole syllable, which SQL LIKE cannot express.
                 # Use a broad LIKE pattern to narrow the candidates, then check
                 # the entry's syllable boundaries in Python.
@@ -4172,7 +4187,7 @@ def search(
     # Chinese pronunciation, show only those matches and skip English results.
     # A '*' makes it a toneless pattern ("*xinu*" -> 喜怒哀樂); an apostrophe (or
     # space) pins syllable boundaries ("dan'gan" -> 单干, not 档案).
-    wildcard = "*" in query
+    wildcard = any(c in query for c in "*＊")
     segments = [to_toneless(part) for part in re.split(r"['’\s]+", query) if part]
     pinyin_key = "" if _skip_pinyin else to_toneless(query)
     if pinyin_key:

@@ -2446,8 +2446,8 @@ async function appendCustomChunked(
     if (
         mode === "pinyin" &&
         (/\p{Script=Han}/u.test(query) ||
-            query.includes("*") ||
-            query.includes("?") ||
+            query.includes("*") || query.includes("＊") ||
+            query.includes("?") || query.includes("？") ||
             /[1-5]/.test(query) ||
             /\s/.test(query.trim()))
     ) {
