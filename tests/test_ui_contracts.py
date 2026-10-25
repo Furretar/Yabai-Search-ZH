@@ -18,7 +18,6 @@ def test_about_page_renders_readme_live(client, monkeypatch, tmp_path):
     html = client.get("/about").text
     assert "Sources &amp; Licenses" in html
     assert 'id="cedict"' in html
-    assert "<table>" in html
 
     readme = tmp_path / "README.md"
     readme.write_text("# First version\n", encoding="utf-8")

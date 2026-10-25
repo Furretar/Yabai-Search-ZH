@@ -2807,6 +2807,48 @@ footer {
     font-size: .9em;
 }
 
+/* Theme toggle, fixed to the top right of the main page. */
+.theme-toggle {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: .25rem;
+}
+
+.theme-toggle .theme-label {
+    font-size: .75rem;
+    color: var(--control);
+}
+
+/* Light theme: override the dark defaults when <html> has .theme-light. */
+html.theme-light {
+    color-scheme: light;
+    --bg: #f5f5f0;
+    --panel-bg: #ffffff;
+    --panel-border: #c9c9c9;
+    --border: #c9c9c9;
+    --options-divider: #d8d8d8;
+    --entry-divider: #d8d8d8;
+    --switch-track: #b0b0b0;
+    --switch-knob: #ffffff;
+    --muted: color-mix(in srgb, currentColor 50%, transparent);
+    --control: color-mix(in srgb, currentColor 60%, transparent);
+    --accent: #b8860b;
+    --title: var(--accent);
+    --reading: #222222;
+    --on-accent: #ffffff;
+    --selection-bg: #f4d369;
+}
+
+html.theme-light body {
+    background: var(--bg);
+    color: #222222;
+}
+
 /* The copy-log control looks like a link but is a button (no form submit). */
 .copy-log-button {
     padding: 0;

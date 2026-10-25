@@ -18,6 +18,7 @@
     <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
     <!-- Stylesheet served from the /static mount (yabai_search/static/style.css). -->
     <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+    <script>try{if(localStorage.getItem("yabai-theme")==="light")document.documentElement.classList.add("theme-light")}catch(e){}</script>
 </head>
 
 <body>
@@ -29,6 +30,16 @@
                         class="site-meta"><span class="site-zh">ZH</span><span
                             class="site-version">BETA v0.1</span></span></span></a>
         </h1>
+        <!-- Theme toggle, top right. -->
+        <div class="theme-toggle" role="group" aria-label="Theme">
+            <div class="quick-pair">
+                <button type="button" class="quick-square" data-theme="light" title="Light"
+                    aria-label="Light" aria-pressed="false">☀</button>
+                <button type="button" class="quick-square" data-theme="dark" title="Dark"
+                    aria-label="Dark" aria-pressed="true">🌙</button>
+            </div>
+            <span class="theme-label">Theme</span>
+        </div>
         <!-- Search bar and its options share one surface, so the expanded options
        look like a dropdown connected to the search bar. Wired up by app.js. -->
         <!-- The slot holds the panel's place in the page while it is pulled out

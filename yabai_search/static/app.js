@@ -16,6 +16,7 @@ const toneToggle = document.getElementById("tone-toggle");
 const phoneticToggle = document.getElementById("phonetic-toggle");
 // Quick display controls in the Search options panel.
 const quickSquares = [...document.querySelectorAll(".quick-script .quick-square")];
+const themeSquares = [...document.querySelectorAll("[data-theme]")];
 const quickTone = document.getElementById("quick-tone");
 const quickPinyin = document.querySelector(".quick-pinyin");
 const quickZhuyin = document.querySelector(".quick-zhuyin");
@@ -3068,6 +3069,25 @@ phoneticToggle.addEventListener("change", () => {
 });
 
 // The quick controls flip the matching checkbox and reuse its change handler.
+// Theme: light / dark. Persisted in localStorage.
+function applyTheme(theme) {
+    const light = theme === "light";
+    document.documentElement.classList.toggle("theme-light", light);
+    for (const btn of themeSquares) {
+        btn.setAttribute("aria-pressed", String(btn.dataset.theme === theme));
+    }
+    try { localStorage.setItem("yabai-theme", theme); } catch (error) {}
+}
+let savedTheme = "dark";
+try { savedTheme = localStorage.getItem("yabai-theme") || "dark"; } catch (error) {}
+applyTheme(savedTheme);
+
+for (const square of themeSquares) {
+    square.addEventListener("click", () => {
+        applyTheme(square.dataset.theme);
+    });
+}
+
 for (const square of quickSquares) {
     square.addEventListener("click", () => {
         const script = square.dataset.script;
