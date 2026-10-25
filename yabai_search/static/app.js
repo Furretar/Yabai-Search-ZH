@@ -3118,14 +3118,14 @@ for (const square of themeSquares) {
 if (menuToggle && menuDropdown) {
     menuToggle.addEventListener("click", (event) => {
         event.stopPropagation();
-        const open = menuDropdown.hidden;
-        menuDropdown.hidden = !open;
+        const open = !menuDropdown.classList.contains("open");
+        menuDropdown.classList.toggle("open", open);
         menuToggle.setAttribute("aria-expanded", String(open));
     });
     // Close when clicking outside.
     document.addEventListener("click", (event) => {
-        if (!menuDropdown.hidden && !menuToggle.contains(event.target) && !menuDropdown.contains(event.target)) {
-            menuDropdown.hidden = true;
+        if (menuDropdown.classList.contains("open") && !menuToggle.contains(event.target) && !menuDropdown.contains(event.target)) {
+            menuDropdown.classList.remove("open");
             menuToggle.setAttribute("aria-expanded", "false");
         }
     });

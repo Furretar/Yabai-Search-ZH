@@ -2916,10 +2916,22 @@ footer {
     border-radius: .35rem;
     background: var(--surface-bg);
     box-shadow: 0 .4rem 1rem rgba(0, 0, 0, .4);
+    /* Collapsed state for the open/close animation. */
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-width: 0;
+    transition: max-height 180ms ease, opacity 180ms ease, padding 180ms ease, border-width 180ms ease;
 }
 
-.menu-dropdown[hidden] {
-    display: none;
+.menu-dropdown.open {
+    max-height: 12rem;
+    opacity: 1;
+    padding-top: .5rem;
+    padding-bottom: .5rem;
+    border-width: 1px;
 }
 
 .menu-dropdown .theme-toggle {
