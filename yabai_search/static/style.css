@@ -1267,11 +1267,19 @@ body:has(.search-panel:focus-within) .pull-arrow {
 .furigana {
     display: inline-block;
     max-width: 100%;
-    vertical-align: bottom;
+    /* Baseline-align so the characters sit on the same line as the surrounding
+       text; the reading floats up above instead of adding height. */
+    vertical-align: baseline;
+    position: relative;
 }
 
 .furigana .reading {
-    display: block;
+    /* Float the reading above the characters, into the line gap, so it does not
+       make the word taller than the text around it. */
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
     font-size: var(--furigana-reading);
     line-height: 1;
     color: var(--reading);
@@ -1303,6 +1311,9 @@ body:has(.search-panel:focus-within) .pull-arrow {
     display: block;
     max-width: 100%;
     overflow-x: auto;
+    /* Reserve room above the characters for the floating reading, since the
+       horizontal scroll container otherwise clips it. */
+    padding-top: calc(var(--furigana-reading) + 0.15rem);
 }
 
 /* Furigana inside a definition (cross-referenced words) has its own size. */
