@@ -3056,8 +3056,10 @@ html.theme-light .custom-dicts-button[aria-pressed="false"] {
     color: var(--muted);
 }
 
-/* The "Search Functions" bullet list. */
-ul.tagline {
+/* Leave room on the right for the fixed hamburger menu icon. */
+.page-main h1 {
+    margin-right: 3.5rem;
+}
     margin: .35rem 0 0;
     padding-left: 1.25rem;
 }
