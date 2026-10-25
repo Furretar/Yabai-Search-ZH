@@ -2338,17 +2338,21 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             );
         }
         // Cache this page and prefetch adjacent pages for instant navigation.
-        if (!cached) {
-            if (pageCache.size >= PAGE_CACHE_MAX) {
-                const oldest = pageCache.keys().next().value;
-                pageCache.delete(oldest);
+        try {
+            if (!cached) {
+                if (pageCache.size >= PAGE_CACHE_MAX) {
+                    const oldest = pageCache.keys().next().value;
+                    pageCache.delete(oldest);
+                }
+                pageCache.set(cacheKey, { first, full, url });
             }
-            pageCache.set(cacheKey, { first, full, url });
+            const pageSize = full.page_size || RESULTS_PAGE_SIZE;
+            const totalResults = full.total || 0;
+            if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
+            if (offset > 0) prefetchPage(query, offset - pageSize);
+        } catch (cacheError) {
+            // Prefetch caching is best-effort; never break the search.
         }
-        const pageSize = full.page_size || RESULTS_PAGE_SIZE;
-        const totalResults = full.total || 0;
-        if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
-        if (offset > 0) prefetchPage(query, offset - pageSize);
 
         return full.results.length;
     }
@@ -2435,17 +2439,19 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             );
         }
         // Cache this page and prefetch adjacent pages.
-        if (!cached) {
-            if (pageCache.size >= PAGE_CACHE_MAX) {
-                const oldest = pageCache.keys().next().value;
-                pageCache.delete(oldest);
+        try {
+            if (!cached) {
+                if (pageCache.size >= PAGE_CACHE_MAX) {
+                    const oldest = pageCache.keys().next().value;
+                    pageCache.delete(oldest);
+                }
+                pageCache.set(cacheKey, { first, full: null, url });
             }
-            pageCache.set(cacheKey, { first, full: null, url });
-        }
-        const pageSize = first.page_size || RESULTS_PAGE_SIZE;
-        const totalResults = first.total || 0;
-        if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
-        if (offset > 0) prefetchPage(query, offset - pageSize);
+            const pageSize = first.page_size || RESULTS_PAGE_SIZE;
+            const totalResults = first.total || 0;
+            if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
+            if (offset > 0) prefetchPage(query, offset - pageSize);
+        } catch (cacheError) {}
 
         return first.results.length;
     }
@@ -2492,17 +2498,19 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         }
     }
     // Cache this page and prefetch adjacent pages.
-    if (!cached) {
-        if (pageCache.size >= PAGE_CACHE_MAX) {
-            const oldest = pageCache.keys().next().value;
-            pageCache.delete(oldest);
+    try {
+        if (!cached) {
+            if (pageCache.size >= PAGE_CACHE_MAX) {
+                const oldest = pageCache.keys().next().value;
+                pageCache.delete(oldest);
+            }
+            pageCache.set(cacheKey, { first, full: null, url });
         }
-        pageCache.set(cacheKey, { first, full: null, url });
-    }
-    const pageSize = first.page_size || RESULTS_PAGE_SIZE;
-    const totalResults = first.total || 0;
-    if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
-    if (offset > 0) prefetchPage(query, offset - pageSize);
+        const pageSize = first.page_size || RESULTS_PAGE_SIZE;
+        const totalResults = first.total || 0;
+        if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
+        if (offset > 0) prefetchPage(query, offset - pageSize);
+    } catch (cacheError) {}
 
     return first.results.length;
 }
