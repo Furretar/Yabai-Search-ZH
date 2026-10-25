@@ -1458,6 +1458,8 @@ html.theme-light .defs {
 .def-source-line {
     margin-top: .15rem;
     font-size: var(--definition-size);
+    /* Room for the floating furigana reading above cross-referenced words. */
+    line-height: 2.4;
 }
 
 /* The copy button sits right after the last word. It has no width until the
@@ -1586,7 +1588,7 @@ html.theme-light .defs {
     /* Same size as the definition text, but muted (classifier, also-pronounced,
        other-form lines). */
     font-size: var(--definition-size);
-    line-height: 1.25;
+    line-height: 2.2;
     color: var(--muted);
 }
 
