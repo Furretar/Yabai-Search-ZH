@@ -16,6 +16,11 @@ html {
     font-size: 110%;
 }
 
+/* Disable transitions on initial load to avoid theme flash. */
+html.no-anim, html.no-anim * {
+    transition: none !important;
+}
+
 /* Page body: centered column, readable line length and spacing. */
 body {
     font-family: system-ui, sans-serif;
@@ -2849,7 +2854,7 @@ html.theme-light {
     --control: color-mix(in srgb, currentColor 85%, transparent);
     --accent: #d97706;
     --title: var(--accent);
-    --tone1: #eb1600;
+    --tone1: #922b21;
     --tone3: #00a244;
     --tone4: #0067ac;
     --reading: #222222;

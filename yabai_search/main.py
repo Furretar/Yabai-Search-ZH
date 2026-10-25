@@ -233,6 +233,14 @@ def asset_version() -> str:
 app = FastAPI(title="Yabai Search")
 
 
+@app.middleware("http")
+async def no_cache_html(request, call_next):
+    response = await call_next(request)
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
+
+
 @app.on_event("startup")
 def _warm_caches() -> None:
     """Build the SQL and segmenter caches now, not during the first search."""
