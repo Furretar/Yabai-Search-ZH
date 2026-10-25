@@ -2832,8 +2832,8 @@ footer {
 /* Light theme: override the dark defaults when <html> has .theme-light. */
 html.theme-light {
     color-scheme: light;
-    background: #e0e0e0;
-    --bg: #e0e0e0;
+    background: #ffffff;
+    --bg: #ffffff;
     --panel-bg: #ffffff;
     --panel-border: #c9c9c9;
     --border: #c9c9c9;
@@ -2856,13 +2856,13 @@ html.theme-light body {
 }
 
 html.theme-light .search-panel {
-    background: #e0e0e0;
+    background: #ffffff;
     color: #222222;
 }
 
 html.theme-light {
-    --surface-bg: #e0e0e0;
-    --chip-bg: #e0e0e0;
+    --surface-bg: #ffffff;
+    --chip-bg: #ffffff;
 }
 
 html.theme-light .quick-pair {
