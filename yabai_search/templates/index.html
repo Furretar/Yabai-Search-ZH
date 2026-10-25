@@ -16,9 +16,14 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <link rel="apple-touch-icon" sizes="180x180" href="/static/pwa-icon-180.png">
     <!-- Colour scheme variables; edit variables.css to retheme. -->
-    <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
+    <style>{{ variables_css | safe }}</style>
     <!-- Stylesheet served from the /static mount (yabai_search/static/style.css). -->
     <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+    <!-- Preload deferred scripts so they download in parallel with HTML parsing. -->
+    <link rel="preload" href="/static/custom_dicts.js?v={{ asset_version }}" as="script">
+    <link rel="preload" href="/static/glyphs.js?v={{ asset_version }}" as="script">
+    <link rel="preload" href="/static/app.js?v={{ asset_version }}" as="script">
+    <link rel="preload" href="/static/inline_furigana.js?v={{ asset_version }}" as="script">
     <!-- Browser-side dictionary imports (IndexedDB). Load before app.js so the
        search hook can wait for the imported term index. -->
     <script src="/static/custom_dicts.js?v={{ asset_version }}" defer></script>

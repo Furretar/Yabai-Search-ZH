@@ -2712,11 +2712,37 @@ window.addEventListener("beforeunload", saveScroll);
 
 // Segment the input. Multi-word text shows clickable words; a single word is
 // looked up directly.
+// Segment the input. Multi-word text shows clickable words; a single word is
+// looked up directly.
 async function annotate(text) {
     releaseClearScrollGuard();
+    // Single-word queries (no spaces) rarely need annotation: the whole query
+    // is searched as-is and the fallback never triggers. Skip the round trip.
+    if (!text.includes(" ")) {
+        clearResults();
+        const found = await search(text);
+        if (!found) {
+            // Fall back to annotation in case the word is a multi-token phrase
+            // without spaces (e.g. "我是中国人").
+            const response = await fetch("/api/annotate", {
+                method: "POST",
+                cache: "no-store",
+                priority: "high",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text }),
+            });
+            const data = await response.json();
+            if (data.tokens && data.tokens.length > 1) {
+                renderParsed(data.tokens);
+                if (data.tokens[0].text !== text) {
+                    await search(data.tokens[0].text);
+                }
+            }
+        }
+        restoreScroll();
+        return;
+    }
     clearResults();
-    // Fire annotation and search in parallel: annotation only feeds the
-    // parsed-words row and the fallback, so it need not block the search.
     const annotatePromise = fetch("/api/annotate", {
         method: "POST",
         cache: "no-store",
@@ -4139,3 +4165,55 @@ window.addEventListener("resize", fitTitle);
 // Re-enable theme toggle animation after the initial render.
 document.documentElement.classList.remove("no-anim");
 document.documentElement.style.setProperty("--theme-transition", "180ms");
+
+// --- Page load timing (debug) ---------------------------------------------
+// Record how long the UI took to become interactive, so the "Copy debug log"
+// button can report it. Uses the Navigation Timing and Paint Timing APIs.
+function recordPageLoadTiming() {
+    try {
+        const nav = performance.getEntriesByType("navigation")[0];
+        if (nav) {
+            recordDebug("page", "Page load timing", null, {
+                dnsMs: Math.round(nav.domainLookupEnd - nav.domainLookupStart),
+                tcpMs: Math.round(nav.connectEnd - nav.connectStart),
+                ttfbMs: Math.round(nav.responseStart - nav.requestStart),
+                downloadMs: Math.round(nav.responseEnd - nav.responseStart),
+                domParseMs: Math.round(nav.domInteractive - nav.responseEnd),
+                domCompleteMs: Math.round(nav.domComplete - nav.startTime),
+                loadEventMs: Math.round(nav.loadEventEnd - nav.startTime),
+            });
+        }
+        const paints = performance.getEntriesByType("paint");
+        for (const paint of paints) {
+            recordDebug("page", paint.name, null, {
+                ms: Math.round(paint.startTime),
+            });
+        }
+        // Resource timing for the key scripts.
+        for (const name of ["app.js", "custom_dicts.js", "style.css", "variables.css"]) {
+            const entries = performance.getEntriesByName(
+                new URL(`/static/${name}`, location.href).href
+            );
+            const last = entries[entries.length - 1];
+            if (last) {
+                recordDebug("page", `Resource: ${name}`, null, {
+                    ttfbMs: Math.round(last.responseStart - last.startTime),
+                    downloadMs: Math.round(last.responseEnd - last.responseStart),
+                    durationMs: Math.round(last.duration),
+                    transferSize: last.transferSize,
+                    encodedBodySize: last.encodedBodySize,
+                });
+            }
+        }
+    } catch (error) {
+        // Timing APIs are best-effort debug data.
+    }
+}
+
+// Run after the page is fully loaded.
+if (document.readyState === "complete") {
+    recordPageLoadTiming();
+} else {
+    window.addEventListener("load", recordPageLoadTiming, { once: true });
+}
+// --- End page load timing -------------------------------------------------

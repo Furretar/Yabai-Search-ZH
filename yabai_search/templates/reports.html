@@ -13,7 +13,7 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <link rel="apple-touch-icon" sizes="180x180" href="/static/pwa-icon-180.png">
-    <link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
+    <style>{{ variables_css | safe }}</style>
     <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
     </head>
 

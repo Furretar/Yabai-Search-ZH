@@ -330,6 +330,7 @@ def index(request: Request):
             "sources": db.sources(),
             "dictionaries": db.dictionaries(),
             "defaults": DEFAULTS,
+            "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
             "show_reports": _request_is_local(request),
             # The debug log button is only for the local admin, not every visitor.
             "show_debug": _request_is_local(request),
@@ -349,6 +350,7 @@ def about(request: Request):
         "about.html",
         {
             "asset_version": asset_version(),
+            "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
             "content": content,
         },
     )
@@ -409,6 +411,7 @@ def word_page(request: Request, word: str):
         "word.html",
         {
             "asset_version": asset_version(),
+            "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
             "word": word,
             "entries": entries,
         },
@@ -430,6 +433,7 @@ def reports_page(request: Request):
         "reports.html",
         {
             "asset_version": asset_version(),
+            "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
             "reports": reports,
             "labels": {
                 "incorrect": "Incorrect information",
