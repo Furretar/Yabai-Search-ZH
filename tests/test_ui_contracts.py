@@ -114,6 +114,23 @@ def test_clear_button_keeps_scroll_in_pulled_mode():
     assert js.count("releaseClearScrollGuard();") >= 3
 
 
+def test_parsed_area_reserves_space_for_furigana():
+    """Wrapped parsed lines leave room for the floating readings above them."""
+    css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
+    start = css.index("#parsed {")
+    end = css.index("}", start)
+    rule = css[start:end]
+    assert "line-height: 3.2;" in rule
+
+
+def test_taiwan_mode_hides_duplicate_colloquial_note():
+    """A colloquial reading that repeats the Taiwan reading is not shown twice."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "duplicateTaiwan" in js
+    assert 'register === "colloquial"' in js
+    assert "numericToMarked(note.reading) === reading" in js
+
+
 def test_frontend_keeps_reading_and_character_lines_separate():
     """Readings and characters are separate rows, so double-clicking either
     line selects that whole line and copies only that line."""

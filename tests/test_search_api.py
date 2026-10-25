@@ -399,3 +399,22 @@ def test_unquoted_definition_fallback_when_no_headword_or_reading(search, find_r
     data = search("trash")
     assert data["pinyin_match"] is False
     assert find_result(data, "垃圾") is not None
+
+
+def test_concurrent_searches_use_separate_connections():
+    """Parallel page prefetches must not share one SQLite connection.
+
+    Connections became per-thread after concurrent /api/search calls hit
+    "sqlite3.InterfaceError: bad parameter or other API misuse".
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from yabai_search import db
+
+    def run(_):
+        entries, _pinyin_match = db.search("大", 25)
+        return len(entries)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        counts = list(pool.map(run, range(12)))
+    assert all(count > 0 for count in counts)

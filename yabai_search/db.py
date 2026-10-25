@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import threading
@@ -204,37 +205,45 @@ class _PooledConnection(sqlite3.Connection):
             return cursor
 
 
-_connection_pool: dict[str, sqlite3.Connection] = {}
+# One read-only connection per database, per worker thread. A single shared
+# connection cannot be used from several threads at once: concurrent searches
+# interleave statements on it and SQLite raises "bad parameter or other API
+# misuse". The server reuses its worker threads, so each keeps warm connections.
+_connection_local = threading.local()
+
+# Serializes the one-time ATTACH setup in connect().
 _connection_lock = threading.Lock()
 
 
 def _connect(database) -> sqlite3.Connection:
-    """Return the pooled, read-only connection for a database file."""
+    """Return this thread's read-only connection for a database file."""
     key = str(Path(database).resolve())
-    connection = _connection_pool.get(key)
+    connections = getattr(_connection_local, "connections", None)
+    if connections is None:
+        connections = {}
+        _connection_local.connections = connections
+    connection = connections.get(key)
     if connection is not None:
         return connection
-    with _connection_lock:
-        connection = _connection_pool.get(key)
-        if connection is None:
-            connection = sqlite3.connect(
-                f"file:{key}?mode=ro",
-                uri=True,
-                check_same_thread=False,
-                factory=_PooledConnection,
-            )
-            connection.execute("PRAGMA mmap_size=268435456")
-            # 64 MB page cache per database (negative = KiB), so the large
-            # source indexes stay resident between searches.
-            connection.execute("PRAGMA cache_size=-64000")
-            connection.execute("PRAGMA temp_store=MEMORY")
-            # SQLite's LIKE is case-insensitive by default, which forces full
-            # table scans even with a B-tree index. Our queries are already
-            # lowercased (pinyin) or Han characters (no case), so case folding
-            # is unnecessary and enabling case-sensitivity lets LIKE use the
-            # index (SEARCH ... (col>? AND col<?) instead of SCAN).
-            connection.execute("PRAGMA case_sensitive_like=ON")
-            _connection_pool[key] = connection
+    connection = sqlite3.connect(
+        f"file:{key}?mode=ro",
+        uri=True,
+        check_same_thread=False,
+        factory=_PooledConnection,
+    )
+    connection.execute("PRAGMA mmap_size=268435456")
+    # 8 MB page cache per connection. The OS page cache (through mmap) keeps
+    # the large source indexes hot, so this only holds the pages one query
+    # touches; a larger cache would multiply across worker threads.
+    connection.execute("PRAGMA cache_size=-8000")
+    connection.execute("PRAGMA temp_store=MEMORY")
+    # SQLite's LIKE is case-insensitive by default, which forces full
+    # table scans even with a B-tree index. Our queries are already
+    # lowercased (pinyin) or Han characters (no case), so case folding
+    # is unnecessary and enabling case-sensitivity lets LIKE use the
+    # index (SEARCH ... (col>? AND col<?) instead of SCAN).
+    connection.execute("PRAGMA case_sensitive_like=ON")
+    connections[key] = connection
     return connection
 
 # Which dictionaries contain a headword - drives the source chips, the
@@ -428,6 +437,36 @@ _SOURCE_QUERIES = [
         "count_sql": "SELECT COUNT(*) FROM headwords",
     },
 ]
+
+# --- data version ----------------------------------------------------------
+def data_version() -> str:
+    """A short fingerprint of every data file a search result depends on.
+
+    Built from each file's mtime, so re-running any importer changes the value.
+    The frontend sends it as `?dv=` and the server only then allows the API
+    response to be cached, which keeps cached results from outliving their data.
+    """
+    paths = [source["database"] for source in _SOURCE_QUERIES]
+    paths.extend(
+        [
+            SUBTLEX_DB_PATH,
+            HSK_DB_PATH,
+            ENGLISH_WORDS_DB_PATH,
+            DEFINITION_GRAMS_DB_PATH,
+            GRAM_WORDS_DB_PATH,
+        ]
+    )
+    parts = []
+    for path in paths:
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            # A source that is not imported yet does not contribute.
+            continue
+        parts.append(f"{path.name}:{int(stamp)}")
+    digest = hashlib.sha1("|".join(sorted(parts)).encode("utf-8")).hexdigest()
+    return digest[:10]
+
 
 # sources() is served on / and /about; its COUNT(DISTINCT ...) queries are the
 # only cost there. Cache the result, invalidated when any source file changes.

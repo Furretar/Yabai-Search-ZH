@@ -27,6 +27,10 @@ const pagination = document.getElementById("pagination");
 const paginationTop = document.getElementById("pagination-top");
 const parsed = document.getElementById("parsed");
 const hint = document.getElementById("hint");
+// Data fingerprint + server start time (from index.html). Sent as ?dv= so the
+// server may allow /api/search responses to be cached; without it they stay
+// uncached. Empty on pages that do not render this meta tag.
+const DATA_VERSION = document.querySelector('meta[name="data-version"]')?.content || "";
 const scriptToggle = document.getElementById("script-toggle");
 const toneToggle = document.getElementById("tone-toggle");
 const phoneticToggle = document.getElementById("phonetic-toggle");
@@ -189,6 +193,7 @@ function recordNetworkTiming(label, url) {
             durationMs: Math.round(entry.duration),
             transferSize: entry.transferSize,
             encodedBodySize: entry.encodedBodySize,
+            cacheHit: entry.transferSize === 0,
             resourceServerTiming: serverTiming,
         });
     } catch (error) {
@@ -1626,6 +1631,17 @@ function fillEntryRow(row, entry) {
                 }
             }
             for (const note of prons.others) {
+                // In Taiwan mode, a "colloquial" note that repeats the Taiwan
+                // reading already shown as the headword is redundant (e.g. 胺:
+                // Taiwan ān, "colloquial pr. [an1]"). Hide just that duplicate;
+                // other registers keep their note.
+                const register = (note.label || "").toLowerCase();
+                const duplicateTaiwan =
+                    state.taiwan &&
+                    Boolean(entry.pinyin_taiwan) &&
+                    (register === "colloquial" || register === "coll") &&
+                    numericToMarked(note.reading) === reading;
+                if (duplicateTaiwan) continue;
                 const label = note.label ? `Also pronounced (${note.label}): ` : "Also pronounced: ";
                 notes.push(detailRow(label, furigana(primaryMasked, numericToMarked(note.reading))));
             }
@@ -2087,36 +2103,130 @@ function redraw() {
     renderFuzzy(currentFuzzy);
 }
 
-// Prefetch cache for next/previous pages: Map<"query|offset", { first, full }>.
+// Prefetch cache for next/previous pages: Map<"query|offset|taiwan", { first, full }>.
 const pageCache = new Map();
-const PAGE_CACHE_MAX = 8;
+// Keep the 3-before + current + 3-after window, plus headroom for a second
+// query or a jump. Each parsed page is well under 100 KB.
+const PAGE_CACHE_MAX = 16;
+// How many pages on each side of the current page to warm in the background.
+const PREFETCH_RADIUS = 3;
+// In-flight prefetches, so a hover does not start a second request for a page
+// the post-render prefetch already asked for.
+const pagePrefetches = new Map();
 
 function pageCacheKey(query, offset) {
-    return `${query}|${offset}`;
+    // Taiwan readings change the rows, so they get their own cache entry.
+    return `${query}|${offset}|${state.taiwan ? 1 : 0}`;
+}
+
+// Store one page in the bounded cache, evicting the oldest entry if needed.
+function cachePage(key, value) {
+    if (pageCache.size >= PAGE_CACHE_MAX && !pageCache.has(key)) {
+        const oldest = pageCache.keys().next().value;
+        pageCache.delete(oldest);
+    }
+    pageCache.set(key, value);
+}
+
+// True when the server answers the query completely in one response: the
+// all-headwords listing (blank / only "*") and unquoted wildcard patterns.
+// Mirrors the routing in main.py's api_search.
+function completeInOneResponse(query) {
+    if (!query.trim().replace(/^\*+|\*+$/g, "")) return true;
+    const quoted = query.length >= 2 && query.startsWith('"') && query.endsWith('"');
+    return /[*?＊？]/.test(query) && !quoted;
+}
+
+// Build an /api/search URL, including the cache version when the page has one.
+function searchUrl(query, offset) {
+    let url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}`;
+    if (DATA_VERSION) url += `&dv=${encodeURIComponent(DATA_VERSION)}`;
+    return url;
+}
+
+// Fetch and parse one search tier. `silent` keeps prefetch out of the debug log.
+async function fetchSearchPart(
+    label,
+    requestUrl,
+    { priority = "high", silent = false } = {},
+) {
+    const fetchStart = performance.now();
+    const response = await fetch(requestUrl, { priority });
+    if (!silent) {
+        recordPhase(`${label} fetch`, fetchStart, { status: response.status });
+        recordServerDebug(label, response);
+    }
+    const parseStart = performance.now();
+    const data = await response.json();
+    if (!silent) {
+        recordPhase(`${label} parse`, parseStart, {
+            results: Array.isArray(data.results) ? data.results.length : 0,
+            ...(label === "full" ? { total: data.total } : {}),
+        });
+        recordNetworkTiming(`${label} network`, requestUrl);
+    }
+    return data;
 }
 
 // Prefetch a page's API responses in the background and cache them.
-async function prefetchPage(query, offset) {
-    if (offset < 0) return;
+// The shapes follow completeInOneResponse():
+//   - complete query: { first: <complete response>, full: null }
+//   - later page:     { first: null, full: <complete response> }
+//   - first page:     { first: <fast tier>, full: <complete response> }
+function prefetchPage(query, offset) {
+    if (offset < 0) return Promise.resolve();
+    // Respect data-saver mode: the click still searches, it just is not warmed.
+    if (navigator.connection?.saveData) return Promise.resolve();
     const key = pageCacheKey(query, offset);
-    if (pageCache.has(key)) return;
-    try {
-        const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}`;
-        const primaryUrl = url + "&part=primary";
-        const firstResponse = await fetch(primaryUrl, { cache: "no-store", priority: "low" });
-        const first = await firstResponse.json();
-        let full = null;
-        if (first.total == null) {
-            const fullResponse = await fetch(url, { cache: "no-store", priority: "low" });
-            full = await fullResponse.json();
+    if (pageCache.has(key)) return Promise.resolve();
+    const pending = pagePrefetches.get(key);
+    if (pending) return pending;
+    const promise = (async () => {
+        try {
+            const url = searchUrl(query, offset);
+            if (completeInOneResponse(query)) {
+                const complete = await fetchSearchPart("full", url, {
+                    priority: "low",
+                    silent: true,
+                });
+                cachePage(key, { first: complete, full: null, url });
+                return;
+            }
+            if (offset > 0) {
+                // Later pages only need the complete list.
+                const full = await fetchSearchPart("full", url, {
+                    priority: "low",
+                    silent: true,
+                });
+                cachePage(key, { first: null, full, url });
+                return;
+            }
+            const [first, full] = await Promise.all([
+                fetchSearchPart("primary", url + "&part=primary", {
+                    priority: "low",
+                    silent: true,
+                }),
+                fetchSearchPart("full", url, { priority: "low", silent: true }),
+            ]);
+            cachePage(key, { first, full, url });
+        } catch (error) {
+            // Prefetch is best-effort.
         }
-        if (pageCache.size >= PAGE_CACHE_MAX) {
-            const oldest = pageCache.keys().next().value;
-            pageCache.delete(oldest);
-        }
-        pageCache.set(key, { first, full, url });
-    } catch (error) {
-        // Prefetch is best-effort.
+    })();
+    pagePrefetches.set(key, promise);
+    promise.finally(() => pagePrefetches.delete(key));
+    return promise;
+}
+
+// Warm up to PREFETCH_RADIUS pages before and after the current page, so
+// Next/Previous stay instant for a few clicks. Each side stops at the first or
+// last page. prefetchPage dedupes in-flight requests and honours save-data.
+function prefetchAround(query, offset, pageSize, totalResults) {
+    for (let step = 1; step <= PREFETCH_RADIUS; step += 1) {
+        const next = offset + step * pageSize;
+        if (next < totalResults) prefetchPage(query, next);
+        const previous = offset - step * pageSize;
+        if (previous >= 0) prefetchPage(query, previous);
     }
 }
 
@@ -2125,9 +2235,25 @@ async function prefetchPage(query, offset) {
 // query is ignored once the user has typed a new one.
 let searchSeq = 0;
 
+// A reload of a search page starts with an empty result area (the HTML is
+// served before the results are rendered). index.html adds the
+// "initial-search-pending" class before the first paint and style.css keeps the
+// result area hidden while it is present. Drop it once the first complete
+// render is in the DOM, so the page fills in once instead of visibly flashing
+// empty -> partial -> final. Later searches reveal it immediately.
+let initialResultsRevealed = !document.documentElement.classList.contains(
+    "initial-search-pending",
+);
+
+function revealInitialResults() {
+    if (initialResultsRevealed) return;
+    initialResultsRevealed = true;
+    document.documentElement.classList.remove("initial-search-pending");
+}
+
 async function search(query, offset = 0, scrollMode = false, recordTiming = true) {
     releaseClearScrollGuard();
-    const url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}`;
+    const url = searchUrl(query, offset);
     const startedAt = performance.now();
     const seq = ++searchSeq;
     const allWildcard = query.trim() === "*";
@@ -2146,32 +2272,50 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             : Promise.resolve([]);
 
     // Phase 1: the fast CEDICT tier. Render it as soon as the server replies.
+    // Wildcard / all-headword queries come complete in one response, so they
+    // skip the second phase entirely.
+    const twoPhase = !completeInOneResponse(query);
     const primaryUrl = url + "&part=primary";
-    // Use server-embedded primary results if available (avoids the fetch).
-    const embeddedPrimary = (window.__initialPrimary && window.__initialPrimary.query === query && offset === 0)
+    const cacheKey = pageCacheKey(query, offset);
+    // Use server-embedded primary results if available (avoids the fetch). The
+    // embed is always mainland readings, so skip it when Taiwan is selected.
+    const embeddedPrimary = (!state.taiwan && window.__initialPrimary && window.__initialPrimary.query === query && offset === 0)
         ? window.__initialPrimary
         : null;
     if (embeddedPrimary) delete window.__initialPrimary;
-    const cached = embeddedPrimary || pageCache.get(pageCacheKey(query, offset));
-    let first;
+    const cached = pageCache.get(cacheKey);
+    const cachedFull = cached && cached.full ? cached.full : null;
+
+    // Start the slow complete tier immediately. On the first page of a normal
+    // search it runs alongside the fast tier (the server handles both
+    // concurrently), instead of waiting for the fast tier to arrive first.
+    let fullPromise = null;
+    let fullSettled = false;
+    if (twoPhase && !cachedFull) {
+        fullPromise = fetchSearchPart("full", url);
+        fullPromise.then(
+            () => { fullSettled = true; },
+            () => { fullSettled = true; },
+        );
+        // Handle the rejection even if this search is superseded before the
+        // await below, so it never surfaces as an unhandled rejection. A failed
+        // complete request also releases the result area right away.
+        fullPromise.catch(() => revealInitialResults());
+    }
+
+    let first = null;
     if (embeddedPrimary) {
         first = embeddedPrimary;
-    } else if (cached) {
-        first = cached.first;
-    } else {
-        const primaryFetchStart = performance.now();
-        const firstResponse = await fetch(primaryUrl, { cache: "no-store", priority: "high" });
-        recordPhase("primary fetch", primaryFetchStart, { status: firstResponse.status });
-        recordServerDebug("primary", firstResponse);
-        const primaryParseStart = performance.now();
-        first = await firstResponse.json();
-        recordPhase("primary parse", primaryParseStart, {
-            results: Array.isArray(first.results) ? first.results.length : 0,
-        });
-        recordNetworkTiming("primary network", primaryUrl);
+    } else if (!twoPhase) {
+        // One response already contains everything (wildcard / all-headwords).
+        first = cached && cached.first ? cached.first : await fetchSearchPart("primary", url);
+    } else if (offset === 0) {
+        // First page: show the fast tier while the complete list is in flight.
+        first = cached && cached.first ? cached.first : await fetchSearchPart("primary", primaryUrl);
     }
+    // A later page only needs the complete list started above.
     if (seq !== searchSeq) return 0;
-    if (currentDebugSearch) {
+    if (currentDebugSearch && first) {
         currentDebugSearch.official = {
             total: first.total,
             offset: first.offset,
@@ -2180,10 +2324,16 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             ms: first.ms,
         };
     }
-    recordDebug("response", "Primary search response received");
+    if (first) recordDebug("response", "Primary search response received");
     entryDictState.clear(); // a fresh search starts from the global selection
-    const firstMs = typeof first.ms === "number" ? first.ms : null;
-    const showFirst = first.total == null && offset === 0 && first.results.length >= 1;
+    const firstMs = first && typeof first.ms === "number" ? first.ms : null;
+    const showFirst =
+        twoPhase &&
+        first &&
+        first.total == null &&
+        offset === 0 &&
+        first.results.length >= 1 &&
+        !fullSettled;
     if (showFirst) {
         currentEntries = first.results;
         currentQuery = query;
@@ -2202,7 +2352,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
 
     // Keep the page number in the URL (without clobbering the query), so a
     // reload or a shared link returns to the same page.
-    const size = first.page_size || RESULTS_PAGE_SIZE;
+    const size = (first && first.page_size) || RESULTS_PAGE_SIZE;
     const page = Math.floor(offset / size) + 1;
     const current = new URL(location.href);
     if (page > 1) current.searchParams.set("page", String(page));
@@ -2210,26 +2360,21 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     current.searchParams.delete("offset"); // older links used a raw offset
     history.replaceState({ ...(history.state || {}), page }, "", current);
 
-    // A "*" page comes complete in one response (its `total` is set).
-    if (first.total == null) {
-        // Phase 2: the complete final list, slow source tiers included.
-        let full;
-        if (cached && cached.full) {
-            full = cached.full;
-        } else {
-            const fullFetchStart = performance.now();
-            const fullResponse = await fetch(url, { cache: "no-store", priority: "high" });
-            recordPhase("full fetch", fullFetchStart, { status: fullResponse.status });
-            recordServerDebug("full", fullResponse);
-            const fullParseStart = performance.now();
-            full = await fullResponse.json();
-            recordPhase("full parse", fullParseStart, {
-                results: Array.isArray(full.results) ? full.results.length : 0,
-                total: full.total,
-            });
-            recordNetworkTiming("full network", url);
-        }
+    if (twoPhase) {
+        // Phase 2: the complete final list, slow source tiers included. On the
+        // first page it was started before the fast tier, so this await usually
+        // has little left to wait for.
+        const full = cachedFull || (await fullPromise);
         if (seq !== searchSeq) return 0;
+        if (!first && currentDebugSearch) {
+            currentDebugSearch.official = {
+                total: full.total,
+                offset: full.offset,
+                pageSize: full.page_size,
+                results: Array.isArray(full.results) ? full.results.length : 0,
+                ms: full.ms,
+            };
+        }
         recordDebug(
             "response",
             `Complete search response: ${full.results.length} results, total ${full.total}`
@@ -2248,6 +2393,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         renderPagination(query, full);
         updateHint(query, full.pinyin_match, full.english_match);
         applyPagerScroll(scrollMode);
+        revealInitialResults();
         recordPhase("full render", fullRenderStart, { rows: full.results.length });
 
         const customResult = await customMatchesPromise;
@@ -2346,17 +2492,10 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         }
         // Cache this page and prefetch adjacent pages for instant navigation.
         try {
-            if (!cached) {
-                if (pageCache.size >= PAGE_CACHE_MAX) {
-                    const oldest = pageCache.keys().next().value;
-                    pageCache.delete(oldest);
-                }
-                pageCache.set(cacheKey, { first, full, url });
-            }
+            if (!cached) cachePage(cacheKey, { first, full, url });
             const pageSize = full.page_size || RESULTS_PAGE_SIZE;
             const totalResults = full.total || 0;
-            if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
-            if (offset > 0) prefetchPage(query, offset - pageSize);
+            prefetchAround(query, offset, pageSize, totalResults);
         } catch (cacheError) {
             // Prefetch caching is best-effort; never break the search.
         }
@@ -2377,6 +2516,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     renderPagination(query, first);
     updateHint(query, first.pinyin_match, first.english_match);
     applyPagerScroll(scrollMode);
+    revealInitialResults();
 
     if (allWildcard && !window.customDictionaryWildcardPage) {
         recordDebug(
@@ -2447,17 +2587,10 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         }
         // Cache this page and prefetch adjacent pages.
         try {
-            if (!cached) {
-                if (pageCache.size >= PAGE_CACHE_MAX) {
-                    const oldest = pageCache.keys().next().value;
-                    pageCache.delete(oldest);
-                }
-                pageCache.set(cacheKey, { first, full: null, url });
-            }
+            if (!cached) cachePage(cacheKey, { first, full: null, url });
             const pageSize = first.page_size || RESULTS_PAGE_SIZE;
             const totalResults = first.total || 0;
-            if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
-            if (offset > 0) prefetchPage(query, offset - pageSize);
+            prefetchAround(query, offset, pageSize, totalResults);
         } catch (cacheError) {}
 
         return first.results.length;
@@ -2504,19 +2637,12 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             applyPagerScroll(scrollMode);
         }
     }
-    // Cache this page and prefetch adjacent pages.
+    // Cache this page and prefetch a few pages either way.
     try {
-        if (!cached) {
-            if (pageCache.size >= PAGE_CACHE_MAX) {
-                const oldest = pageCache.keys().next().value;
-                pageCache.delete(oldest);
-            }
-            pageCache.set(cacheKey, { first, full: null, url });
-        }
+        if (!cached) cachePage(cacheKey, { first, full: null, url });
         const pageSize = first.page_size || RESULTS_PAGE_SIZE;
         const totalResults = first.total || 0;
-        if (offset + pageSize < totalResults) prefetchPage(query, offset + pageSize);
-        if (offset > 0) prefetchPage(query, offset - pageSize);
+        prefetchAround(query, offset, pageSize, totalResults);
     } catch (cacheError) {}
 
     return first.results.length;
@@ -2685,6 +2811,21 @@ function pagerButtons(query, data, page, pages, info, fromTop) {
     next.textContent = "Next";
     next.disabled = page >= pages;
     next.addEventListener("click", () => search(query, (data.offset || 0) + size, scrollMode));
+
+    // Warm the destination page when the pointer, focus or touch signals intent.
+    // This makes Next feel instant without prefetching for visitors who never
+    // page; the in-flight map dedupes it against the post-render prefetch.
+    const prefetchOnIntent = (button, targetOffset) => {
+        if (targetOffset < 0) return;
+        const warm = () => {
+            if (!button.disabled) prefetchPage(query, targetOffset);
+        };
+        button.addEventListener("mouseenter", warm, { once: true });
+        button.addEventListener("focus", warm, { once: true });
+        button.addEventListener("touchstart", warm, { once: true, passive: true });
+    };
+    prefetchOnIntent(prev, (data.offset || 0) - size);
+    prefetchOnIntent(next, (data.offset || 0) + size);
 
     return customJump ? [prev, label, customJump, next] : [prev, label, next];
 }
@@ -2970,6 +3111,7 @@ function restoreFromUrl() {
         setTitle("");
         clearResults();
         showTagline(true);
+        revealInitialResults();
         restoreScroll();
     }
     updateClearButton();
@@ -2999,6 +3141,7 @@ function goHome(keepScroll = false) {
     setTitle("");
     clearResults();
     showTagline(true);
+    revealInitialResults();
     history.pushState({}, "", location.pathname);
     if (keepScroll) {
         document.body.style.minHeight = `${height}px`;
@@ -4304,6 +4447,10 @@ try {
 // scrolling: on a refresh that would jump a restored page back to the top.
 input.focus({ preventScroll: true });
 restoreFromUrl();
+// Safety net: never leave the result area hidden if the first render never
+// arrives (offline, API hang). Slow connections are allowed to finish the
+// complete list first: the alternative is a visible flash of the partial list.
+setTimeout(revealInitialResults, 6000);
 
 // Keep the two-part title on one line: use the design size (2.5rem) while it
 // fits, otherwise scale the whole heading down to the available width.

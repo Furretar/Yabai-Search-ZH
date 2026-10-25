@@ -158,3 +158,13 @@ def test_wildcard_handles_traditional_and_simplified_queries(search):
     simplified = search("*档")
     assert traditional["total"] == simplified["total"]
     assert _words(traditional) == _words(simplified)
+
+
+def test_annotate_normalizes_variant_characters(client):
+    """A mixed-script spelling like 什麽 (麽 U+9EBD, not 麼) still gets a reading."""
+    response = client.post("/api/annotate", json={"text": "什麽"})
+    assert response.status_code == 200
+    tokens = response.json()["tokens"]
+    assert tokens[0]["text"] == "什麽"
+    assert tokens[0]["entries"]
+    assert tokens[0]["entries"][0]["pinyin"] == "shén me"

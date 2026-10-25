@@ -3060,15 +3060,14 @@ html.theme-light .custom-dicts-button[aria-pressed="false"] {
 .page-main h1 {
     margin-right: 3.5rem;
 }
-    margin: .35rem 0 0;
-    padding-left: 1.25rem;
-}
 
 /* The parsed input: each word is a clickable chip. */
 #parsed {
     /* Generous line spacing, so the furigana readings of one line do not crowd
-       the line above. */
-    line-height: 2.6;
+       the line above. One word is 1.5rem tall: characters (1.1em) plus the
+       floating reading (0.55em) is about 2.5rem, so 3.2 leaves a clear gap
+       between wrapped lines while staying compact. */
+    line-height: 3.2;
     /* Breathing room above and below the parsed words. */
     padding: .4rem 0 .6rem;
     margin-bottom: .5rem;
@@ -3082,6 +3081,19 @@ body:has(.search-panel.pulled.docked) #parsed {
 /* A little space above the first result row. */
 #results {
     padding-top: .4rem;
+}
+
+/* Reloading a search page: the results are rendered a moment after the first
+   paint. Hold the result area back until the first complete render lands, so
+   the page does not flash empty, then a partial list, then the final list.
+   app.js removes the class (see revealInitialResults). */
+html.initial-search-pending #parsed,
+html.initial-search-pending #hint,
+html.initial-search-pending #pagination-top,
+html.initial-search-pending #results,
+html.initial-search-pending #pagination,
+html.initial-search-pending .result-timing {
+    visibility: hidden;
 }
 
 /* The pinyin hint sits right under the parsed words - keep it tight. */

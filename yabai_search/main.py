@@ -40,6 +40,16 @@ _STATIC_DIR = BASE / "static"
 # matches so the total and the requested page can be computed in one pass.
 _MAX_NORMAL_RESULTS = 5000
 
+# Process start time, folded into the API cache version: a restart invalidates
+# cached search responses even when the data files did not change (for example
+# after editing overrides.py or ranking code).
+_START_TS = int(time.time())
+
+
+def search_version() -> str:
+    """Cache version for /api/search: data fingerprint plus process start time."""
+    return f"{db.data_version()}-{_START_TS:x}"
+
 # Cache of the local device's Tailscale IPs, used to decide whether a report
 # request came from this machine.
 _local_ips_cache: tuple[float, set[str]] | None = None
@@ -246,6 +256,17 @@ async def cache_headers(request, call_next):
     path = request.url.path
     if response.headers.get("content-type", "").startswith("text/html"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    elif (
+        path == "/api/search"
+        and response.status_code == 200
+        and "dv" in request.query_params
+    ):
+        # Results are immutable for a given data version + query + page, so the
+        # browser (and an edge cache) may reuse them. Requests without `dv`
+        # stay uncached and errors above never reach this branch.
+        response.headers["Cache-Control"] = (
+            "public, max-age=86400, stale-while-revalidate=604800"
+        )
     elif path == "/sw.js":
         response.headers["Cache-Control"] = "no-cache"
     elif path.startswith("/static/") and response.status_code in (200, 304):
@@ -320,15 +341,28 @@ templates = Jinja2Templates(directory=str(BASE / "templates"))
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request, q: str = ""):
+def index(request: Request, q: str = "", page: str = ""):
     """Home page: render the (currently blank) index.html template."""
+    try:
+        page_number = int(page) if page else 1
+    except ValueError:
+        # app.js treats an invalid ?page= as page 1; mirror that here.
+        page_number = 1
+    initial_page = page_number <= 1
     initial_primary = None
-    if q:
+    # Only the first page embeds the fast tier: later pages ask for an offset,
+    # so the embedded payload would be unused and only add HTML weight.
+    if q and initial_page:
         try:
+            # FastAPI's Query() defaults are not resolved when the route is
+            # called directly, so pass every parameter explicitly.
             from fastapi.responses import Response as _Resp
-            _resp = _Resp()
-            initial_primary = api_search(_resp, q=q, part="primary")
+
+            initial_primary = api_search(
+                _Resp(), q=q, limit=25, taiwan=False, offset=0, part="primary"
+            )
         except Exception:
+            # The page still works without the embedded tier: app.js fetches it.
             initial_primary = None
     return templates.TemplateResponse(
         request,
@@ -340,7 +374,9 @@ def index(request: Request, q: str = ""):
             "defaults": DEFAULTS,
             "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
             "q": q,
+            "initial_page": initial_page,
             "initial_primary": initial_primary,
+            "data_version": search_version(),
             "show_reports": _request_is_local(request),
             # The debug log button is useful for every client, not just local.
             "show_debug": True,
@@ -928,6 +964,15 @@ def api_annotate(request: AnnotateRequest):
             # Not in CEDICT: use another dictionary's entry (e.g. MOE) so the
             # parsed word still gets a reading and is clickable.
             entries = db.source_entries(word)
+        if not entries and word.strip():
+            # A mixed-script spelling such as 什麽 (麽 U+9EBD, not 麼 U+9EBC)
+            # is not a headword itself. Retry with the sentence-level OpenCC
+            # forms, which normalise the variant without an extra conversion.
+            for form in (trad, simp):
+                if form and form != word:
+                    entries = db.lookup(form) or db.source_entries(form)
+                    if entries:
+                        break
         if (
             not entries
             and len(word) > 1
