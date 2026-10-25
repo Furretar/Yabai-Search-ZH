@@ -90,8 +90,11 @@
                 <!-- Collapsed by default; the button toggles the panel (animated in CSS). -->
                 <div class="options">
                     <!-- Sits at the top so it stays put while the options open below. -->
-                    <button type="button" class="options-toggle search-options-toggle" aria-expanded="false"
-                        aria-controls="search-options"><span class="options-label">Search Options</span></button>
+                    <div class="search-options-header">
+                        <button type="button" class="options-toggle search-options-toggle" aria-expanded="false"
+                            aria-controls="search-options"><span class="options-label">Search Options</span></button>
+                        <a class="search-tips-link" href="/about#search-tips">Quick Search Tips</a>
+                    </div>
                     <div id="search-options" class="options-collapse">
                         <!-- The four quick controls, side by side with a description underneath. -->
                         <div class="option-rows">
@@ -140,7 +143,6 @@
                             <button type="button" id="custom-dicts-button" class="quick-toggle custom-dicts-button"
                                 aria-pressed="false" title="Show the dictionary picker.">Custom Dictionaries</button>
                         </div>
-                        <p class="search-tips-link"><a href="/about#search-tips">Quick Search Tips</a></p>
                         <!-- Hidden switches hold the state; the controls above flip them. -->
                         <input type="checkbox" id="script-toggle" hidden>
                         <input type="checkbox" id="tone-toggle" hidden>

@@ -2811,11 +2811,28 @@ footer {
     color: var(--accent);
 }
 
-/* Quick Search Tips link inside the Search Options dropdown. */
+/* Quick Search Tips link on the right of the Search Options header. */
+.search-options-header {
+    position: relative;
+}
+
 .search-tips-link {
-    margin: .1rem 0 .35rem;
-    text-align: center;
+    display: none;
+    position: absolute;
+    right: .75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--muted);
     font-size: .85rem;
+    text-decoration: underline;
+}
+
+.options.open .search-tips-link {
+    display: inline-flex;
+}
+
+.search-tips-link:hover {
+    color: var(--accent);
 }
 
 /* Search tips table on the home page. */
