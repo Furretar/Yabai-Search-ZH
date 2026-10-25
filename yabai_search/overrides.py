@@ -68,6 +68,8 @@ NORMALIZE_RULES: list[tuple[str, str]] = [
     (r"\bsth\b", "something"),
     # "cf." (compare) reads more naturally as "see".
     (r"\bcf\.", "see"),
+    # "(Tw)" is CEDICT's shorthand for a Taiwan-specific usage.
+    (r"\(Tw\)", "(Taiwan)"),
 ]
 
 # Compile the rules once, at import time (regex compilation is not free).
