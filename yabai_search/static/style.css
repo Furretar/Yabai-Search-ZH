@@ -987,7 +987,8 @@ body:has(.search-panel:focus-within) .pull-arrow {
 }
 
 .custom-dicts-button[aria-pressed="false"] {
-    color: var(--muted);
+    /* Explicit gray: currentColor-based vars pick up the accent colour here. */
+    color: color-mix(in srgb, #ffffff 65%, transparent);
 }
 
 /* The tone control is a single dark chip matching the rows. */
@@ -1047,9 +1048,10 @@ body:has(.search-panel:focus-within) .pull-arrow {
 }
 
 /* Off: the whole sample uses the same gray as the inactive quick-square text
-   (e.g. the Simplified/Traditional buttons). */
+   (e.g. the Simplified/Traditional buttons). An explicit colour is needed
+   because currentColor-based vars pick up the yellow tone colour here. */
 .quick-toggle[aria-pressed="false"] .tone-phrase span {
-    color: var(--control);
+    color: color-mix(in srgb, #ffffff 75%, transparent);
 }
 
 .quick-pair .quick-square:focus-visible,
@@ -2935,6 +2937,10 @@ html:not(.theme-light) .theme-toggle .quick-square[data-theme="dark"] {
 html.theme-light .quick-toggle {
     background: #e8e8e8;
     border-color: #b0b0b0;
+}
+
+html.theme-light .quick-toggle[aria-pressed="false"] .tone-phrase span {
+    color: color-mix(in srgb, #222222 85%, transparent);
 }
 
 html.theme-light .custom-dicts-button[aria-pressed="false"] {
