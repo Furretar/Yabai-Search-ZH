@@ -66,9 +66,9 @@
     --pinyin: #c0392b;
 
     /* Tone colours, by tone number (1-4; 5 = neutral). */
-    --tone1: #e74c3c;
+    --tone1: #ff3823;
     --tone2: var(--accent);
-    --tone3: #27ae60;
-    --tone4: #2980b9;
+    --tone3: #00d559;
+    --tone4: #0088e2;
     --tone5: #7f8c8d;
 }
