@@ -34,9 +34,9 @@ def test_home_page_has_search_title_and_debug_button(client):
     assert 'placeholder="Search with English, Chinese, or Pinyin"' in html
     assert 'id="home-link"' in html
     assert 'class="site-subtitle"' in html
-    # The debug log is available to every client, not only local requests.
-    assert 'id="copy-log-button"' in html
-    assert "Copy debug log" in html
+    # The debug log button is local-admin-only, not shown to every visitor.
+    assert 'id="copy-log-button"' not in html
+    assert "Copy debug log" not in html
     assert "glyphs.js" in html
     # The submit button is an icon button with an accessible label.
     assert 'class="search-button" aria-label="Search"' in html

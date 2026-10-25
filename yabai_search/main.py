@@ -331,8 +331,8 @@ def index(request: Request):
             "dictionaries": db.dictionaries(),
             "defaults": DEFAULTS,
             "show_reports": _request_is_local(request),
-            # The debug log button is useful for every client, not just local.
-            "show_debug": True,
+            # The debug log button is only for the local admin, not every visitor.
+            "show_debug": _request_is_local(request),
         },
     )
 
