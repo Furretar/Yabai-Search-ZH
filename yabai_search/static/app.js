@@ -135,6 +135,13 @@ function debugErrorText(error) {
     return String(error);
 }
 
+// Keep debug events small: a pasted paragraph would otherwise be copied into
+// every event. The full query is still used for the actual search.
+function debugQuery(text) {
+    const value = String(text);
+    return value.length > 80 ? `${value.slice(0, 80)}… (${value.length} chars)` : value;
+}
+
 // Record one event. While a search is active it is also attached to that
 // search, which is what "traceback from the current search" reports.
 function recordDebug(level, message, error = null, details = null) {
@@ -147,6 +154,7 @@ function recordDebug(level, message, error = null, details = null) {
     if (details && typeof details === "object") Object.assign(entry, details);
     if (currentDebugSearch) {
         entry.query = currentDebugSearch.query;
+        entry.seq = currentDebugSearch.seq;
         entry.offset = currentDebugSearch.offset;
         if (typeof currentDebugSearch.startedAtPerf === "number") {
             entry.sinceSearchStartMs =
@@ -247,7 +255,7 @@ if ("PerformanceObserver" in window) {
 function beginSearchDebug(query, offset, seq) {
     const now = performance.now();
     currentDebugSearch = {
-        query: String(query),
+        query: debugQuery(query),
         offset,
         seq,
         startedAt: new Date().toISOString(),
@@ -877,26 +885,71 @@ function furigana(text, pinyin, allowTones = true) {
 // Even out each reading/character pair: both cells get the width of the wider
 // one. The reading sits centered above its character and the character line
 // spreads naturally, while staying in normal inline flow for selection.
+//
+// Measuring every cell one node at a time forces a layout per getBoundingClientRect,
+// which becomes quadratic on long pastes (thousands of cells). Collect the new
+// nodes in a microtask and do all clears first, then all reads, then all
+// writes: the browser lays the page out once instead of once per cell.
+const pendingFurigana = new Set();
+let furiganaFlushQueued = false;
+
 function layoutFurigana(node) {
     if (!node || node.dataset.furiganaLayout === "done") return;
-    const readingCells = [...node.querySelectorAll(".reading-cell")];
-    const charCells = [...node.querySelectorAll(".char-cell")];
-    if (!readingCells.length || !charCells.length) return;
-    for (const cell of [...readingCells, ...charCells]) {
-        cell.style.width = "";
-        cell.style.minWidth = "";
+    pendingFurigana.add(node);
+    if (furiganaFlushQueued) return;
+    furiganaFlushQueued = true;
+    queueMicrotask(flushFuriganaLayout);
+}
+
+function flushFuriganaLayout() {
+    const start = performance.now();
+    furiganaFlushQueued = false;
+    const nodes = [...pendingFurigana].filter(
+        (node) => node.isConnected && node.dataset.furiganaLayout !== "done"
+    );
+    pendingFurigana.clear();
+    if (!nodes.length) return;
+    const entries = [];
+    // Phase 1: clear every width (writes only).
+    for (const node of nodes) {
+        const readingCells = [...node.querySelectorAll(".reading-cell")];
+        const charCells = [...node.querySelectorAll(".char-cell")];
+        if (!readingCells.length || !charCells.length) {
+            node.dataset.furiganaLayout = "done";
+            continue;
+        }
+        for (const cell of [...readingCells, ...charCells]) {
+            cell.style.width = "";
+            cell.style.minWidth = "";
+        }
+        entries.push({ node, readingCells, charCells });
     }
-    const pairs = Math.min(readingCells.length, charCells.length);
-    for (let i = 0; i < pairs; i += 1) {
-        const width = Math.max(
-            readingCells[i].getBoundingClientRect().width,
-            charCells[i].getBoundingClientRect().width
-        );
-        const rounded = `${Math.ceil(width * 100) / 100}px`;
-        readingCells[i].style.width = rounded;
-        charCells[i].style.width = rounded;
+    // Phase 2: read every width (one layout, then cached geometry).
+    for (const entry of entries) {
+        const pairs = Math.min(entry.readingCells.length, entry.charCells.length);
+        const widths = new Array(pairs);
+        for (let i = 0; i < pairs; i += 1) {
+            widths[i] = Math.max(
+                entry.readingCells[i].getBoundingClientRect().width,
+                entry.charCells[i].getBoundingClientRect().width
+            );
+        }
+        entry.widths = widths;
     }
-    node.dataset.furiganaLayout = "done";
+    // Phase 3: apply all widths (writes only).
+    for (const { node, readingCells, charCells, widths } of entries) {
+        for (let i = 0; i < widths.length; i += 1) {
+            const rounded = `${Math.ceil(widths[i] * 100) / 100}px`;
+            readingCells[i].style.width = rounded;
+            charCells[i].style.width = rounded;
+        }
+        node.dataset.furiganaLayout = "done";
+    }
+    // Only instrument large batches. Adding a debug event to the normal result
+    // render shifted the browser test's selection timing.
+    if (nodes.length > 100) {
+        recordPhase("furigana layout (batched)", start, { nodes: nodes.length });
+    }
 }
 
 // New result rows, parsed words, and definition links are inserted all over
@@ -2324,16 +2377,24 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             ms: first.ms,
         };
     }
-    if (first) recordDebug("response", "Primary search response received");
+    if (first) {
+        recordDebug("response", "Primary search response received", null, {
+            source: embeddedPrimary ? "embedded" : (cached && cached.first ? "pageCache" : "network"),
+            serverMs: first.ms,
+        });
+    }
     entryDictState.clear(); // a fresh search starts from the global selection
-    const firstMs = first && typeof first.ms === "number" ? first.ms : null;
+    // Client wall-clock for both numbers. The server's first.ms is stale when
+    // the response came from the page cache or the embedded primary.
+    const firstMs = first ? Math.round(performance.now() - startedAt) : null;
     const showFirst =
         twoPhase &&
         first &&
         first.total == null &&
         offset === 0 &&
         first.results.length >= 1 &&
-        !fullSettled;
+        !fullSettled &&
+        !cachedFull;
     if (showFirst) {
         currentEntries = first.results;
         currentQuery = query;
@@ -2845,7 +2906,8 @@ function scriptText(token) {
 
 function renderParsed(tokens) {
     currentTokens = tokens;
-    parsed.replaceChildren();
+    const buildStart = performance.now();
+    const fragment = document.createDocumentFragment();
     for (const token of tokens) {
         const node = document.createElement("span");
         node.className = "parsed-word";
@@ -2883,14 +2945,23 @@ function renderParsed(tokens) {
                 node.classList.add("plain");
             }
         }
-        parsed.append(node);
+        fragment.append(node);
         if (dialect) {
             const label = document.createElement("span");
             label.className = "dialect-label";
             label.textContent = dialect;
-            parsed.append(label);
+            fragment.append(label);
         }
     }
+    recordPhase("parsed build (detached)", buildStart, { tokens: tokens.length });
+    const attachStart = performance.now();
+    parsed.replaceChildren(fragment);
+    recordPhase("parsed attach", attachStart);
+    // Debug only: force layout so the furigana layout cost shows up here
+    // rather than hiding inside the next frame.
+    const layoutStart = performance.now();
+    void parsed.offsetHeight;
+    recordPhase("parsed layout", layoutStart, { tokens: tokens.length });
 }
 
 // --- scroll position across reloads and back/forward ---------------------
@@ -2976,26 +3047,93 @@ window.addEventListener("beforeunload", saveScroll);
 
 // Segment the input. Multi-word text shows clickable words; a single word is
 // looked up directly.
-// Segment the input. Multi-word text shows clickable words; a single word is
-// looked up directly.
+// Pasted text longer than any dictionary headword cannot match one, so skip the
+// two-tier dictionary search and parse it directly.
+const ANNOTATE_DIRECT_LEN = 40;
+const annotateCache = new Map();
+let annotateController = null;
+
+async function fetchAnnotate(text) {
+    const hit = annotateCache.get(text);
+    if (hit) {
+        recordDebug("annotate", "Annotate client cache hit", null, { tokens: hit.length });
+        return { tokens: hit };
+    }
+    // A newer parse supersedes the old one; stop waiting on it.
+    if (annotateController) annotateController.abort();
+    const controller = new AbortController();
+    annotateController = controller;
+    const fetchStart = performance.now();
+    try {
+        const response = await fetch("/api/annotate", {
+            method: "POST",
+            cache: "no-store",
+            priority: "high",
+            signal: controller.signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+        });
+        recordPhase("annotate fetch", fetchStart, {
+            status: response.status,
+            chars: text.length,
+        });
+        recordServerDebug("annotate", response);
+        const inflight = response.headers.get("x-yabai-inflight");
+        if (inflight) {
+            recordDebug("network", "annotate server in-flight", null, { inflight });
+        }
+        const parseStart = performance.now();
+        const data = await response.json();
+        recordPhase("annotate parse", parseStart, {
+            tokens: Array.isArray(data.tokens) ? data.tokens.length : 0,
+        });
+        recordNetworkTiming("annotate network", "/api/annotate");
+        if (Array.isArray(data.tokens)) {
+            annotateCache.set(text, data.tokens);
+            if (annotateCache.size > 20) {
+                annotateCache.delete(annotateCache.keys().next().value);
+            }
+        }
+        return data;
+    } catch (error) {
+        if (error && error.name === "AbortError") {
+            recordDebug("annotate", "Annotate request aborted (superseded)");
+        } else {
+            recordDebug("error", "Annotate failed", error);
+        }
+        return { tokens: [], aborted: true };
+    }
+}
+
 async function annotate(text) {
     releaseClearScrollGuard();
-    // Single-word queries (no spaces) rarely need annotation: the whole query
-    // is searched as-is and the fallback never triggers. Skip the round trip.
-    if (!text.includes(" ")) {
-        clearResults();
+    clearResults();
+    const longText = text.length > ANNOTATE_DIRECT_LEN && CJK_RE.test(text);
+    const hasSpace = text.includes(" ");
+
+    if (longText) {
+        recordDebug("search", "Skipped dictionary search: long CJK text", null, {
+            queryLength: text.length,
+        });
+        const data = await fetchAnnotate(text);
+        if (data.aborted) return;
+        if (data.tokens && data.tokens.length > 1) {
+            const renderStart = performance.now();
+            renderParsed(data.tokens);
+            recordPhase("renderParsed total", renderStart, { tokens: data.tokens.length });
+            if (data.tokens[0].text !== text) await search(data.tokens[0].text);
+        }
+        restoreScroll();
+        return;
+    }
+
+    if (!hasSpace) {
         const found = await search(text);
         if (!found) {
             // Fall back to annotation in case the word is a multi-token phrase
             // without spaces (e.g. "我是中国人").
-            const response = await fetch("/api/annotate", {
-                method: "POST",
-                cache: "no-store",
-                priority: "high",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text }),
-            });
-            const data = await response.json();
+            const data = await fetchAnnotate(text);
+            if (data.aborted) return;
             if (data.tokens && data.tokens.length > 1) {
                 renderParsed(data.tokens);
                 if (data.tokens[0].text !== text) {
@@ -3006,16 +3144,14 @@ async function annotate(text) {
         restoreScroll();
         return;
     }
-    clearResults();
-    const annotatePromise = fetch("/api/annotate", {
-        method: "POST",
-        cache: "no-store",
-        priority: "high",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-    }).then((response) => response.json()).catch(() => ({ tokens: [] }));
+
+    const annotatePromise = fetchAnnotate(text);
     const searchPromise = search(text);
     const data = await annotatePromise;
+    if (data.aborted) {
+        searchPromise.catch(() => {});
+        return;
+    }
     if (data.tokens && data.tokens.length > 1) renderParsed(data.tokens);
     const found = await searchPromise;
     if (!found && data.tokens && data.tokens.length && data.tokens[0].text !== text) {

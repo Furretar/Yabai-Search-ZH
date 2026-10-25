@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -168,3 +169,44 @@ def test_annotate_normalizes_variant_characters(client):
     assert tokens[0]["text"] == "什麽"
     assert tokens[0]["entries"]
     assert tokens[0]["entries"][0]["pinyin"] == "shén me"
+
+
+def test_annotate_reports_timing_and_caches_the_text(client):
+    """The parse endpoint exposes its timings, in-flight count and text cache."""
+    text = "缓存命中测试短语甲乙丙丁戊己庚辛壬癸"
+
+    first = client.post("/api/annotate", json={"text": text})
+    assert first.status_code == 200
+    timing = first.headers["server-timing"]
+    assert "total;dur=" in timing
+    assert "segment;dur=" in timing
+    assert "db_lookup;dur=" in timing
+    assert "x-yabai-inflight" in first.headers
+    debug = json.loads(first.headers["x-yabai-debug"])
+    assert debug["chars"] == len(text)
+    assert debug["tokens"] > 0
+    assert debug["cache_hit"] is False
+
+    second = client.post("/api/annotate", json={"text": text})
+    assert second.status_code == 200
+    assert json.loads(second.headers["x-yabai-debug"])["cache_hit"] is True
+    # Cached calls still report a total, but not the per-phase breakdown.
+    assert "total;dur=" in second.headers["server-timing"]
+
+
+def test_annotate_entries_only_carry_renderer_fields(client):
+    """The parser gets readings for tokens, not whole decorated entries."""
+    response = client.post("/api/annotate", json={"text": "发展中国家"})
+    entries = [entry for token in response.json()["tokens"] for entry in token["entries"]]
+    assert entries
+    expected = {
+        "simplified",
+        "traditional",
+        "pinyin",
+        "pinyin_taiwan",
+        "pinyin_no_tone",
+        "pinyin_label",
+        "ids_images",
+    }
+    for entry in entries:
+        assert set(entry) == expected

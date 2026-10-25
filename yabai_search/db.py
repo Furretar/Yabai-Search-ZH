@@ -684,12 +684,16 @@ def connect() -> sqlite3.Connection:
     connection = _connect(DB_PATH)
     # Row factory lets us read columns by name, e.g. row["pinyin"].
     connection.row_factory = sqlite3.Row
-    with _connection_lock:
-        attached = {row[1] for row in connection.execute("PRAGMA database_list")}
-        if "moe" not in attached and MOE_DB_PATH.exists():
-            connection.execute("ATTACH DATABASE ? AS moe", (str(MOE_DB_PATH),))
-        if "subtlex" not in attached and SUBTLEX_DB_PATH.exists():
-            connection.execute("ATTACH DATABASE ? AS subtlex", (str(SUBTLEX_DB_PATH),))
+    # Attach once per (thread-local) connection. Every call used to take the
+    # global lock and run PRAGMA database_list, which serialised all threads.
+    if not getattr(connection, "_yabai_attached", False):
+        with _connection_lock:
+            attached = {row[1] for row in connection.execute("PRAGMA database_list")}
+            if "moe" not in attached and MOE_DB_PATH.exists():
+                connection.execute("ATTACH DATABASE ? AS moe", (str(MOE_DB_PATH),))
+            if "subtlex" not in attached and SUBTLEX_DB_PATH.exists():
+                connection.execute("ATTACH DATABASE ? AS subtlex", (str(SUBTLEX_DB_PATH),))
+        connection._yabai_attached = True
     return connection
 
 

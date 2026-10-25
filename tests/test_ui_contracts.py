@@ -123,6 +123,22 @@ def test_parsed_area_reserves_space_for_furigana():
     assert "line-height: 3.2;" in rule
 
 
+def test_long_pastes_skip_the_dictionary_search():
+    """A pasted paragraph goes straight to /api/annotate, not the search tiers."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "const ANNOTATE_DIRECT_LEN = 40;" in js
+    assert "Skipped dictionary search: long CJK text" in js
+    assert "function fetchAnnotate(" in js
+
+
+def test_furigana_layout_is_batched():
+    """Cell widths are measured in one batch, not one forced layout per cell."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "const pendingFurigana = new Set();" in js
+    assert "function flushFuriganaLayout(" in js
+    assert "queueMicrotask(flushFuriganaLayout)" in js
+
+
 def test_taiwan_mode_hides_duplicate_colloquial_note():
     """A colloquial reading that repeats the Taiwan reading is not shown twice."""
     js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")

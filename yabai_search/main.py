@@ -8,7 +8,9 @@ import json
 import re
 import shutil
 import subprocess
+import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -242,6 +244,28 @@ def asset_version() -> str:
 
 # The application object that uvicorn imports and runs.
 app = FastAPI(title="Yabai Search")
+
+# Counts requests that have arrived but not finished. A high value explains a
+# slow first byte (the threadpool was busy) without guessing.
+_inflight = 0
+_inflight_lock = threading.Lock()
+
+
+@app.middleware("http")
+async def _debug_stamp(request, call_next):
+    """Record arrival time (to measure threadpool wait) and in-flight count."""
+    global _inflight
+    request.state.arrived = time.perf_counter()
+    with _inflight_lock:
+        _inflight += 1
+        seen = _inflight
+    try:
+        response = await call_next(request)
+    finally:
+        with _inflight_lock:
+            _inflight -= 1
+    response.headers["X-Yabai-Inflight"] = str(seen)
+    return response
 
 
 @app.middleware("http")
@@ -940,37 +964,101 @@ def api_report(report: BugReportRequest):
     return {"ok": True}
 
 
-@app.post("/api/annotate")
-def api_annotate(request: AnnotateRequest):
-    """Segment pasted Chinese text and attach dictionary matches to each word.
+def _annotate_entry(entry: dict) -> dict:
+    """Only the fields the parsed-input renderer reads.
 
-    The whole sentence is converted to traditional and simplified up front, so
-    each word carries both forms for the front-end script toggle. Converting the
-    full sentence (not each word) lets OpenCC use the phrase context, e.g.
-    "一只" -> "一隻". A segmented word with no dictionary entry is split into
-    single characters so something still matches (e.g. 这是 -> 这 + 是).
+    The full decorated entry carries definitions, chips and frequency, which
+    the parser never uses. Sending them for every token made a 2,600-character
+    paste a 1.1 MB response.
     """
-    text = request.text
+    return {
+        "simplified": entry.get("simplified"),
+        "traditional": entry.get("traditional"),
+        "pinyin": entry.get("pinyin"),
+        "pinyin_taiwan": entry.get("pinyin_taiwan"),
+        "pinyin_no_tone": entry.get("pinyin_no_tone"),
+        "pinyin_label": entry.get("pinyin_label"),
+        "ids_images": entry.get("ids_images"),
+    }
+
+
+@lru_cache(maxsize=32)
+def _annotate_text(text: str) -> tuple[list[dict], dict, dict]:
+    """Segment `text` and attach dictionary matches. Cached by exact text.
+
+    Returns (tokens, ms timings, counters). Timings are filled by segment(),
+    OpenCC and the lookup loop so /api/annotate can report where the time goes.
+    """
+    stats: dict[str, float] = {}
+    counters: dict[str, object] = {"chars": len(text)}
+
+    def tick(name: str, at: float) -> None:
+        stats[name] = round(stats.get(name, 0.0) + (time.perf_counter() - at) * 1000, 2)
+
+    at = time.perf_counter()
     traditional = db.to_traditional(text)
+    tick("opencc_trad", at)
+    at = time.perf_counter()
     simplified = db.to_simplified(text)
-    tokens = []
+    tick("opencc_simp", at)
+
+    seg: dict[str, float] = {}
+    at = time.perf_counter()
+    words = segment.segment(text, seg)
+    tick("segment", at)
+    for key, value in seg.items():
+        if key.startswith("n_"):
+            counters[key] = value
+        else:
+            stats[f"seg_{key}"] = value
+
+    lookup_before = db.lookup.cache_info()
+    lookup_memo: dict[str, list[dict]] = {}
+    source_memo: dict[str, list[dict]] = {}
+    slow: list[tuple[float, str]] = []
+
+    def look(word: str) -> list[dict]:
+        if word in lookup_memo:
+            return lookup_memo[word]
+        at = time.perf_counter()
+        result = db.lookup(word) if word.strip() else []
+        spent = (time.perf_counter() - at) * 1000
+        stats["db_lookup"] = round(stats.get("db_lookup", 0.0) + spent, 2)
+        slow.append((spent, f"lookup:{word}"))
+        lookup_memo[word] = result
+        return result
+
+    def source(word: str) -> list[dict]:
+        if word in source_memo:
+            return source_memo[word]
+        at = time.perf_counter()
+        result = db.source_entries(word) if word.strip() else []
+        spent = (time.perf_counter() - at) * 1000
+        stats["db_source"] = round(stats.get("db_source", 0.0) + spent, 2)
+        counters["source_calls"] = int(counters.get("source_calls", 0)) + 1
+        slow.append((spent, f"source:{word}"))
+        source_memo[word] = result
+        return result
+
+    tokens: list[dict] = []
     pos = 0
-    for word in segment.segment(text):
+    at_loop = time.perf_counter()
+    for word in words:
         end = pos + len(word)
         trad, simp = traditional[pos:end], simplified[pos:end]
         pos = end
-        entries = db.lookup(word) if word.strip() else []
+        entries = look(word)
         if not entries and word.strip():
             # Not in CEDICT: use another dictionary's entry (e.g. MOE) so the
             # parsed word still gets a reading and is clickable.
-            entries = db.source_entries(word)
+            entries = source(word)
         if not entries and word.strip():
             # A mixed-script spelling such as 什麽 (麽 U+9EBD, not 麼 U+9EBC)
             # is not a headword itself. Retry with the sentence-level OpenCC
             # forms, which normalise the variant without an extra conversion.
             for form in (trad, simp):
                 if form and form != word:
-                    entries = db.lookup(form) or db.source_entries(form)
+                    entries = look(form) or source(form)
                     if entries:
                         break
         if (
@@ -980,17 +1068,62 @@ def api_annotate(request: AnnotateRequest):
             and not segment.is_headword(word)
         ):
             for i, char in enumerate(word):
-                char_entries = db.lookup(char) if char.strip() else []
+                char_entries = look(char)
                 tokens.append(
                     {
                         "text": char,
                         "traditional": trad[i : i + 1],
                         "simplified": simp[i : i + 1],
-                        "entries": char_entries,
+                        "entries": [_annotate_entry(char_entries[0])] if char_entries else [],
                     }
                 )
         else:
             tokens.append(
-                {"text": word, "traditional": trad, "simplified": simp, "entries": entries}
+                {
+                    "text": word,
+                    "traditional": trad,
+                    "simplified": simp,
+                    "entries": [_annotate_entry(entries[0])] if entries else [],
+                }
             )
+    tick("token_loop_total", at_loop)
+
+    lookup_after = db.lookup.cache_info()
+    counters["tokens"] = len(tokens)
+    counters["unique_words"] = len(set(words))
+    counters["lookup_cache_hits"] = lookup_after.hits - lookup_before.hits
+    counters["lookup_cache_misses"] = lookup_after.misses - lookup_before.misses
+    counters["slowest"] = [
+        f"{ms:.1f}ms {label}" for ms, label in sorted(slow, reverse=True)[:5]
+    ]
+    return tokens, stats, counters
+
+
+@app.post("/api/annotate")
+def api_annotate(payload: AnnotateRequest, request: Request, response: Response):
+    """Segment pasted Chinese text and attach dictionary matches to each word.
+
+    The whole sentence is converted to traditional and simplified up front, so
+    each word carries both forms for the front-end script toggle. Converting the
+    full sentence (not each word) lets OpenCC use the phrase context, e.g.
+    "一只" -> "一隻". A segmented word with no dictionary entry is split into
+    single characters so something still matches (e.g. 这是 -> 这 + 是).
+    """
+    started = time.perf_counter()
+    queue_ms = round((started - getattr(request.state, "arrived", started)) * 1000, 2)
+    before = _annotate_text.cache_info()
+    tokens, stats, counters = _annotate_text(payload.text)
+    cache_hit = _annotate_text.cache_info().hits > before.hits
+
+    total_ms = round((time.perf_counter() - started) * 1000, 2)
+    parts = [f"queue;dur={queue_ms}"]
+    if not cache_hit:  # cached stats describe the original computation
+        parts += [f"{name};dur={value}" for name, value in stats.items()]
+    parts.append(f"total;dur={total_ms}")
+    response.headers["Server-Timing"] = ", ".join(parts)
+    response.headers["X-Yabai-Debug"] = json.dumps(
+        {**counters, "cache_hit": cache_hit, "thread": threading.current_thread().name},
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
     return {"tokens": tokens}

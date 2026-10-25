@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 import jieba
@@ -177,18 +178,34 @@ def _split_unknown(tokens: list[str]) -> list[str]:
     return out
 
 
-def segment(text: str) -> list[str]:
+def segment(text: str, timings: dict[str, float] | None = None) -> list[str]:
     """Split Chinese text into words, keeping known headwords together.
 
     jieba sometimes splits a known headword (e.g. 一償宿願) even when it is in the
     user dict, so afterwards we greedily merge runs of adjacent tokens into the
     longest known headword. This only ever joins tokens whose concatenation is an
     exact dictionary headword, so it cannot merge across real word boundaries.
+
+    The optional `timings` dict is filled with milliseconds and n_* counts; it
+    never changes the returned tokens.
     """
+
+    def tick(name: str, at: float) -> None:
+        if timings is not None:
+            timings[name] = round(
+                timings.get(name, 0.0) + (time.perf_counter() - at) * 1000, 2
+            )
+
+    at = time.perf_counter()
     _ensure_loaded()
+    tick("ensure_loaded", at)
+
+    at = time.perf_counter()
     tokens = list(jieba.cut(text))
+    tick("jieba_cut", at)
     words = _headwords()
 
+    at = time.perf_counter()
     merged: list[str] = []
     i = 0
     while i < len(tokens):
@@ -205,4 +222,18 @@ def segment(text: str) -> list[str]:
         else:
             merged.append(tokens[i])
             i += 1
-    return _split_unknown(_join_foreign(merged))
+    tick("merge", at)
+
+    at = time.perf_counter()
+    foreign = _join_foreign(merged)
+    tick("join_foreign", at)
+
+    at = time.perf_counter()
+    result = _split_unknown(foreign)
+    tick("split_unknown", at)
+
+    if timings is not None:
+        timings["n_jieba_tokens"] = len(tokens)
+        timings["n_merged"] = len(merged)
+        timings["n_final"] = len(result)
+    return result
