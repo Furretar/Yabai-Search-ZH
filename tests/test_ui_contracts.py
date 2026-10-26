@@ -37,6 +37,8 @@ def test_home_page_has_search_title_and_debug_button(client):
     # The debug log is available to every client, not only local requests.
     assert 'id="copy-log-button"' in html
     assert "Copy debug log" in html
+    assert 'id="download-log-button"' in html
+    assert "Download .txt" in html
     assert "glyphs.js" in html
     # The submit button is an icon button with an accessible label.
     assert 'class="search-button" aria-label="Search"' in html
@@ -121,6 +123,15 @@ def test_parsed_area_reserves_space_for_furigana():
     end = css.index("}", start)
     rule = css[start:end]
     assert "line-height: 3.2;" in rule
+
+
+def test_debug_log_can_be_downloaded_as_txt():
+    """The footer offers a .txt download built from the same snapshot text."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "function downloadDebugLog(" in js
+    assert "new Blob([text], { type: \"text/plain;charset=utf-8\" })" in js
+    assert "link.download = `yabai-debug-${stamp}.txt`" in js
+    assert 'document.getElementById("download-log-button")' in js
 
 
 def test_long_pastes_skip_the_dictionary_search():

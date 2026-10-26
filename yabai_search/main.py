@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import ipaddress
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -313,6 +314,11 @@ def _warm_caches() -> None:
     """Build the SQL and segmenter caches now, not during the first search."""
     db.warm_caches()
     segment.warm()
+    # Fill the parser's reading cache in the background, so common pasted words
+    # skip the cold lookup path without delaying startup. Tests disable it to
+    # keep the timing-sensitive browser test stable.
+    if os.environ.get("YABAI_WARM_LOOKUPS", "1") != "0":
+        threading.Thread(target=db.warm_lookup_readings, daemon=True).start()
 
 # Serve files from yabai_search/static/ at the URL prefix /static/...
 # (e.g. /static/style.css, /static/app.js). Read-only, served verbatim.
@@ -964,30 +970,26 @@ def api_report(report: BugReportRequest):
     return {"ok": True}
 
 
-def _annotate_entry(entry: dict) -> dict:
-    """Only the fields the parsed-input renderer reads.
+def _tok(text: str, trad: str, simp: str, entries: list[dict]) -> dict:
+    """One parsed token; drop script fields that equal the text itself.
 
-    The full decorated entry carries definitions, chips and frequency, which
-    the parser never uses. Sending them for every token made a 2,600-character
-    paste a 1.1 MB response.
+    The client's scriptText() falls back to token.text, so sending identical
+    traditional/simplified strings only inflates the response.
     """
-    return {
-        "simplified": entry.get("simplified"),
-        "traditional": entry.get("traditional"),
-        "pinyin": entry.get("pinyin"),
-        "pinyin_taiwan": entry.get("pinyin_taiwan"),
-        "pinyin_no_tone": entry.get("pinyin_no_tone"),
-        "pinyin_label": entry.get("pinyin_label"),
-        "ids_images": entry.get("ids_images"),
-    }
+    token: dict = {"text": text, "entries": entries}
+    if trad != text:
+        token["traditional"] = trad
+    if simp != text:
+        token["simplified"] = simp
+    return token
 
 
 @lru_cache(maxsize=32)
-def _annotate_text(text: str) -> tuple[list[dict], dict, dict]:
+def _annotate_text(text: str) -> tuple[bytes, dict, dict]:
     """Segment `text` and attach dictionary matches. Cached by exact text.
 
-    Returns (tokens, ms timings, counters). Timings are filled by segment(),
-    OpenCC and the lookup loop so /api/annotate can report where the time goes.
+    Returns (encoded JSON body, ms timings, counters). Timings are filled by
+    segment(), OpenCC, the lookup loop and the final json.dumps.
     """
     stats: dict[str, float] = {}
     counters: dict[str, object] = {"chars": len(text)}
@@ -1012,7 +1014,7 @@ def _annotate_text(text: str) -> tuple[list[dict], dict, dict]:
         else:
             stats[f"seg_{key}"] = value
 
-    lookup_before = db.lookup.cache_info()
+    lookup_before = db.lookup_reading.cache_info()
     lookup_memo: dict[str, list[dict]] = {}
     source_memo: dict[str, list[dict]] = {}
     slow: list[tuple[float, str]] = []
@@ -1021,7 +1023,7 @@ def _annotate_text(text: str) -> tuple[list[dict], dict, dict]:
         if word in lookup_memo:
             return lookup_memo[word]
         at = time.perf_counter()
-        result = db.lookup(word) if word.strip() else []
+        result = db.lookup_reading(word) if word.strip() else []
         spent = (time.perf_counter() - at) * 1000
         stats["db_lookup"] = round(stats.get("db_lookup", 0.0) + spent, 2)
         slow.append((spent, f"lookup:{word}"))
@@ -1032,7 +1034,11 @@ def _annotate_text(text: str) -> tuple[list[dict], dict, dict]:
         if word in source_memo:
             return source_memo[word]
         at = time.perf_counter()
-        result = db.source_entries(word) if word.strip() else []
+        result = (
+            [db.slim_entry(entry) for entry in db.source_entries(word)]
+            if word.strip()
+            else []
+        )
         spent = (time.perf_counter() - at) * 1000
         stats["db_source"] = round(stats.get("db_source", 0.0) + spent, 2)
         counters["source_calls"] = int(counters.get("source_calls", 0)) + 1
@@ -1068,27 +1074,14 @@ def _annotate_text(text: str) -> tuple[list[dict], dict, dict]:
             and not segment.is_headword(word)
         ):
             for i, char in enumerate(word):
-                char_entries = look(char)
                 tokens.append(
-                    {
-                        "text": char,
-                        "traditional": trad[i : i + 1],
-                        "simplified": simp[i : i + 1],
-                        "entries": [_annotate_entry(char_entries[0])] if char_entries else [],
-                    }
+                    _tok(char, trad[i : i + 1], simp[i : i + 1], look(char))
                 )
         else:
-            tokens.append(
-                {
-                    "text": word,
-                    "traditional": trad,
-                    "simplified": simp,
-                    "entries": [_annotate_entry(entries[0])] if entries else [],
-                }
-            )
+            tokens.append(_tok(word, trad, simp, entries))
     tick("token_loop_total", at_loop)
 
-    lookup_after = db.lookup.cache_info()
+    lookup_after = db.lookup_reading.cache_info()
     counters["tokens"] = len(tokens)
     counters["unique_words"] = len(set(words))
     counters["lookup_cache_hits"] = lookup_after.hits - lookup_before.hits
@@ -1096,11 +1089,17 @@ def _annotate_text(text: str) -> tuple[list[dict], dict, dict]:
     counters["slowest"] = [
         f"{ms:.1f}ms {label}" for ms, label in sorted(slow, reverse=True)[:5]
     ]
-    return tokens, stats, counters
+    at = time.perf_counter()
+    body = json.dumps(
+        {"tokens": tokens}, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    tick("encode", at)
+    counters["body_bytes"] = len(body)
+    return body, stats, counters
 
 
 @app.post("/api/annotate")
-def api_annotate(payload: AnnotateRequest, request: Request, response: Response):
+def api_annotate(payload: AnnotateRequest, request: Request):
     """Segment pasted Chinese text and attach dictionary matches to each word.
 
     The whole sentence is converted to traditional and simplified up front, so
@@ -1112,7 +1111,7 @@ def api_annotate(payload: AnnotateRequest, request: Request, response: Response)
     started = time.perf_counter()
     queue_ms = round((started - getattr(request.state, "arrived", started)) * 1000, 2)
     before = _annotate_text.cache_info()
-    tokens, stats, counters = _annotate_text(payload.text)
+    body, stats, counters = _annotate_text(payload.text)
     cache_hit = _annotate_text.cache_info().hits > before.hits
 
     total_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -1120,10 +1119,12 @@ def api_annotate(payload: AnnotateRequest, request: Request, response: Response)
     if not cache_hit:  # cached stats describe the original computation
         parts += [f"{name};dur={value}" for name, value in stats.items()]
     parts.append(f"total;dur={total_ms}")
-    response.headers["Server-Timing"] = ", ".join(parts)
-    response.headers["X-Yabai-Debug"] = json.dumps(
-        {**counters, "cache_hit": cache_hit, "thread": threading.current_thread().name},
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
-    return {"tokens": tokens}
+    headers = {
+        "Server-Timing": ", ".join(parts),
+        "X-Yabai-Debug": json.dumps(
+            {**counters, "cache_hit": cache_hit, "thread": threading.current_thread().name},
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ),
+    }
+    return Response(content=body, media_type="application/json", headers=headers)

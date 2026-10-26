@@ -201,10 +201,10 @@ def test_subtlex_frequency(search, find_result):
 
 @requires_hsk
 def test_hsk_levels_are_attached(search, find_result):
-    """HSK 2.0, 3.0 and 2026 levels are attached next to frequency."""
+    """The latest HSK levels (3.0 and 2026) are attached next to frequency."""
     entry = find_result(search("档案"), "档案")
     assert entry is not None
-    assert entry["hsk"] == {"old": 6, "new": 6, "newest": 6}
+    assert entry["hsk"] == {"new": 6, "newest": 6}
     laji = find_result(search("垃圾"), "垃圾")
     assert laji is not None
     assert laji["hsk"]["new"] == 4

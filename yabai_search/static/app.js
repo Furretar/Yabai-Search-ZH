@@ -181,6 +181,13 @@ function recordServerDebug(label, response) {
     const counters = response.headers.get("x-yabai-debug");
     if (timing) recordDebug("network", `${label} Server-Timing`, null, { serverTiming: timing });
     if (counters) recordDebug("network", `${label} server counters`, null, { serverCounters: counters });
+    // Cloudflare's edge status explains stale Server-Timing values on a HIT and
+    // whether the request reached an NRT or a US edge.
+    const cf = response.headers.get("cf-cache-status");
+    const ray = response.headers.get("cf-ray");
+    if (cf || ray) {
+        recordDebug("network", `${label} edge`, null, { cfCacheStatus: cf, cfRay: ray });
+    }
 }
 
 // Log TTFB, download and transfer size from the browser's resource timing.
@@ -376,6 +383,34 @@ async function copyDebugLog() {
 
 const copyLogButton = document.getElementById("copy-log-button");
 if (copyLogButton) copyLogButton.addEventListener("click", copyDebugLog);
+
+// Same text as Copy debug log, saved as a .txt file so it can be attached to
+// a report or opened in an editor.
+function downloadDebugLog() {
+    const text = debugSnapshot();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `yabai-debug-${stamp}.txt`;
+    link.style.display = "none";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const button = document.getElementById("download-log-button");
+    if (!button) return;
+    button.textContent = "Downloaded";
+    button.classList.add("copied");
+    window.setTimeout(() => {
+        button.textContent = "Download .txt";
+        button.classList.remove("copied");
+    }, 1500);
+}
+
+const downloadLogButton = document.getElementById("download-log-button");
+if (downloadLogButton) downloadLogButton.addEventListener("click", downloadDebugLog);
 
 // Tone-marked forms for each base vowel (index 0 = tone 1 ... 3 = tone 4).
 const TONE_MARKS = {
@@ -1597,25 +1632,15 @@ function fillEntryRow(row, entry) {
             meta.append(chip);
         }
         if (entry.hsk) {
-            // Prefer the current 2026 syllabus, then HSK 3.0, then HSK 2.0.
-            const level = entry.hsk.newest ?? entry.hsk.new ?? entry.hsk.old;
+            // Show the latest available level: 2026 syllabus, then HSK 3.0.
+            const level = entry.hsk.newest ?? entry.hsk.new;
             if (level) {
                 const chip = document.createElement("span");
                 chip.className = "source hsk";
                 chip.textContent = `HSK ${formatHskLevel(level)}`;
-                const details = [];
-                if (entry.hsk.newest) {
-                    details.push(
-                        `2026 syllabus: HSK ${formatHskLevel(entry.hsk.newest)}`
-                    );
-                }
-                if (entry.hsk.new) {
-                    details.push(`HSK 3.0: HSK ${formatHskLevel(entry.hsk.new)}`);
-                }
-                if (entry.hsk.old) {
-                    details.push(`HSK 2.0: HSK ${formatHskLevel(entry.hsk.old)}`);
-                }
-                chip.title = details.join(" | ");
+                chip.title = entry.hsk.newest
+                    ? `2026 syllabus: HSK ${formatHskLevel(entry.hsk.newest)}`
+                    : `HSK 3.0: HSK ${formatHskLevel(entry.hsk.new)}`;
                 meta.append(chip);
             }
         }

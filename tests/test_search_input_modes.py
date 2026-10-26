@@ -209,4 +209,6 @@ def test_annotate_entries_only_carry_renderer_fields(client):
         "ids_images",
     }
     for entry in entries:
-        assert set(entry) == expected
+        # slim_entry omits fields that are empty, so this is a subset.
+        assert set(entry) <= expected
+        assert entry.get("pinyin")

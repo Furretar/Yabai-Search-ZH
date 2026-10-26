@@ -149,7 +149,7 @@ The application code is MIT-licensed (see [LICENSE](https://github.com/Furretar/
 
 - <span id="hsk"></span>**[HSK Vocabulary](https://github.com/drkameleon/complete-hsk-vocabulary)**
   11,470 words · MIT · Updated 2026-10-19
-    - HSK 2.0, HSK 3.0, and 2026 syllabus vocabulary levels, shown next to the frequency rank.
+    - HSK 3.0 and 2026 syllabus vocabulary levels, shown next to the frequency rank.
 
 
 ### Software

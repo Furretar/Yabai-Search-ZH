@@ -50,7 +50,7 @@
                     <span class="source">Frequency: #{{ "{:,}".format(entry.freq.rank) }}</span>
                     {% endif %}
                     {% if entry.hsk %}
-                    {% set hsk_level = entry.hsk.newest or entry.hsk.new or entry.hsk.old %}
+                    {% set hsk_level = entry.hsk.newest or entry.hsk.new %}
                     {% if hsk_level %}
                     <span class="source">HSK {{ "7-9" if hsk_level >= 7 else hsk_level }}</span>
                     {% endif %}

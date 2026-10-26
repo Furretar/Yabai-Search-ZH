@@ -73,9 +73,13 @@ function tick() {
     try {
         const doc = frame.contentDocument;
         const win = frame.contentWindow;
+        // Wait until the no-flash hold is released. While the initial search is
+        // pending the result area is visibility:hidden, and selecting text in a
+        // hidden subtree gives an empty Selection.toString().
+        const visible = doc && !doc.documentElement.classList.contains("initial-search-pending");
         // Find the specific headword, not just the first result, so the test
         // does not depend on the result ordering.
-        const hanzi = doc && [...doc.querySelectorAll(".entry .hanzi")].find(
+        const hanzi = visible && [...doc.querySelectorAll(".entry .hanzi")].find(
             (node) => node.querySelector(".char")?.textContent === "发展中国家"
         );
         if (hanzi) {

@@ -1094,10 +1094,11 @@ def _attach_freq(entries: list[dict]) -> list[dict]:
 
 
 def _attach_hsk(entries: list[dict]) -> list[dict]:
-    """Attach the old, 3.0, and 2026 HSK levels for each entry.
+    """Attach the latest HSK levels (3.0 and the 2026 syllabus).
 
     Matched by the simplified form, then the traditional form. Each value is a
-    level number (7 means HSK 7-9), or None when the word is not in that list.
+    level number (7 means HSK 7-9). HSK 2.0 is not exposed: words only in the
+    old list get no HSK level.
     """
     words = sorted(
         {entry["simplified"] for entry in entries}
@@ -1111,7 +1112,7 @@ def _attach_hsk(entries: list[dict]) -> list[dict]:
     connection = _connect(HSK_DB_PATH)
     try:
         rows = connection.execute(
-            "SELECT simplified, traditional, old_level, new_level, newest_level "
+            "SELECT simplified, traditional, new_level, newest_level "
             f"FROM hsk WHERE simplified IN ({placeholders}) "
             f"OR traditional IN ({placeholders})",
             tuple(words) * 2,
@@ -1119,8 +1120,10 @@ def _attach_hsk(entries: list[dict]) -> list[dict]:
     finally:
         connection.close()
     by_word: dict[str, dict] = {}
-    for simplified, traditional, old, new, newest in rows:
-        value = {"old": old, "new": new, "newest": newest}
+    for simplified, traditional, new, newest in rows:
+        if new is None and newest is None:
+            continue  # HSK 2.0-only word: no current level to show
+        value = {"new": new, "newest": newest}
         by_word.setdefault(simplified, value)
         if traditional:
             by_word.setdefault(traditional, value)
@@ -1833,6 +1836,76 @@ def lookup(word: str) -> list[dict]:
         target = to_toneless(preferred)
         entries.sort(key=lambda entry: to_toneless(entry["pinyin"]) != target)
     return entries
+
+
+# The parsed-input display only reads these fields from entries[0].
+_SLIM_KEYS = (
+    "pinyin",
+    "pinyin_taiwan",
+    "pinyin_label",
+    "pinyin_no_tone",
+    "ids_images",
+)
+
+
+def slim_entry(entry: dict) -> dict:
+    """Only the fields the parsed-input display reads."""
+    return {key: entry[key] for key in _SLIM_KEYS if entry.get(key)}
+
+
+@lru_cache(maxsize=50_000)
+def lookup_reading(word: str) -> list[dict]:
+    """Like lookup(word)[:1], but decorates only the winning entry.
+
+    Same SQL and preferred-reading rule; _decorate (definitions, sources,
+    frequency) runs on one row instead of every row, and the cached value holds
+    only the five display fields, so a large cache stays small.
+    """
+    connection = connect()
+    try:
+        rows = connection.execute(
+            "SELECT simplified, traditional, pinyin, english, english_normalized "
+            "FROM entries WHERE simplified = ? OR traditional = ? "
+            "ORDER BY (SELECT COUNT(*) FROM senses s "
+            "          WHERE s.word = entries.simplified "
+            "          AND s.reading = entries.pinyin) DESC, "
+            "entries.id",
+            (word, word),
+        ).fetchall()
+    finally:
+        connection.close()
+    raw = [dict(row) for row in rows]
+    if not raw:
+        return []
+    preferred = (
+        PREFERRED_READINGS.get(word)
+        or PREFERRED_READINGS.get(to_simplified(word))
+        or PREFERRED_READINGS.get(to_traditional(word))
+    )
+    if preferred:
+        target = to_toneless(preferred)
+        raw.sort(key=lambda entry: to_toneless(entry["pinyin"] or "") != target)
+    decorated = _decorate(raw[:1])
+    return [slim_entry(decorated[0])] if decorated else []
+
+
+def warm_lookup_readings(limit: int = 5000) -> None:
+    """Pre-fill the parser's lookup cache with the most frequent words."""
+    connection = connect()
+    try:
+        words = [
+            row[0]
+            for row in connection.execute(
+                "SELECT word FROM subtlex.freq ORDER BY rank LIMIT ?", (limit,)
+            )
+        ]
+    except sqlite3.Error:
+        return
+    finally:
+        connection.close()
+    for word in words:
+        if word and has_cjk(word):
+            lookup_reading(word)
 
 
 def has_cjk(text: str) -> bool:

@@ -3,7 +3,8 @@
 
 Source: https://github.com/drkameleon/complete-hsk-vocabulary
 The dataset covers the old HSK 2.0 levels, the HSK 3.0 levels, and the newer
-2026 syllabus levels. It is released under the MIT licence.
+2026 syllabus levels. The app displays only the two current lists (3.0 and
+2026); HSK 2.0 is ignored. It is released under the MIT licence.
 
 Usage (from the project root):
     uv run python -m scripts.import_hsk
