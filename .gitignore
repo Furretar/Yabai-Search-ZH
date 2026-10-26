@@ -2,13 +2,5 @@
 .direnv/
 __pycache__/
 *.pyc
-data/*.sqlite
-data/*.txt
-data/*.gz
-data/*.bz2
-data/*.jsonl
-data/*.json
-data/*.zip
-data/search.log
-data/moe/
-data/moe_glyphs/
+# Dictionary data is downloaded and built by the importers; keep it out of git.
+data/

@@ -99,6 +99,8 @@ CEDICT has entries whose entire definition is a cross-reference, e.g. `血 血 [
 
 <h2 id="sources">Sources &amp; Licenses</h2>
 
+The application code is MIT-licensed (see [LICENSE](https://github.com/Furretar/Yabai-Search-ZH/blob/master/LICENSE)). The dictionary data listed below is not covered by that license and remains under the licenses shown for each source.
+
 
 ### English
 
