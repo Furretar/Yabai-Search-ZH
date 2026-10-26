@@ -302,9 +302,9 @@ def test_language_query_shows_language_and_note_entries(search):
 
 
 def test_shanghainese_ranks_language_entry_first(search):
-    """The dictionary entry for the language itself comes first."""
+    """The dictionary entries for the language itself come first."""
     words = _words(search("shanghainese"))
-    assert words[0] == "沪语"
+    assert set(words[:2]) == {"沪语", "上海话"}
     assert "大拐" in words[:10]
 
 

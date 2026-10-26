@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,9 @@ def test_word_page_shows_frequency_hsk_and_revised_moe(client):
     """The page shows the same metadata and dictionary blocks as a result row."""
     response = client.get("/word/档案")
     assert response.status_code == 200
-    assert "Frequency: #1,708" in response.text
+    match = re.search(r"Frequency: #([\d,]+)", response.text)
+    assert match and int(match.group(1).replace(",", "")) > 0
+    assert "Frequency under 20,000 is common. This number is not reliable past 100,000." in response.text
     assert "HSK 6" in response.text
     assert '<div class="sources-label">Dictionaries</div>' in response.text
     assert "重編國語辭典修訂本" in response.text

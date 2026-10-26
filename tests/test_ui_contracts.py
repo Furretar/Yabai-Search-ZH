@@ -177,3 +177,23 @@ def test_frontend_keeps_reading_and_character_lines_separate():
     assert ".furigana .reading {" in css
     assert ".furigana .char {" in css
     assert ".entry.long-headword .hanzi {" in css
+
+
+def test_about_page_links_fineweb2_frequency(client):
+    """The About page names the temporary FineWeb2 frequency source."""
+    html = client.get("/about").text
+    assert "https://github.com/Furretar/FineWeb2-Mandarin-Frequency-List" in html
+    assert 'id="fineweb2-frequency"' in html
+
+
+def test_frequency_chip_has_rank_tooltip():
+    """The frequency chip explains the useful range of the rank."""
+    text = (
+        "Frequency under 20,000 is common. "
+        "This number is not reliable past 100,000."
+    )
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    html = (ROOT / "yabai_search/templates/word.html").read_text(encoding="utf-8")
+    assert text in js
+    assert text in html
+    assert "chip.title = FREQ_TOOLTIP" in js

@@ -82,6 +82,20 @@ JPWIKTIONARY_DB_PATH = (
 # scripts/import_subtlex.py.
 SUBTLEX_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "subtlex.sqlite"
 
+# Temporary frequency source built from the FineWeb2 combined list. The old
+# SUBTLEX rank column stays in the database, so setting
+# YABAI_FREQ_SOURCE=subtlex restores it without rebuilding anything.
+CORPUS_FREQ_DB_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "corpus_freq.sqlite"
+)
+FREQ_SOURCE = os.environ.get("YABAI_FREQ_SOURCE", "corpus").strip().lower()
+if FREQ_SOURCE not in {"corpus", "subtlex"}:
+    FREQ_SOURCE = "corpus"
+FREQ_DB_PATH = CORPUS_FREQ_DB_PATH if FREQ_SOURCE == "corpus" else SUBTLEX_DB_PATH
+FREQ_RANK_COLUMN = "corpus_freq_rank" if FREQ_SOURCE == "corpus" else "freq_rank"
+FREQ_LABEL = "FineWeb2 corpus (temporary)" if FREQ_SOURCE == "corpus" else "SUBTLEX-CH"
+FREQ_ANCHOR = "fineweb2-frequency" if FREQ_SOURCE == "corpus" else "subtlex"
+
 # Path to the HSK vocabulary levels, built by scripts/import_hsk.py.
 HSK_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "hsk.sqlite"
 
@@ -450,6 +464,7 @@ def data_version() -> str:
     paths.extend(
         [
             SUBTLEX_DB_PATH,
+            FREQ_DB_PATH,
             HSK_DB_PATH,
             ENGLISH_WORDS_DB_PATH,
             DEFINITION_GRAMS_DB_PATH,
@@ -527,13 +542,13 @@ def sources() -> list[dict]:
 
 
 def frequency_source() -> dict | None:
-    """Info about the SUBTLEX-CH frequency list (or None if it isn't imported)."""
-    if not SUBTLEX_DB_PATH.exists():
+    """Info about the configured frequency list, or None when unavailable."""
+    if not FREQ_DB_PATH.exists():
         return None
     updated = None
     entries = None
     try:
-        connection = _connect(SUBTLEX_DB_PATH)
+        connection = _connect(FREQ_DB_PATH)
     except sqlite3.Error:
         return None
     try:
@@ -544,7 +559,12 @@ def frequency_source() -> dict | None:
         pass
     finally:
         connection.close()
-    return {"label": "SUBTLEX-CH", "anchor": "subtlex", "updated": updated, "entries": entries}
+    return {
+        "label": FREQ_LABEL,
+        "anchor": FREQ_ANCHOR,
+        "updated": updated,
+        "entries": entries,
+    }
 
 
 def hsk_source() -> dict | None:
@@ -676,10 +696,12 @@ _TAIWAN_EXCEPTIONS = {"啊"}
 
 
 def connect() -> sqlite3.Connection:
-    """The pooled CEDICT connection, with MOE/SUBTLEX attached once.
+    """The pooled CEDICT connection, with MOE and the frequency list attached.
 
     Rows behave like dicts; the MOE database is attached as "moe" (when
-    present) so a query can also match Taiwan readings.
+    present) so a query can also match Taiwan readings. The configured
+    frequency database is attached as "subtlex" for compatibility with the
+    existing queries.
     """
     connection = _connect(DB_PATH)
     # Row factory lets us read columns by name, e.g. row["pinyin"].
@@ -691,8 +713,8 @@ def connect() -> sqlite3.Connection:
             attached = {row[1] for row in connection.execute("PRAGMA database_list")}
             if "moe" not in attached and MOE_DB_PATH.exists():
                 connection.execute("ATTACH DATABASE ? AS moe", (str(MOE_DB_PATH),))
-            if "subtlex" not in attached and SUBTLEX_DB_PATH.exists():
-                connection.execute("ATTACH DATABASE ? AS subtlex", (str(SUBTLEX_DB_PATH),))
+            if "subtlex" not in attached and FREQ_DB_PATH.exists():
+                connection.execute("ATTACH DATABASE ? AS subtlex", (str(FREQ_DB_PATH),))
         connection._yabai_attached = True
     return connection
 
@@ -1062,10 +1084,10 @@ def _attach_sources(entries: list[dict]) -> list[dict]:
 
 
 def _attach_freq(entries: list[dict]) -> list[dict]:
-    """Attach each entry's SUBTLEX-CH frequency (rank / count / per-million).
+    """Attach each entry's configured frequency (rank / count / per-million).
 
-    Matched by the simplified form, then the traditional form; None when the word
-    isn't in SUBTLEX-CH.
+    Matched by the simplified form, then the traditional form; None when the
+    word isn't in the current frequency list.
     """
     words = sorted(
         {entry["simplified"] for entry in entries}
@@ -1073,10 +1095,10 @@ def _attach_freq(entries: list[dict]) -> list[dict]:
     )
     for entry in entries:
         entry["freq"] = None
-    if not words or not SUBTLEX_DB_PATH.exists():
+    if not words or not FREQ_DB_PATH.exists():
         return entries
     placeholders = ",".join("?" * len(words))
-    connection = _connect(SUBTLEX_DB_PATH)
+    connection = _connect(FREQ_DB_PATH)
     try:
         rows = connection.execute(
             f"SELECT word, rank, count, per_million FROM freq WHERE word IN ({placeholders})",
@@ -2028,16 +2050,17 @@ _freq_rank_ready_cache: bool | None = None
 
 
 def _freq_rank_ready() -> bool:
-    """True when entries.freq_rank was filled at import time."""
+    """True when the selected frequency rank column was filled at import time."""
     global _freq_rank_ready_cache
     if _freq_rank_ready_cache is None:
         connection = connect()
         try:
             column = connection.execute(
-                "SELECT 1 FROM pragma_table_info('entries') WHERE name = 'freq_rank'"
+                "SELECT 1 FROM pragma_table_info('entries') WHERE name = ?",
+                (FREQ_RANK_COLUMN,),
             ).fetchone()
             flag = connection.execute(
-                "SELECT value FROM meta WHERE key = 'freq_rank'"
+                "SELECT value FROM meta WHERE key = ?", (FREQ_RANK_COLUMN,)
             ).fetchone()
         finally:
             connection.close()
@@ -2078,16 +2101,16 @@ def _has_alt_prons() -> bool:
 
 
 def _freq_order() -> list[str]:
-    """ORDER BY terms that put the most frequent words first (SUBTLEX-CH).
+    """ORDER BY terms that put the most frequent words first.
 
-    Empty when SUBTLEX isn't imported. Words missing from SUBTLEX sort last.
-    Uses the freq_rank column precomputed at import when it is available, and
-    the live subquery otherwise.
+    Empty when the configured frequency database is missing. Words missing from
+    the list sort last. Uses the precomputed rank column when it is available,
+    and the live subquery otherwise.
     """
-    if not SUBTLEX_DB_PATH.exists():
+    if not FREQ_DB_PATH.exists():
         return []
     if _freq_rank_ready():
-        return ["freq_rank IS NULL", "freq_rank"]
+        return [f"{FREQ_RANK_COLUMN} IS NULL", FREQ_RANK_COLUMN]
     rank = "(SELECT rank FROM subtlex.freq WHERE subtlex.freq.word = entries.simplified)"
     return [f"({rank} IS NULL)", rank]
 
@@ -2289,8 +2312,8 @@ def _source_only_entries(
             break
 
     # The frequency list can contribute headwords too (it has no definitions).
-    if len(heads) < limit and SUBTLEX_DB_PATH.exists():
-        database = _connect(SUBTLEX_DB_PATH)
+    if len(heads) < limit and FREQ_DB_PATH.exists():
+        database = _connect(FREQ_DB_PATH)
         try:
             if all_stars:
                 rows = database.execute("SELECT word FROM freq ORDER BY rank").fetchall()
@@ -2868,12 +2891,12 @@ _freq_fts_cache: bool | None = None
 
 
 def _has_freq_fts() -> bool:
-    """True when the SUBTLEX database has the trigram freq_fts table."""
+    """True when the configured frequency database has a freq_fts table."""
     global _freq_fts_cache
     if _freq_fts_cache is None:
-        if not SUBTLEX_DB_PATH.exists():
+        if not FREQ_DB_PATH.exists():
             return False
-        connection = _connect(SUBTLEX_DB_PATH)
+        connection = _connect(FREQ_DB_PATH)
         try:
             _freq_fts_cache = (
                 connection.execute(
@@ -3246,9 +3269,9 @@ def _entries_with_classifiers(limit: int = 50) -> list[dict]:
 
 
 def _entries_with_frequency(limit: int = 50) -> list[dict]:
-    if not SUBTLEX_DB_PATH.exists():
+    if not FREQ_DB_PATH.exists():
         return []
-    connection = _connect(SUBTLEX_DB_PATH)
+    connection = _connect(FREQ_DB_PATH)
     try:
         rows = connection.execute(
             "SELECT word FROM freq ORDER BY rank LIMIT ?", (limit * 2,)
@@ -3668,7 +3691,8 @@ def wildcard_search(
                 pattern = _pinyin_wildcard_pattern(text)
                 candidates = connection.execute(
                     "SELECT simplified, traditional, pinyin, pinyin_numeric, "
-                    "english, english_normalized, freq_rank "
+                    "english, english_normalized, "
+                    f"{FREQ_RANK_COLUMN} AS freq_rank "
                     "FROM entries WHERE pinyin_toneless LIKE ? ESCAPE '\\'",
                     (pattern,),
                 ).fetchall()
@@ -4781,6 +4805,7 @@ def warm_caches() -> None:
         ZHWIKTIONARY_DB_PATH,
         JPWIKTIONARY_DB_PATH,
         SUBTLEX_DB_PATH,
+        FREQ_DB_PATH,
         DEFINITION_GRAMS_DB_PATH,
         GRAM_WORDS_DB_PATH,
         ENGLISH_WORDS_DB_PATH,

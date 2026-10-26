@@ -47,7 +47,7 @@
                 {% if entry.freq or entry.hsk %}
                 <div class="freq">
                     {% if entry.freq %}
-                    <span class="source">Frequency: #{{ "{:,}".format(entry.freq.rank) }}</span>
+                    <span class="source" title="Frequency under 20,000 is common. This number is not reliable past 100,000.">Frequency: #{{ "{:,}".format(entry.freq.rank) }}</span>
                     {% endif %}
                     {% if entry.hsk %}
                     {% set hsk_level = entry.hsk.newest or entry.hsk.new %}

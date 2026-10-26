@@ -28,6 +28,9 @@ requires_wiktionary = pytest.mark.skipif(
 requires_subtlex = pytest.mark.skipif(
     not (DATA / "subtlex.sqlite").exists(), reason="SUBTLEX database not built"
 )
+requires_freq = pytest.mark.skipif(
+    not db.FREQ_DB_PATH.exists(), reason="frequency database not built"
+)
 requires_hsk = pytest.mark.skipif(
     not (DATA / "hsk.sqlite").exists(), reason="HSK database not built"
 )
@@ -188,15 +191,15 @@ def test_manual_taiwan_override(search, find_result):
     assert entry["pinyin_taiwan"] == "xiě"
 
 
-@requires_subtlex
-def test_subtlex_frequency(search, find_result):
-    """SUBTLEX-CH rank is attached to matching entries."""
+@requires_freq
+def test_corpus_frequency(search, find_result):
+    """The configured frequency rank is attached to matching entries."""
     entry = find_result(search("的"), "的")
     assert entry is not None
     assert entry["freq"]["rank"] == 1
     assert entry["freq"]["count"] > 1_000_000
     source = db.frequency_source()
-    assert source is not None and source["anchor"] == "subtlex"
+    assert source is not None and source["anchor"] == db.FREQ_ANCHOR
 
 
 @requires_hsk

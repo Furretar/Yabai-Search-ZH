@@ -1,6 +1,10 @@
 // Front-end script for Yabai Search. Runs in the browser.
 // It calls the /api/search endpoint and renders the results into the page.
 
+// Native tooltip for the frequency rank.
+const FREQ_TOOLTIP =
+    "Frequency under 20,000 is common. This number is not reliable past 100,000.";
+
 // Grab the elements we need from index.html (by their id attributes).
 const form = document.getElementById("search-form");
 const input = document.getElementById("q");
@@ -1629,6 +1633,7 @@ function fillEntryRow(row, entry) {
             const chip = document.createElement("span");
             chip.className = "source";
             chip.textContent = `Frequency: #${entry.freq.rank.toLocaleString()}`;
+            chip.title = FREQ_TOOLTIP;
             meta.append(chip);
         }
         if (entry.hsk) {

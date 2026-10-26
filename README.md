@@ -140,9 +140,13 @@ The application code is AGPL-3.0-licensed, copyright (c) 2026 Wyatt Petrock (see
 
 ### Frequency
 
+- <span id="fineweb2-frequency"></span>**[FineWeb2 Mandarin Frequency List](https://github.com/Furretar/FineWeb2-Mandarin-Frequency-List)**
+  270,160 merged entries · ODC-BY corpus · Updated 2026-10-27
+    - Temporary frequency source: rank is the row number in the combined FineWeb2 list, with traditional and simplified variants sharing their merged entry's rank. Frequency under 20,000 is common; the number is not reliable past 100,000.
+
 - <span id="subtlex"></span>**[SUBTLEX-CH](https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexch)**
   99,121 words · CC BY 4.0 · Updated 2026-10-16
-    - Chinese word frequencies from film and TV subtitles (Cai & Brysbaert, 2010), used to rank results.
+    - Chinese word frequencies from film and TV subtitles (Cai & Brysbaert, 2010). Retained as a fallback; set `YABAI_FREQ_SOURCE=subtlex` to use it.
 
 
 ### Vocabulary

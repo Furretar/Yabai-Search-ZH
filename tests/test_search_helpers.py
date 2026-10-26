@@ -175,13 +175,13 @@ def test_has_english_match_checks_definition_words():
 
 
 @pytest.mark.skipif(
-    not (DATA / "subtlex.sqlite").exists(), reason="SUBTLEX database not built"
+    not db.FREQ_DB_PATH.exists(), reason="frequency database not built"
 )
 def test_frequency_source_metadata():
     """The frequency source reports its anchor, count and update date."""
     source = db.frequency_source()
     assert source is not None
-    assert source["anchor"] == "subtlex"
+    assert source["anchor"] == db.FREQ_ANCHOR
     assert source["entries"] > 0
 
 
