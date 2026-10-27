@@ -4620,10 +4620,19 @@ def search(
                 fts_unique.append(entry)
         source_rows = []
         seen_source = set(fts_keys)
-        for entry in (
-            _source_definition_entries(phrase, limit=limit)
-            + _source_gloss_entries(phrase, limit=limit)
-        ):
+        # A quoted Latin phrase must match a definition that is actually
+        # displayed. The live Wiktionary gloss table contains extra senses for
+        # common characters (the Taixuanjing tetragram named 文, for example)
+        # that are not shown on the CEDICT entry, so searching it here made a
+        # phrase match look unrelated. The prebuilt source-gloss index contains
+        # the source-only entries whose gloss is displayed.
+        if has_cjk(phrase):
+            source_candidates = _source_definition_entries(
+                phrase, limit=limit
+            ) + _source_gloss_entries(phrase, limit=limit)
+        else:
+            source_candidates = _source_gloss_entries(phrase, limit=limit)
+        for entry in source_candidates:
             key = entry["simplified"]
             if key in seen_source:
                 continue
