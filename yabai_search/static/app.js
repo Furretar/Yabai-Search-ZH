@@ -2492,7 +2492,8 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         renderFuzzy([]);
         updateHint(query, first.pinyin_match, first.english_match);
         if (recordTiming) {
-            firstPaintMs = Math.round(performance.now() - primaryRenderStart);
+            // Cumulative from the start of the search, not just the render.
+            firstPaintMs = Math.round(performance.now() - startedAt);
             updateTiming();
         }
         recordPhase("primary render", primaryRenderStart, {
@@ -2546,7 +2547,8 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         applyPagerScroll(scrollMode);
         revealInitialResults();
         if (recordTiming) {
-            allPaintMs = Math.round(performance.now() - fullRenderStart);
+            // Cumulative from the start of the search, not just the render.
+            allPaintMs = Math.round(performance.now() - startedAt);
             updateTiming();
         }
         recordPhase("full render", fullRenderStart, { rows: full.results.length });
@@ -2667,7 +2669,6 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         lastSearchMs = Math.round(performance.now() - startedAt);
         allDbMs = typeof first.ms === "number" ? first.ms : null;
     }
-    const wildcardRenderStart = performance.now();
     render(first.results, query);
     renderFuzzy(first.fuzzy);
     renderPagination(query, first);
@@ -2675,7 +2676,8 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     applyPagerScroll(scrollMode);
     revealInitialResults();
     if (recordTiming) {
-        allPaintMs = Math.round(performance.now() - wildcardRenderStart);
+        // Cumulative from the start of the search, not just the render.
+        allPaintMs = Math.round(performance.now() - startedAt);
         updateTiming();
     }
 
