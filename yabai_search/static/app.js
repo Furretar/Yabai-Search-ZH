@@ -114,6 +114,12 @@ let currentEntries = [];
 // shown after the result count when the first batch was rendered on its own.
 let lastSearchMs = null;
 let firstSearchMs = null;
+// The two components behind those totals: server (DB) time and browser paint
+// time. `first` is the fast CEDICT tier, `all` is the complete response.
+let firstDbMs = null;
+let allDbMs = null;
+let firstPaintMs = null;
+let allPaintMs = null;
 let currentFuzzy = [];
 let currentQuery = "";
 // The parsed words from the last multi-word input, so a display toggle (e.g.
@@ -214,6 +220,24 @@ function recordNetworkTiming(label, url) {
             encodedBodySize: entry.encodedBodySize,
             cacheHit: entry.transferSize === 0,
             resourceServerTiming: serverTiming,
+            nextHopProtocol: entry.nextHopProtocol,
+            domainLookupMs:
+                entry.domainLookupStart && entry.domainLookupEnd
+                    ? Math.round(entry.domainLookupEnd - entry.domainLookupStart)
+                    : null,
+            connectMs:
+                entry.connectStart && entry.connectEnd
+                    ? Math.round(entry.connectEnd - entry.connectStart)
+                    : null,
+            tlsMs: entry.secureConnectionStart
+                ? Math.round(entry.connectEnd - entry.secureConnectionStart)
+                : 0,
+            requestStartMs: entry.requestStart
+                ? Math.round(entry.requestStart - entry.startTime)
+                : null,
+            blockedBeforeSendMs: entry.requestStart
+                ? Math.round(entry.requestStart - entry.startTime)
+                : null,
         });
     } catch (error) {
         // Resource timing is best-effort debug data.
@@ -2152,13 +2176,32 @@ function render(entries, query) {
 function updateTiming() {
     if (!resultTiming) return;
     if (lastSearchMs === null) {
-        resultTiming.textContent = "";
+        resultTiming.replaceChildren();
         return;
     }
-    const parts = [];
-    if (firstSearchMs !== null) parts.push(`First Result: ${firstSearchMs} ms`);
-    parts.push(`All Results: ${lastSearchMs} ms`);
-    resultTiming.textContent = parts.join(", ");
+    const lines = [];
+    const firstParts = [];
+    if (firstSearchMs !== null) firstParts.push(`First Result: ${firstSearchMs} ms`);
+    firstParts.push(`All Results: ${lastSearchMs} ms`);
+    lines.push(firstParts.join(", "));
+
+    // Break the totals into server (DB) time and browser paint time. The first
+    // pair is absent on later pages, where there is no fast CEDICT tier.
+    const dbParts = [];
+    if (firstDbMs !== null) dbParts.push(`First ${firstDbMs} ms`);
+    if (allDbMs !== null) dbParts.push(`All ${allDbMs} ms`);
+    if (dbParts.length) lines.push(`DB: ${dbParts.join(", ")}`);
+
+    const paintParts = [];
+    if (firstPaintMs !== null) paintParts.push(`First ${firstPaintMs} ms`);
+    if (allPaintMs !== null) paintParts.push(`All ${allPaintMs} ms`);
+    if (paintParts.length) lines.push(`Paint: ${paintParts.join(", ")}`);
+
+    resultTiming.replaceChildren();
+    lines.forEach((line, index) => {
+        if (index) resultTiming.append(document.createElement("br"));
+        resultTiming.append(document.createTextNode(line));
+    });
 }
 
 // Append the tone-insensitive "Fuzzy match" section under a separator.
@@ -2234,7 +2277,10 @@ async function fetchSearchPart(
     { priority = "high", silent = false } = {},
 ) {
     const fetchStart = performance.now();
-    const response = await fetch(requestUrl, { priority });
+    const response = await fetch(requestUrl, {
+        priority,
+        headers: { "X-Client-Sent": String(Date.now()) },
+    });
     if (!silent) {
         recordPhase(`${label} fetch`, fetchStart, { status: response.status });
         recordServerDebug(label, response);
@@ -2338,6 +2384,10 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     releaseClearScrollGuard();
     const url = searchUrl(query, offset);
     const startedAt = performance.now();
+    firstDbMs = null;
+    allDbMs = null;
+    firstPaintMs = null;
+    allPaintMs = null;
     const seq = ++searchSeq;
     const allWildcard = query.trim() === "*";
     lastWildcardCustom = null;
@@ -2431,11 +2481,16 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         if (recordTiming) {
             lastSearchMs = firstMs;
             firstSearchMs = null;
+            firstDbMs = typeof first.ms === "number" ? first.ms : null;
         }
         const primaryRenderStart = performance.now();
         render(first.results, query);
         renderFuzzy([]);
         updateHint(query, first.pinyin_match, first.english_match);
+        if (recordTiming) {
+            firstPaintMs = Math.round(performance.now() - primaryRenderStart);
+            updateTiming();
+        }
         recordPhase("primary render", primaryRenderStart, {
             rows: first.results.length,
         });
@@ -2477,6 +2532,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         if (recordTiming) {
             firstSearchMs = showFirst ? firstMs : null;
             lastSearchMs = Math.round(performance.now() - startedAt);
+            allDbMs = typeof full.ms === "number" ? full.ms : null;
         }
         const fullRenderStart = performance.now();
         render(full.results, query);
@@ -2485,6 +2541,10 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         updateHint(query, full.pinyin_match, full.english_match);
         applyPagerScroll(scrollMode);
         revealInitialResults();
+        if (recordTiming) {
+            allPaintMs = Math.round(performance.now() - fullRenderStart);
+            updateTiming();
+        }
         recordPhase("full render", fullRenderStart, { rows: full.results.length });
 
         const customResult = await customMatchesPromise;
@@ -2601,13 +2661,19 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     if (recordTiming) {
         firstSearchMs = null;
         lastSearchMs = Math.round(performance.now() - startedAt);
+        allDbMs = typeof first.ms === "number" ? first.ms : null;
     }
+    const wildcardRenderStart = performance.now();
     render(first.results, query);
     renderFuzzy(first.fuzzy);
     renderPagination(query, first);
     updateHint(query, first.pinyin_match, first.english_match);
     applyPagerScroll(scrollMode);
     revealInitialResults();
+    if (recordTiming) {
+        allPaintMs = Math.round(performance.now() - wildcardRenderStart);
+        updateTiming();
+    }
 
     if (allWildcard && !window.customDictionaryWildcardPage) {
         recordDebug(
@@ -3100,7 +3166,10 @@ async function fetchAnnotate(text) {
             cache: "no-store",
             priority: "high",
             signal: controller.signal,
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                "X-Client-Sent": String(Date.now()),
+            },
             body: JSON.stringify({ text }),
         });
         recordPhase("annotate fetch", fetchStart, {

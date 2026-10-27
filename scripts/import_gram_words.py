@@ -20,13 +20,28 @@ Usage (from the project root):
 
 from __future__ import annotations
 
+import hashlib
+import os
 import sqlite3
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "data" / "gram_words.sqlite"
+TEMP_PATH = ROOT / "data" / "gram_words.sqlite.tmp"
 MOE_DB = ROOT / "data" / "moe.sqlite"
+MOE_REVISED_DB = ROOT / "data" / "moe_revised.sqlite"
 WIKTIONARY_DB = ROOT / "data" / "wiktionary.sqlite"
+ZHWIKTIONARY_DB = ROOT / "data" / "zhwiktionary.sqlite"
+JPWIKTIONARY_DB = ROOT / "data" / "jpwiktionary.sqlite"
+FREQ_DB = ROOT / "data" / "corpus_freq.sqlite"
+SOURCE_FILES = {
+    "moe": MOE_DB,
+    "moe_revised": MOE_REVISED_DB,
+    "wiktionary": WIKTIONARY_DB,
+    "zhwiktionary": ZHWIKTIONARY_DB,
+    "jpwiktionary": JPWIKTIONARY_DB,
+    "freq": FREQ_DB,
+}
 
 
 def is_han(char: str) -> bool:
@@ -63,9 +78,9 @@ def grams_of(text: str) -> set[str]:
 
 def build() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if DB_PATH.exists():
-        DB_PATH.unlink()
-    connection = sqlite3.connect(DB_PATH)
+    if TEMP_PATH.exists():
+        TEMP_PATH.unlink()
+    connection = sqlite3.connect(TEMP_PATH)
     connection.execute("PRAGMA journal_mode=OFF")
     connection.execute("PRAGMA synchronous=OFF")
     connection.execute(
@@ -73,6 +88,7 @@ def build() -> None:
         "source TEXT NOT NULL, gram TEXT NOT NULL, word TEXT NOT NULL, "
         "PRIMARY KEY (source, gram, word)) WITHOUT ROWID"
     )
+    connection.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     insert = "INSERT OR IGNORE INTO gram_words (source, gram, word) VALUES (?,?,?)"
 
     def add_word(source: str, word: str) -> None:
@@ -126,10 +142,49 @@ def build() -> None:
             )
         finally:
             source.close()
+    if MOE_REVISED_DB.exists():
+        source = sqlite3.connect(MOE_REVISED_DB)
+        try:
+            for (word,) in source.execute("SELECT DISTINCT word FROM moe ORDER BY word"):
+                add_word("moe_revised_head", word)
+        finally:
+            source.close()
+    if ZHWIKTIONARY_DB.exists():
+        source = sqlite3.connect(ZHWIKTIONARY_DB)
+        try:
+            for (word,) in source.execute(
+                "SELECT DISTINCT word FROM headwords ORDER BY word"
+            ):
+                add_word("zhwikt_head", word)
+        finally:
+            source.close()
+    if JPWIKTIONARY_DB.exists():
+        source = sqlite3.connect(JPWIKTIONARY_DB)
+        try:
+            for (word,) in source.execute(
+                "SELECT DISTINCT word FROM headwords ORDER BY word"
+            ):
+                add_word("jpwikt_head", word)
+        finally:
+            source.close()
+    if FREQ_DB.exists():
+        source = sqlite3.connect(FREQ_DB)
+        try:
+            for (word,) in source.execute("SELECT word FROM freq ORDER BY rank"):
+                add_word("freq_head", word)
+        finally:
+            source.close()
 
+    for name, path in SOURCE_FILES.items():
+        if path.exists():
+            connection.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                (f"source:{name}", hashlib.sha256(path.read_bytes()).hexdigest()),
+            )
     connection.commit()
     count = connection.execute("SELECT count(*) FROM gram_words").fetchone()[0]
     connection.close()
+    os.replace(TEMP_PATH, DB_PATH)
     print(
         f"done: {count} rows -> {DB_PATH} "
         f"({DB_PATH.stat().st_size / 1e6:.1f} MB)"

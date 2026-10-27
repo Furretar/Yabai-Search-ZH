@@ -47,7 +47,7 @@ DROP TABLE IF EXISTS freq;
 CREATE TABLE freq (
     word        TEXT PRIMARY KEY,  -- merged form or one of its surface variants
     rank        INTEGER NOT NULL,  -- row number in the combined list, 1 = most frequent
-    count       INTEGER NOT NULL,  -- occurrences in the 3 GB sample
+    count       INTEGER NOT NULL,  -- occurrences in the 20 GB sample
     per_million REAL NOT NULL      -- occurrences per million tokens
 );
 CREATE INDEX idx_freq_rank ON freq(rank);
@@ -62,12 +62,21 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 
-def read_rows(path: Path) -> tuple[list[tuple], list[tuple]]:
-    """Return the primary keys and the variant keys for all rows."""
+def read_rows(
+    path: Path, min_df: int = 0
+) -> tuple[list[tuple], list[tuple]]:
+    """Return the primary keys and the variant keys for all rows.
+
+    `min_df` is an optional noise filter: rows seen in fewer than that many
+    documents are dropped. The default (0) keeps everything, because the 20 GB
+    list's document frequency is already reliable and rare words are legitimate.
+    """
     primary: list[tuple] = []
     variants: list[tuple] = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle, delimiter="\t"):
+            if min_df and int(row.get("df") or 0) < min_df:
+                continue
             word = row["word"]
             rank = int(row["rank"])
             count = int(row["count"])
@@ -85,7 +94,20 @@ def main() -> None:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--cedict", type=Path, default=CEDICT_DB)
+    parser.add_argument(
+        "--min-df",
+        type=int,
+        default=0,
+        help=(
+            "Optional noise filter: drop rows seen in fewer than this many "
+            "documents. Default 0 keeps every row. The 20 GB merge already "
+            "uses representative document frequency, so this is only for an "
+            "experiment; changing it requires rebuilding every derived file."
+        ),
+    )
     args = parser.parse_args()
+    if args.min_df < 0:
+        raise SystemExit("--min-df must be >= 0")
 
     if not args.input.exists():
         raise SystemExit(f"Missing input: {args.input}")
@@ -93,7 +115,7 @@ def main() -> None:
         raise SystemExit(f"Missing CEDICT database: {args.cedict}")
 
     started = time.time()
-    primary, variants = read_rows(args.input)
+    primary, variants = read_rows(args.input, args.min_df)
     args.db.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(args.db)
     try:

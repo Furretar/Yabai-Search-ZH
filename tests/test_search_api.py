@@ -107,6 +107,33 @@ def test_quoted_english_phrase_search(search):
     )
 
 
+def test_quoted_english_phrase_finds_wiktionary_gloss(search, find_result):
+    """A Wiktionary-only gloss hit must survive the CEDICT-heavy phrase list.
+
+    The phrase is shared by 79 Taixuanjing glosses; 䎡 is a source-only word
+    near the end. The old limit*3 source scan dropped it before deduplication.
+    """
+    data = search('"tetragram of the"')
+    found = None
+    for offset in range(0, data["total"], data["page_size"]):
+        page = search('"tetragram of the"', offset=offset)
+        found = find_result(page, "䎡")
+        if found is not None:
+            break
+    assert found is not None
+    assert any(
+        "17th tetragram of the" in sense
+        for definition in found.get("definitions", [])
+        for sense in definition.get("defs", [])
+    )
+
+
+def test_unquoted_english_phrase_finds_wiktionary_gloss(search, find_result):
+    """The same source-only word is returned by the unquoted definition path."""
+    data = search("tetragram of the")
+    assert find_result(data, "䎡") is not None
+
+
 def test_quoted_chinese_definition_phrase(search):
     """A quoted Chinese phrase finds the headword it defines."""
     data = search('"一種中藥。"')

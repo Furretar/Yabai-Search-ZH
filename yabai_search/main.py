@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import ipaddress
 import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -18,12 +21,13 @@ from urllib.parse import quote, urlencode
 import markdown
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from yabai_search import db, segment
+from yabai_search import perf_debug as pd
 from yabai_search.default_dictionaries import DEFAULTS
 from yabai_search.overrides import PREFERRED_READINGS
 from yabai_search.pinyin import to_toneless
@@ -41,7 +45,12 @@ _STATIC_DIR = BASE / "static"
 
 # Normal (non-wildcard) searches are paged as well. Fetch up to this many
 # matches so the total and the requested page can be computed in one pass.
-_MAX_NORMAL_RESULTS = 5000
+# The full request ranks every match so `total` and later pages are exact.
+# 1e9 is a sentinel larger than any possible result set, not a user-facing cap.
+# YABAI_UNCAPPED=0 restores the old 5,000-row sample for A/B comparison only.
+_MAX_NORMAL_RESULTS = (
+    5000 if os.environ.get("YABAI_UNCAPPED") == "0" else db.UNBOUNDED
+)
 
 # Process start time, folded into the API cache version: a restart invalidates
 # cached search responses even when the data files did not change (for example
@@ -250,22 +259,81 @@ app = FastAPI(title="Yabai Search")
 # slow first byte (the threadpool was busy) without guessing.
 _inflight = 0
 _inflight_lock = threading.Lock()
+# Optional load shedder: when this many search requests are already running,
+# answer new ones with 503 + Retry-After instead of queueing them. Off by
+# default (0), so the protected path is unchanged.
+_ADMISSION_LIMIT = int(os.environ.get("YABAI_ADMISSION", "0") or 0)
 
 
 @app.middleware("http")
 async def _debug_stamp(request, call_next):
-    """Record arrival time (to measure threadpool wait) and in-flight count."""
+    """Record arrival time (to measure threadpool wait) and in-flight count.
+
+    When YABAI_TRACE=1, also start a perf_debug trace, add its Server-Timing
+    and X-Debug-ID headers, and append the request record to the trace file.
+    With tracing off this is the original lightweight middleware.
+    """
     global _inflight
     request.state.arrived = time.perf_counter()
+    trace = None
+    debug_id = None
+    if pd.ENABLED:
+        debug_id = request.headers.get("cf-ray") or uuid.uuid4().hex[:12]
+        trace = pd.start(debug_id, str(request.url.query))
+        client_sent = request.headers.get("x-client-sent")
+        if client_sent and trace is not None:
+            try:
+                trace.client_sent_ms = float(client_sent)
+            except ValueError:
+                pass
+        pd.mark("arrived")
+    if (
+        _ADMISSION_LIMIT > 0
+        and request.url.path == "/api/search"
+        and _inflight >= _ADMISSION_LIMIT
+    ):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "busy", "retry_after": 1},
+            headers={"Retry-After": "1"},
+        )
     with _inflight_lock:
         _inflight += 1
         seen = _inflight
     try:
         response = await call_next(request)
+    except BaseException:
+        if trace is not None:
+            pd.finish(
+                trace,
+                {
+                    "path": request.url.path,
+                    "status": 500,
+                    "error": "unhandled",
+                },
+            )
+        raise
     finally:
         with _inflight_lock:
             _inflight -= 1
     response.headers["X-Yabai-Inflight"] = str(seen)
+    if trace is not None:
+        timing = pd.server_timing(trace)
+        if timing:
+            old = response.headers.get("server-timing", "")
+            response.headers["Server-Timing"] = ", ".join(
+                value for value in (old, timing) if value
+            )
+        if debug_id:
+            response.headers["X-Debug-ID"] = debug_id
+        pd.finish(
+            trace,
+            {
+                "path": request.url.path,
+                "status": response.status_code,
+                "inflight_seen": seen,
+            },
+        )
     return response
 
 
@@ -312,6 +380,21 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 @app.on_event("startup")
 def _warm_caches() -> None:
     """Build the SQL and segmenter caches now, not during the first search."""
+    # Starlette runs sync endpoints in AnyIO's thread pool. The default is 40;
+    # on a small host a lower cap keeps memory/queueing predictable. The default
+    # preserves the previous behaviour.
+    thread_limit = os.environ.get("YABAI_THREADS", "").strip()
+    if thread_limit:
+        try:
+            limit = int(thread_limit)
+        except ValueError:
+            limit = 0
+        if limit > 0:
+            import anyio.to_thread
+
+            anyio.to_thread.current_default_thread_limiter().total_tokens = limit
+    # warm_caches starts the page-cache read in a daemon thread (default);
+    # YABAI_WARM_PAGE_CACHE=legacy restores the old synchronous warm-up.
     db.warm_caches()
     segment.warm()
     # Fill the parser's reading cache in the background, so common pasted words
@@ -319,10 +402,107 @@ def _warm_caches() -> None:
     # keep the timing-sensitive browser test stable.
     if os.environ.get("YABAI_WARM_LOOKUPS", "1") != "0":
         threading.Thread(target=db.warm_lookup_readings, daemon=True).start()
+    print(
+        "fast paths: "
+        + json.dumps(db.fast_path_status(), ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+
+
+@app.on_event("startup")
+async def _start_debug_trace() -> None:
+    """Start the optional event-loop sampler and write the startup snapshot."""
+    if not pd.ENABLED:
+        return
+    app.state.trace_task = asyncio.create_task(pd.loop_lag_sampler())
+    pragmas = {}
+    attached = {}
+    try:
+        connection = db.connect()
+        for name in ("cache_size", "mmap_size", "journal_mode", "temp_store"):
+            pragmas[name] = connection.execute(f"PRAGMA {name}").fetchone()[0]
+        for row in connection.execute("PRAGMA database_list"):
+            attached[row[1]] = str(row[2])
+    except sqlite3.Error as exc:
+        pragmas["error"] = str(exc)
+    info = {
+        "sqlite_version": sqlite3.sqlite_version,
+        "python_version": os.sys.version.split()[0],
+        "pid": os.getpid(),
+        "cwd": os.getcwd(),
+        "db_path": str(db.DB_PATH),
+        "db_bytes": db.DB_PATH.stat().st_size if db.DB_PATH.exists() else 0,
+        "moe_bytes": db.MOE_DB_PATH.stat().st_size if db.MOE_DB_PATH.exists() else 0,
+        "freq_path": str(db.FREQ_DB_PATH),
+        "freq_bytes": db.FREQ_DB_PATH.stat().st_size if db.FREQ_DB_PATH.exists() else 0,
+        "source_gloss_path": str(db.SOURCE_GLOSS_DB_PATH),
+        "source_gloss_bytes": (
+            db.SOURCE_GLOSS_DB_PATH.stat().st_size
+            if db.SOURCE_GLOSS_DB_PATH.exists()
+            else 0
+        ),
+        "head_grams_path": str(db.HEAD_GRAMS_DB_PATH),
+        "head_grams_bytes": (
+            db.HEAD_GRAMS_DB_PATH.stat().st_size
+            if db.HEAD_GRAMS_DB_PATH.exists()
+            else 0
+        ),
+        "pragmas": pragmas,
+        "attached": attached,
+        "threads": threading.active_count(),
+        "cpu_count": os.cpu_count(),
+        "web_concurrency": os.environ.get("WEB_CONCURRENCY"),
+        "uvicorn_workers": os.environ.get("UVICORN_WORKERS"),
+        "trace_file": pd.TRACE_FILE,
+        "plan_ms": pd.SLOW_PLAN_MS,
+        "always_plan": pd.ALWAYS_PLAN,
+        "connection_model": "one read-only connection per worker thread",
+    }
+    pd.startup(info)
 
 # Serve files from yabai_search/static/ at the URL prefix /static/...
 # (e.g. /static/style.css, /static/app.js). Read-only, served verbatim.
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
+
+
+@app.get("/__ping", include_in_schema=False)
+def debug_ping(response: Response) -> dict:
+    """A no-database liveness probe for measuring edge/tunnel/queue latency."""
+    response.headers["Cache-Control"] = "no-store"
+    return {"t": time.time(), "pid": os.getpid()}
+
+
+@app.get("/__debug/status", include_in_schema=False)
+def debug_status(request: Request) -> dict:
+    """Return the active/fallback state of each derived fast path."""
+    token = os.environ.get("YABAI_DEBUG_TOKEN")
+    if token:
+        if request.headers.get("x-debug-token") != token:
+            raise HTTPException(status_code=404)
+    elif not _ip_is_local(request.client.host if request.client else ""):
+        raise HTTPException(status_code=404)
+    # Keep the established flat fast-path keys; page_cache is additive.
+    status = db.fast_path_status()
+    status["page_cache"] = db.page_cache_status()
+    return status
+
+
+@app.get("/__debug/lag", include_in_schema=False)
+def debug_lag(request: Request) -> dict:
+    """Return recent event-loop lag samples; local or token protected."""
+    if not pd.ENABLED:
+        raise HTTPException(status_code=404)
+    token = os.environ.get("YABAI_DEBUG_TOKEN")
+    if token:
+        if request.headers.get("x-debug-token") != token:
+            raise HTTPException(status_code=404)
+    elif not _ip_is_local(request.client.host if request.client else ""):
+        raise HTTPException(status_code=404)
+    return {
+        "now": time.time(),
+        "lag": list(pd.LOOP_LAG),
+        "trace_file": pd.TRACE_FILE,
+    }
 
 
 # Serve the web app manifest at the root so its scope covers the whole site.
@@ -637,6 +817,7 @@ def _expand_variants(results: list[dict]) -> list[dict]:
 # db.start_log). The per-request instrumentation is on by default.
 _SEARCH_LOG_PATH = BASE.parent / "data" / "search.log"
 _recent_searches: "collections.deque[dict]" = collections.deque(maxlen=10)
+_recent_searches_lock = threading.Lock()
 
 
 def _record_search(
@@ -653,27 +834,28 @@ def _record_search(
         # The preliminary CEDICT request is repeated by the complete request;
         # logging only the complete one keeps one entry per user search.
         return
-    _recent_searches.append(
-        {
-            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "query": query,
-            "ms": round(duration_ms, 1),
-            "results": count,
-            "sql": statements,
-        }
-    )
-    try:
-        with _SEARCH_LOG_PATH.open("w", encoding="utf-8") as handle:
-            for entry in _recent_searches:
-                handle.write(
-                    f"[{entry['at']}] {entry['query']!r} -> "
-                    f"{entry['results']} results in {entry['ms']} ms\n"
-                )
-                for statement in entry["sql"]:
-                    handle.write(f"    {statement.strip()}\n")
-                handle.write("\n")
-    except OSError:
-        pass  # logging must never break a search
+    with _recent_searches_lock:
+        _recent_searches.append(
+            {
+                "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "query": query,
+                "ms": round(duration_ms, 1),
+                "results": count,
+                "sql": statements,
+            }
+        )
+        try:
+            with _SEARCH_LOG_PATH.open("w", encoding="utf-8") as handle:
+                for entry in _recent_searches:
+                    handle.write(
+                        f"[{entry['at']}] {entry['query']!r} -> "
+                        f"{entry['results']} results in {entry['ms']} ms\n"
+                    )
+                    for statement in entry["sql"]:
+                        handle.write(f"    {statement.strip()}\n")
+                    handle.write("\n")
+        except OSError:
+            pass  # logging must never break a search
 
 
 @app.get("/api/search")
@@ -698,6 +880,7 @@ def api_search(
     `part="primary"` returns only the fast CEDICT tier, so the page can render
     results progressively; the plain request returns the complete final list.
     """
+    pd.mark("handler_start")
     db.start_log()  # capture the SQL this search runs (for data/search.log)
     started = time.perf_counter()
     total = None
@@ -709,13 +892,28 @@ def api_search(
         timings[name] = round(timings.get(name, 0.0) + (time.perf_counter() - at) * 1000, 2)
 
     try:
-        if not q.strip().strip("*"):
+        # Quoted section labels ("frequency", etc.) are paged from their
+        # underlying table with a COUNT, not materialised. Only the full path
+        # needs this; the primary tier asks for the first page directly.
+        label = None if part == "primary" else db.label_page(q, offset, limit)
+        if label is not None:
+            page_entries, total = label
+            results = db.decorate_entries(page_entries)
+            fuzzy = []
+            pinyin_match = False
+            english_match = False
+            counters["raw"] = len(page_entries)
+            counters["expanded"] = len(results)
+            counters["label_page"] = True
+        elif not q.strip().strip("*"):
             # "*": every headword across all sources, 50 per page.
             at = time.perf_counter()
-            heads, total = db.all_headwords(offset, db.ALL_PAGE_SIZE)
+            with pd.stage("headwords"):
+                heads, total = db.all_headwords(offset, db.ALL_PAGE_SIZE)
             mark("headwords", at)
             at = time.perf_counter()
-            results = db.entries_for_headwords(heads)
+            with pd.stage("decorate"):
+                results = db.entries_for_headwords(heads)
             mark("hydrate", at)
             counters["raw"] = len(heads)
             counters["expanded"] = len(results)
@@ -728,12 +926,14 @@ def api_search(
             # A wildcard pattern is paged: the first (and only) response is
             # the requested page, with its total for the pager.
             at = time.perf_counter()
-            entries, total, pinyin_match = db.wildcard_search(
-                q, db.ALL_PAGE_SIZE, offset
-            )
+            with pd.stage("wildcard"):
+                entries, total, pinyin_match = db.wildcard_search(
+                    q, db.ALL_PAGE_SIZE, offset
+                )
             mark("db", at)
             at = time.perf_counter()
-            results = _expand_variants(entries)
+            with pd.stage("expand"):
+                results = _expand_variants(entries)
             mark("expand", at)
             counters["raw"] = len(entries)
             counters["expanded"] = len(results)
@@ -741,25 +941,33 @@ def api_search(
             english_match = False
         elif part == "primary":
             at = time.perf_counter()
-            entries, pinyin_match = db.search(q, limit, taiwan, part="primary")
+            with pd.stage("db_search"):
+                entries, pinyin_match = db.search(q, limit, taiwan, part="primary")
             mark("db", at)
             at = time.perf_counter()
-            results = _expand_variants(entries)
+            with pd.stage("expand"):
+                results = _expand_variants(entries)
             mark("expand", at)
             counters["raw"] = len(entries)
             counters["expanded"] = len(results)
             fuzzy = []
-            english_match = db.has_english_match(q.strip()) if pinyin_match else False
+            if pinyin_match:
+                with pd.stage("english_hint"):
+                    english_match = db.has_english_match(q.strip())
+            else:
+                english_match = False
         else:
             at = time.perf_counter()
             # Lazy hydration: rank every match (so the total stays exact) but
             # only fetch definitions for the rows that reach the page.
-            entries, pinyin_match = db.search(
-                q, _MAX_NORMAL_RESULTS, taiwan, hydrate=0
-            )
+            with pd.stage("db_search"):
+                entries, pinyin_match = db.search(
+                    q, _MAX_NORMAL_RESULTS, taiwan, hydrate=0
+                )
             mark("db", at)
             at = time.perf_counter()
-            results = _expand_variants(entries)
+            with pd.stage("expand"):
+                results = _expand_variants(entries)
             mark("expand", at)
             counters["raw"] = len(entries)
             counters["expanded"] = len(results)
@@ -769,7 +977,8 @@ def api_search(
                 # If a tonal reading matched nothing, offer a tone-insensitive
                 # "fuzzy" search.
                 at = time.perf_counter()
-                fuzzy, _ = db.search(variant, limit, taiwan)
+                with pd.stage("fuzzy_db"):
+                    fuzzy, _ = db.search(variant, limit, taiwan)
                 mark("fuzzy_db", at)
             elif variant and _has_explicit_tones(q):
                 # A tonal search that did find results still shows the
@@ -779,7 +988,8 @@ def api_search(
                     for entry in results
                 }
                 at = time.perf_counter()
-                variant_results, _ = db.search(variant, limit, taiwan)
+                with pd.stage("fuzzy_db"):
+                    variant_results, _ = db.search(variant, limit, taiwan)
                 mark("fuzzy_db", at)
                 at = time.perf_counter()
                 fuzzy = [
@@ -817,7 +1027,11 @@ def api_search(
             # an unquoted query with a reading never falls through to
             # definition-like searches.
             at = time.perf_counter()
-            dialect = [] if pinyin_match else db.dialect_entries(q)
+            if pinyin_match:
+                dialect = []
+            else:
+                with pd.stage("dialect_entries"):
+                    dialect = db.dialect_entries(q)
             mark("dialect", at)
             counters["dialect"] = len(dialect)
             if dialect:
@@ -834,7 +1048,8 @@ def api_search(
             # Offer the English search only when it would actually find something.
             english_match = False
             if pinyin_match:
-                english_match = db.has_english_match(q.strip())
+                with pd.stage("english_hint"):
+                    english_match = db.has_english_match(q.strip())
             # Fuzzy matches are the tail of the combined list: they come after
             # every official result, so they only appear on the last pages.
             # The pager total covers both lists, and the requested page is a
@@ -850,7 +1065,8 @@ def api_search(
             ]
             # Lazy hydration only ranked the official rows; fetch the
             # definitions for the page we are actually returning.
-            results = db.decorate_entries(results)
+            with pd.stage("decorate_page"):
+                results = db.decorate_entries(results)
     finally:
         statements = db.end_log()
     if total is None:
@@ -866,6 +1082,7 @@ def api_search(
     total_ms = round((time.perf_counter() - started) * 1000, 2)
     timing_parts = [f"{name};dur={value}" for name, value in timings.items()]
     timing_parts.append(f"total;dur={total_ms}")
+    pd.mark("handler_end")
     response.headers["Server-Timing"] = ", ".join(timing_parts)
     response.headers["X-Yabai-Debug"] = json.dumps(
         counters, separators=(",", ":"), ensure_ascii=True
@@ -1109,10 +1326,13 @@ def api_annotate(payload: AnnotateRequest, request: Request):
     single characters so something still matches (e.g. 这是 -> 这 + 是).
     """
     started = time.perf_counter()
+    pd.mark("handler_start")
     queue_ms = round((started - getattr(request.state, "arrived", started)) * 1000, 2)
     before = _annotate_text.cache_info()
-    body, stats, counters = _annotate_text(payload.text)
+    with pd.stage("annotate"):
+        body, stats, counters = _annotate_text(payload.text)
     cache_hit = _annotate_text.cache_info().hits > before.hits
+    pd.mark("handler_end")
 
     total_ms = round((time.perf_counter() - started) * 1000, 2)
     parts = [f"queue;dur={queue_ms}"]

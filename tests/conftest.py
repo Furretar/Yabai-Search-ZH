@@ -14,6 +14,9 @@ os.environ.setdefault("YABAI_SQL_LOG", "0")
 # The parser's background lookup warm-up adds CPU load that makes the browser
 # selection test timing-flaky. The app's own tests do not need it.
 os.environ.setdefault("YABAI_WARM_LOOKUPS", "0")
+# Keep the test client's startup fast and deterministic; the page-cache warm-up
+# is measured separately against a real uvicorn process.
+os.environ.setdefault("YABAI_WARM_PAGE_CACHE", "0")
 
 
 def _preload_libstdcpp() -> None:

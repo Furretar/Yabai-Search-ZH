@@ -7,6 +7,7 @@ import os
 import re
 import threading
 import sqlite3
+import sys
 import time
 from bisect import bisect_left
 from collections import defaultdict
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from opencc import OpenCC
 
+from yabai_search import perf_debug as pd
 from yabai_search.overrides import (
     HIDE_FORMS,
     IDS_IMAGES,
@@ -65,6 +67,14 @@ MOE_REVISED_DB_PATH = (
 # Path to the Wiktionary headword list (kaikki.org/Wiktextract), built by
 # scripts/import_wiktionary.py.
 WIKTIONARY_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "wiktionary.sqlite"
+SOURCE_GLOSS_DB_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "source_gloss.sqlite"
+)
+_source_gloss_ok_cache: bool | None = None
+HEAD_GRAMS_DB_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "head_grams.sqlite"
+)
+_head_grams_ok_cache: bool | None = None
 
 # Path to the Chinese Wiktionary (zh.wiktionary.org) database, built by
 # scripts/import_zhwiktionary.py.
@@ -115,6 +125,21 @@ DEFINITION_GRAMS_DB_PATH = (
 GRAM_WORDS_DB_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "gram_words.sqlite"
 )
+_gram_words_ok_cache: bool | None = None
+
+# --- exact, uncapped result sets -------------------------------------------
+# The owner requires every result list and total to be exact over ALL matches.
+# A LIMIT larger than any possible result set is the simplest way to express
+# "no limit" while keeping the existing SQL shape. The dictionary has ~125k
+# CEDICT rows and ~405k frequency rows, so 1e9 is far beyond any real set.
+# YABAI_UNCAPPED=0 restores the previous per-site caps for A/B comparison.
+UNBOUNDED = 1_000_000_000
+
+
+def _cap(legacy: int) -> int:
+    """The effective cap: unbounded by default, `legacy` when uncapped is off."""
+    return legacy if os.environ.get("YABAI_UNCAPPED") == "0" else UNBOUNDED
+
 
 # --- debug log -------------------------------------------------------------
 # Every search records the SQL statements it runs and how long each took, so
@@ -239,26 +264,39 @@ def _connect(database) -> sqlite3.Connection:
     connection = connections.get(key)
     if connection is not None:
         return connection
+    legacy_sqlite = os.environ.get("YABAI_SQLITE_LEGACY") == "1"
     connection = sqlite3.connect(
-        f"file:{key}?mode=ro",
+        f"file:{key}?mode=ro"
+        + ("" if legacy_sqlite else "&immutable=1"),
         uri=True,
         check_same_thread=False,
         factory=_PooledConnection,
     )
-    connection.execute("PRAGMA mmap_size=268435456")
-    # 8 MB page cache per connection. The OS page cache (through mmap) keeps
-    # the large source indexes hot, so this only holds the pages one query
-    # touches; a larger cache would multiply across worker threads.
-    connection.execute("PRAGMA cache_size=-8000")
+    connection.execute(
+        "PRAGMA mmap_size=268435456" if legacy_sqlite else "PRAGMA mmap_size=1073741824"
+    )
+    # 16 MB page cache per connection keeps the hot headword/gloss pages
+    # without multiplying a large cache across every worker thread.
+    connection.execute(
+        "PRAGMA cache_size=-8000" if legacy_sqlite else "PRAGMA cache_size=-16000"
+    )
     connection.execute("PRAGMA temp_store=MEMORY")
-    # SQLite's LIKE is case-insensitive by default, which forces full
-    # table scans even with a B-tree index. Our queries are already
-    # lowercased (pinyin) or Han characters (no case), so case folding
-    # is unnecessary and enabling case-sensitivity lets LIKE use the
-    # index (SEARCH ... (col>? AND col<?) instead of SCAN).
+    # Keep the established case-sensitive LIKE behavior. The indexed
+    # definition path uses MATCH only to find candidates, then applies the
+    # original lower(...) LIKE test as the exact filter.
     connection.execute("PRAGMA case_sensitive_like=ON")
+    if pd.ENABLED and not getattr(connection, "_yabai_perf_traced", False):
+        pd.count_statements(connection)
+        connection._yabai_perf_traced = True
     connections[key] = connection
     return connection
+
+
+def _fetchall(connection, sql: str, params=(), label: str = ""):
+    """fetchall with optional per-query tracing; identical rows either way."""
+    if pd.ENABLED:
+        return pd.run_sql(connection, sql, params, label)
+    return connection.execute(sql, params).fetchall()
 
 # Which dictionaries contain a headword - drives the source chips, the
 # per-dictionary definitions and the classifiers shown under a result. Each dict:
@@ -1570,6 +1608,7 @@ _GLOSS_WORD_RE = re.compile(
 
 
 @lru_cache(maxsize=50_000)
+@lru_cache(maxsize=100_000)
 def _annotate_gloss(text: str) -> str:
     """Rewrite "word (reading)" as "word[reading]" for the frontend.
 
@@ -2176,6 +2215,7 @@ def _source_only_entries(
     forms = _script_forms(text)
     placeholders = ",".join("?" * len(forms))
     params = tuple(forms)
+    source_head_legacy = os.environ.get("YABAI_SOURCE_HEAD_LEGACY") == "1"
     # (form, LIKE pattern) pairs, one per script variant, for a normal
     # (non-exact) search.
     pairs = [
@@ -2215,9 +2255,12 @@ def _source_only_entries(
         if source["anchor"] == "cedict" or not source["database"].exists():
             continue
         database = _connect(source["database"])
+        query_stage = pd.stage(f"src:{source['anchor']}:query")
+        query_stage.__enter__()
         try:
             if all_stars:
                 if not source.get("all_sql"):
+                    query_stage.__exit__(None, None, None)
                     continue
                 rows = database.execute(source["all_sql"]).fetchall()
             elif allow_no_gloss:
@@ -2239,12 +2282,18 @@ def _source_only_entries(
                 # column (their senses_fts table); Wiktionary has its own.
                 fts_sql = source.get("head_fts_sql") or source.get("like_sql_fts")
                 use_fts = bool(fts_sql) and _source_has_fts(source)
-                head_source = {"wiktionary": "wikt_head", "moe": "moe_head"}.get(
-                    source["anchor"], ""
-                )
+                head_source = {
+                    "wiktionary": "wikt_head",
+                    "moe": "moe_head",
+                    "moe_revised": "moe_revised_head",
+                    "zhwiktionary": "zhwikt_head",
+                    "jpwiktionary": "jpwikt_head",
+                }.get(source["anchor"], "")
                 for form, pattern in pairs:
                     candidates = (
-                        _gram_candidates(head_source, form) if head_source else None
+                        _gram_candidates(head_source, form)
+                        if head_source and not source_head_legacy
+                        else None
                     )
                     if candidates is not None:
                         # Exact for 1-2 Han-character headwords, already sorted
@@ -2264,6 +2313,12 @@ def _source_only_entries(
                         if head not in seen_rows:
                             seen_rows.add(head)
                             rows.append((head,))
+            trace = pd.current()
+            if trace:
+                trace.counters[f"src:{source['anchor']}:candidates"] = len(rows)
+            query_stage.__exit__(None, None, None)
+            read_stage = pd.stage(f"src:{source['anchor']}:readings")
+            read_stage.__enter__()
             for (head,) in rows:
                 # CEDICT (or an earlier source) already covers this head: skip it
                 # before running any reading lookups. Equivalent to add()'s check,
@@ -2306,6 +2361,7 @@ def _source_only_entries(
                             break
                 if add(head, pinyin, no_tone, label):
                     break
+            read_stage.__exit__(None, None, None)
         finally:
             database.close()
         if len(heads) >= limit:
@@ -2314,6 +2370,8 @@ def _source_only_entries(
     # The frequency list can contribute headwords too (it has no definitions).
     if len(heads) < limit and FREQ_DB_PATH.exists():
         database = _connect(FREQ_DB_PATH)
+        freq_stage = pd.stage("src:freq:query")
+        freq_stage.__enter__()
         try:
             if all_stars:
                 rows = database.execute("SELECT word FROM freq ORDER BY rank").fetchall()
@@ -2329,6 +2387,23 @@ def _source_only_entries(
                 # ones fall back to the scan. freq_fts rows are in rank order.
                 use_fts = _has_freq_fts()
                 for form, pattern in pairs:
+                    candidates = (
+                        _gram_candidates("freq_head", form)
+                        if not source_head_legacy
+                        else None
+                    )
+                    if candidates is not None:
+                        if candidates:
+                            holes = ",".join("?" * len(candidates))
+                            for (head,) in database.execute(
+                                "SELECT word FROM freq WHERE word IN "
+                                f"({holes}) ORDER BY rank",
+                                tuple(candidates),
+                            ):
+                                if head not in seen_rows:
+                                    seen_rows.add(head)
+                                    rows.append((head,))
+                        continue
                     if use_fts and len(form) >= 3:
                         sql = ("SELECT word FROM freq_fts WHERE word LIKE ? "
                                "ORDER BY freq_rank")
@@ -2343,6 +2418,10 @@ def _source_only_entries(
                             rows.append((head,))
         finally:
             database.close()
+        trace = pd.current()
+        if trace:
+            trace.counters["src:freq:candidates"] = len(rows)
+        freq_stage.__exit__(None, None, None)
         for (head,) in rows:
             if add(head):
                 break
@@ -2437,6 +2516,20 @@ def _prefix_rows(keys: list[str], rows: list[tuple], prefix: str) -> list[tuple]
 
 
 def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
+    """Cached wrapper around the source-pinyin scan.
+
+    Common English queries such as "the" and "ing" fall through to this scan on
+    every request even though its result only changes when a source database is
+    rebuilt. The raw rows are cached; each caller gets fresh dicts because
+    `_decorate` mutates them. YABAI_SOURCE_PINYIN_CACHE=0 restores the scan.
+    """
+    if os.environ.get("YABAI_SOURCE_PINYIN_CACHE", "1") == "0":
+        return list(_source_pinyin_raw(query, limit))
+    return [dict(entry) for entry in _source_pinyin_raw(query, limit)]
+
+
+@lru_cache(maxsize=1024)
+def _source_pinyin_raw(query: str, limit: int = 20) -> tuple[dict, ...]:
     """Source-only entries whose reading matches a pinyin query.
 
     CEDICT pinyin search only looks at its own entries; this adds Wiktionary's
@@ -2445,7 +2538,7 @@ def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
     """
     text = (query or "").strip()
     if not text:
-        return []
+        return ()
     parsed = _parse_pinyin_query(text)
     if parsed:
         letters, tones, boundaries = parsed
@@ -2453,7 +2546,7 @@ def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
         letters = to_toneless(text)
         tones, boundaries = {}, set()
     if not letters:
-        return []
+        return ()
     pattern = _like_pattern(f"*{letters}*")
     # A pinyin wildcard is matched against the source readings with the same
     # zero-or-more-character segments as the SQL LIKE search.
@@ -2621,7 +2714,141 @@ def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
         )
         if len(entries) >= limit:
             break
-    return entries
+    return tuple(entries)
+
+
+def _source_gloss_version_ok() -> bool:
+    """True when source_gloss.sqlite was built from the current CEDICT file."""
+    global _source_gloss_ok_cache
+    if _source_gloss_ok_cache is not None:
+        return _source_gloss_ok_cache
+    if not SOURCE_GLOSS_DB_PATH.exists():
+        _source_gloss_ok_cache = False
+        return False
+    connection = _connect(SOURCE_GLOSS_DB_PATH)
+    try:
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key = 'cedict_sha256'"
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        connection.close()
+    if not row:
+        print(
+            "source_gloss.sqlite has no CEDICT version; using live gloss scan",
+            file=sys.stderr,
+        )
+        _source_gloss_ok_cache = False
+        return False
+    digest = hashlib.sha256(DB_PATH.read_bytes()).hexdigest()
+    _source_gloss_ok_cache = digest == row[0]
+    if not _source_gloss_ok_cache:
+        print(
+            "source_gloss.sqlite is stale for the current CEDICT; "
+            "using live gloss scan",
+            file=sys.stderr,
+        )
+    return _source_gloss_ok_cache
+
+
+def _head_grams_version_ok() -> bool:
+    """True when head_grams.sqlite was built from the current CEDICT."""
+    global _head_grams_ok_cache
+    if _head_grams_ok_cache is not None:
+        return _head_grams_ok_cache
+    if not HEAD_GRAMS_DB_PATH.exists():
+        _head_grams_ok_cache = False
+        return False
+    connection = _connect(HEAD_GRAMS_DB_PATH)
+    try:
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key = 'cedict_sha256'"
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        connection.close()
+    if not row:
+        _head_grams_ok_cache = False
+        return False
+    digest = hashlib.sha256(DB_PATH.read_bytes()).hexdigest()
+    _head_grams_ok_cache = digest == row[0]
+    if not _head_grams_ok_cache:
+        print(
+            "head_grams.sqlite is stale for the current CEDICT; "
+            "using the headword scan",
+            file=sys.stderr,
+        )
+    return _head_grams_ok_cache
+
+
+def _headword_candidate_ids(forms: list[str]) -> set[int] | None:
+    """Candidate entry ids for a 1-2 character headword query, or None."""
+    if os.environ.get("YABAI_HEADWORD_LEGACY") == "1" or not _head_grams_version_ok():
+        return None
+    grams: set[str] = set()
+    for form in forms:
+        if len(form) == 1 or len(form) == 2:
+            grams.add(form)
+        else:
+            return None
+    if not grams:
+        return None
+    connection = _connect(HEAD_GRAMS_DB_PATH)
+    try:
+        holes = ",".join("?" * len(grams))
+        rows = connection.execute(
+            f"SELECT entry_id FROM head_grams WHERE gram IN ({holes})",
+            tuple(grams),
+        ).fetchall()
+    finally:
+        connection.close()
+    return {row[0] for row in rows}
+
+
+def fast_path_status() -> dict:
+    """Report whether each derived fast path is usable, with a reason."""
+    status: dict[str, dict] = {}
+
+    def record(name: str, path: Path, check) -> None:
+        if not path.exists():
+            status[name] = {"active": False, "reason": "missing"}
+            return
+        try:
+            active = bool(check())
+            status[name] = {
+                "active": active,
+                "reason": "" if active else "stale or invalid metadata",
+            }
+        except Exception as exc:
+            status[name] = {"active": False, "reason": str(exc)}
+
+    record("gloss_index", SOURCE_GLOSS_DB_PATH, _source_gloss_version_ok)
+    record("head_grams", HEAD_GRAMS_DB_PATH, _head_grams_version_ok)
+    record("gram_words", GRAM_WORDS_DB_PATH, _gram_words_version_ok)
+    trigram = bool(_has_cedict_trigram())
+    status["definition_trigram"] = {
+        "active": trigram,
+        "reason": "" if trigram else "missing",
+    }
+    try:
+        connection = connect()
+        column = connection.execute(
+            "SELECT 1 FROM pragma_table_info('entries') WHERE name = ?",
+            (FREQ_RANK_COLUMN,),
+        ).fetchone()
+        flag = connection.execute(
+            "SELECT value FROM meta WHERE key = ?", (FREQ_RANK_COLUMN,)
+        ).fetchone()
+        active = bool(column) and flag is not None and flag[0] == "1"
+        status["freq_rank"] = {
+            "active": active,
+            "reason": "" if active else "column or meta flag missing",
+        }
+    except sqlite3.Error as exc:
+        status["freq_rank"] = {"active": False, "reason": str(exc)}
+    return status
 
 
 def _source_gloss_entries(query: str, limit: int = 20) -> list[dict]:
@@ -2631,6 +2858,72 @@ def _source_gloss_entries(query: str, limit: int = 20) -> list[dict]:
         return []
     text_lower = text.lower()
     pattern = _like_pattern(text if "*" in text else f"*{text}*")
+    # Scan enough rows that removing CEDICT-known headwords cannot hide the
+    # source-only hits. A phrase can have dozens of dictionary headwords (for
+    # example every Taixuanjing tetragram); the old limit*3 cut them off.
+    scan_limit = max(limit * 50, 1000)
+    # The prebuilt source-only index already excludes CEDICT headwords. Its
+    # trigram FTS table turns a phrase search into a millisecond lookup instead
+    # of scanning the large live Wiktionary FTS table and filtering afterwards.
+    if (
+        SOURCE_GLOSS_DB_PATH.exists()
+        and os.environ.get("YABAI_GLOSS_LEGACY") != "1"
+        and _source_gloss_version_ok()
+        and len(text) >= 3
+        and text.isascii()
+        and "*" not in text
+    ):
+        connection = _connect(SOURCE_GLOSS_DB_PATH)
+        try:
+            if text.isascii() and "*" not in text and len(text) >= 3:
+                try:
+                    rows = _fetchall(
+                        connection,
+                        "SELECT word FROM source_gloss_fts "
+                        "WHERE source_gloss_fts MATCH ? LIMIT ?",
+                        ('"' + text.replace('"', '""') + '"', scan_limit),
+                        "gloss_scan",
+                    )
+                except sqlite3.Error:
+                    rows = []
+                if not rows:
+                    rows = _fetchall(
+                        connection,
+                        "SELECT word FROM source_gloss "
+                        "WHERE lower(gloss) LIKE ? ESCAPE '\\' LIMIT ?",
+                        (_like_pattern(f"*{text_lower}*"), scan_limit),
+                        "gloss_scan",
+                    )
+            else:
+                rows = _fetchall(
+                    connection,
+                    "SELECT word FROM source_gloss "
+                    "WHERE lower(gloss) LIKE ? ESCAPE '\\' LIMIT ?",
+                    (_like_pattern(f"*{text_lower}*"), scan_limit),
+                    "gloss_scan",
+                )
+        finally:
+            connection.close()
+        seen: set[str] = set()
+        entries: list[dict] = []
+        for (word,) in rows:
+            simplified = to_simplified(word)
+            if simplified in seen:
+                continue
+            seen.add(simplified)
+            entries.append(
+                {
+                    "simplified": simplified,
+                    "traditional": to_traditional(word),
+                    "pinyin": "",
+                    "english": "",
+                    "english_normalized": "",
+                }
+            )
+            if len(entries) >= limit:
+                break
+        return entries
+
     connection = _connect(WIKTIONARY_DB_PATH)
     try:
         # A three-or-more character query uses the trigram index (which covers
@@ -2639,17 +2932,21 @@ def _source_gloss_entries(query: str, limit: int = 20) -> list[dict]:
         # case_sensitive_like is on (which makes LIKE use the B-tree index for
         # Chinese/pinyin queries).
         if "*" not in text and len(text) >= 3 and _has_wiktionary_fts():
-            rows = connection.execute(
+            rows = _fetchall(
+                connection,
                 "SELECT word FROM wiktionary_fts WHERE lower(gloss) LIKE ? "
                 "ORDER BY rowid LIMIT ?",
-                (f"%{text_lower}%", limit * 3),
-            ).fetchall()
+                (f"%{text_lower}%", scan_limit),
+                "gloss_scan",
+            )
         else:
-            rows = connection.execute(
+            rows = _fetchall(
+                connection,
                 "SELECT DISTINCT word FROM wiktionary "
                 "WHERE gloss IS NOT NULL AND lower(gloss) LIKE ? ESCAPE '\\' LIMIT ?",
-                (_like_pattern(f"*{text_lower}*"), limit * 3),
-            ).fetchall()
+                (_like_pattern(f"*{text_lower}*"), scan_limit),
+                "gloss_scan",
+            )
     finally:
         connection.close()
     known = _cedict_heads()
@@ -2735,6 +3032,49 @@ def _definition_possible(form: str) -> bool:
 _GRAM_CANDIDATE_CAP = 4000
 
 
+def _gram_words_version_ok() -> bool:
+    """True when gram_words.sqlite matches all source databases it indexes."""
+    global _gram_words_ok_cache
+    if _gram_words_ok_cache is not None:
+        return _gram_words_ok_cache
+    if not GRAM_WORDS_DB_PATH.exists():
+        _gram_words_ok_cache = False
+        return False
+    connection = _connect(GRAM_WORDS_DB_PATH)
+    try:
+        stored = {
+            row[0]: row[1]
+            for row in connection.execute(
+                "SELECT key, value FROM meta WHERE key LIKE 'source:%'"
+            )
+        }
+    except sqlite3.Error:
+        stored = {}
+    finally:
+        connection.close()
+    sources = {
+        "moe": MOE_DB_PATH,
+        "moe_revised": MOE_REVISED_DB_PATH,
+        "wiktionary": WIKTIONARY_DB_PATH,
+        "zhwiktionary": ZHWIKTIONARY_DB_PATH,
+        "jpwiktionary": JPWIKTIONARY_DB_PATH,
+        "freq": FREQ_DB_PATH,
+    }
+    for name, path in sources.items():
+        if not path.exists():
+            continue
+        value = stored.get(f"source:{name}")
+        if not value or hashlib.sha256(path.read_bytes()).hexdigest() != value:
+            print(
+                f"gram_words.sqlite is stale for {name}; using legacy scans",
+                file=sys.stderr,
+            )
+            _gram_words_ok_cache = False
+            return False
+    _gram_words_ok_cache = True
+    return True
+
+
 def _gram_candidates(source: str, form: str) -> list[str] | None:
     """Words containing a 1-2 Han-character `form`, or None to fall back.
 
@@ -2745,6 +3085,7 @@ def _gram_candidates(source: str, form: str) -> list[str] | None:
     """
     if not (
         GRAM_WORDS_DB_PATH.exists()
+        and _gram_words_version_ok()
         and 1 <= len(form) <= 2
         and all(_is_han(char) for char in form)
     ):
@@ -3283,22 +3624,91 @@ def _entries_with_frequency(limit: int = 50) -> list[dict]:
 
 def _extra_label_entries(phrase: str, limit: int) -> list[dict] | None:
     """Entries for a quoted phrase that names an app-added section label."""
+    name = _label_name(phrase)
+    if name is None:
+        return None
+    if name == "ids":
+        return _ids_entries()
+    return _LABELS[name][1](limit)
+
+
+_LABELS = {
+    "taiwan pronunciation": ("taiwan pronunciation", _entries_with_taiwan_pron),
+    "also pronounced": ("also pronounced", _entries_with_alt_pron),
+    "other forms": ("other forms", _entries_with_forms),
+    "classifier": ("classifier", _entries_with_classifiers),
+    "frequency": ("frequency", _entries_with_frequency),
+}
+
+
+def _label_name(phrase: str) -> str | None:
+    """Return the canonical section name a quoted phrase refers to."""
     text = phrase.strip().lower().rstrip(": ")
     if text in _IDS_NOTE.lower():
-        return _ids_entries()
-    labels = (
-        ("taiwan pronunciation", _entries_with_taiwan_pron),
-        ("also pronounced", _entries_with_alt_pron),
-        ("other forms", _entries_with_forms),
-        ("classifier", _entries_with_classifiers),
-        ("frequency", _entries_with_frequency),
-    )
-    for label, fetch in labels:
-        if text == label or (len(text) >= 3 and (
-            label.startswith(text) or text.startswith(label)
-        )):
-            return fetch(limit)
+        return "ids"
+    for label in _LABELS:
+        if text == label or (
+            len(text) >= 3 and (label.startswith(text) or text.startswith(label))
+        ):
+            return label
     return None
+
+
+# The frequency section is 289,606 deduped rows (405,472 raw). Building that
+# list once is cheap; returning it through _word_entries per request is not,
+# because the IN (...) list would exceed SQLite's variable limit. The label
+# page uses this ordered list as its index and slices one page at a time.
+_frequency_label_words_cache: list[str] | None = None
+_frequency_label_lock = threading.Lock()
+
+
+def _frequency_label_words() -> list[str]:
+    """First raw word per simplified frequency headword, in rank order."""
+    global _frequency_label_words_cache
+    if _frequency_label_words_cache is not None:
+        return _frequency_label_words_cache
+    with _frequency_label_lock:
+        if _frequency_label_words_cache is not None:
+            return _frequency_label_words_cache
+        words: list[str] = []
+        if FREQ_DB_PATH.exists():
+            connection = _connect(FREQ_DB_PATH)
+            try:
+                seen: set[str] = set()
+                for (word,) in connection.execute(
+                    "SELECT word FROM freq ORDER BY rank"
+                ):
+                    key = to_simplified(word)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    words.append(word)
+            finally:
+                connection.close()
+        _frequency_label_words_cache = words
+        return words
+
+
+def label_page(
+    query: str, offset: int, page_limit: int
+) -> tuple[list[dict], int] | None:
+    """Exact page for a quoted section label, without materialising it all.
+
+    Only the frequency section needs this: it has 289,606 deduped rows and
+    materialising them through `_word_entries` would exceed SQLite's variable
+    limit. The other sections are under 7k rows and are returned whole and
+    sliced by the caller.
+    """
+    text = (query or "").strip()
+    if not (len(text) >= 2 and text.startswith('"') and text.endswith('"')):
+        return None
+    if _label_name(text[1:-1].strip()) != "frequency":
+        return None
+    words = _frequency_label_words()
+    page = words[offset : offset + page_limit]
+    if not page:
+        return [], len(words)
+    return _word_entries(page, len(page)), len(words)
 
 
 def _source_matches(
@@ -3344,22 +3754,10 @@ def _source_matches(
     return unique
 
 
-def dialect_entries(query: str, limit: int = 200) -> list[dict]:
-    """Words whose Wiktionary dialect reading label or reading matches `query`.
-
-    Wiktionary stores variety labels such as "Chengdu Sichuanese" on readings,
-    not on the headword or gloss. Searching that variety name (or its pinyin)
-    should still find words like 姜包儿 even when the label is their only
-    searchable mention.
-    """
-    text = (query or "").strip()
-    if not text or "*" in text or has_cjk(text) or len(text) < 3:
-        return []
-    if not WIKTIONARY_DB_PATH.exists():
-        return []
+def _dialect_query(text: str, limit: int) -> tuple[tuple, ...]:
+    """Raw Wiktionary readings rows for a dialect-label/pinyin query."""
     label_pattern = _like_pattern(f"*{text.lower()}*")
     letters = to_toneless(text)
-
     where = "kind <> 'mandarin' AND label <> '' AND lower(label) LIKE ? ESCAPE '\\'"
     params: list[str] = [label_pattern]
     if letters:
@@ -3367,7 +3765,6 @@ def dialect_entries(query: str, limit: int = 200) -> list[dict]:
         # pinyin such as "shi" should not pull in large dialect lists.
         where += " OR (kind <> 'mandarin' AND pinyin_toneless = ?)"
         params.append(letters)
-
     connection = _connect(WIKTIONARY_DB_PATH)
     try:
         rows = connection.execute(
@@ -3378,6 +3775,38 @@ def dialect_entries(query: str, limit: int = 200) -> list[dict]:
         ).fetchall()
     finally:
         connection.close()
+    return tuple(rows)
+
+
+@lru_cache(maxsize=1024)
+def _dialect_rows(text: str, limit: int) -> tuple[tuple, ...]:
+    """Cache the raw rows: the label scan has no usable index."""
+    return _dialect_query(text, limit)
+
+
+def dialect_entries(query: str, limit: int | None = None) -> list[dict]:
+    """Words whose Wiktionary dialect reading label or reading matches `query`.
+
+    Wiktionary stores variety labels such as "Chengdu Sichuanese" on readings,
+    not on the headword or gloss. Searching that variety name (or its pinyin)
+    should still find words like 姜包儿 even when the label is their only
+    searchable mention.
+
+    The raw scan is cached because the leading-wildcard label match cannot use
+    an index and the same queries recur. YABAI_DIALECT_CACHE=0 restores the
+    original uncached scan.
+    """
+    text = (query or "").strip()
+    if not text or "*" in text or has_cjk(text) or len(text) < 3:
+        return []
+    if limit is None:
+        limit = _cap(200)
+    if not WIKTIONARY_DB_PATH.exists():
+        return []
+    if os.environ.get("YABAI_DIALECT_CACHE", "1") == "0":
+        rows = _dialect_query(text, limit)
+    else:
+        rows = _dialect_rows(text.lower(), limit)
 
     entries: list[dict] = []
     seen: set[str] = set()
@@ -3662,7 +4091,7 @@ def wildcard_search(
             ).fetchone()[0]
             # Source-only headwords matching the same wildcard are appended
             # after the CEDICT matches (one combined paged list).
-            source_entries = _source_only_entries(text, limit=500)
+            source_entries = _source_only_entries(text, limit=_cap(500))
             total = cedict_total + len(source_entries)
             if offset < cedict_total:
                 rows = connection.execute(
@@ -4177,7 +4606,7 @@ def search(
         params = ['"' + phrase.replace('"', '""') + '"', limit]
         connection = connect()
         try:
-            rows = connection.execute(sql, params).fetchall()
+            rows = _fetchall(connection, sql, params, "definition_fts")
         finally:
             connection.close()
         fts_rows = [dict(row) for row in rows]
@@ -4189,11 +4618,17 @@ def search(
             if key not in fts_keys:
                 fts_keys.add(key)
                 fts_unique.append(entry)
-        source_rows = [
-            entry
-            for entry in _source_definition_entries(phrase, limit=limit)
-            if entry["simplified"] not in fts_keys
-        ]
+        source_rows = []
+        seen_source = set(fts_keys)
+        for entry in (
+            _source_definition_entries(phrase, limit=limit)
+            + _source_gloss_entries(phrase, limit=limit)
+        ):
+            key = entry["simplified"]
+            if key in seen_source:
+                continue
+            seen_source.add(key)
+            source_rows.append(entry)
         if not fts_unique and not source_rows:
             # A quoted Chinese headword or pinyin may not occur in any
             # definition. Fall back to the normal search so quoting does not
@@ -4264,12 +4699,14 @@ def search(
                         "AND pinyin_toneless NOT LIKE ? ESCAPE '\\'"
                     )
                     params = (note, pattern, exclude, note_pattern)
-                rows = connection.execute(
+                rows = _fetchall(
+                    connection,
                     "SELECT id, simplified, traditional, pinyin, pinyin_numeric, "
                     "instr(english_normalized, ?) > 0 AS alt FROM entries "
                     f"WHERE {where} OR {_note_or()}",
                     params,
-                ).fetchall()
+                    "pinyin_lookup",
+                )
                 words_by = (
                     _moe_readings([row["traditional"] for row in rows])
                     if taiwan
@@ -4318,7 +4755,11 @@ def search(
             top.append(row)
         # Decorate the CEDICT rows and the source-only rows in one pass: each
         # decorate call opens many connections.
-        source_rows = [] if part == "primary" else _source_pinyin_entries(query, limit=limit)
+        if part == "primary":
+            source_rows = []
+        else:
+            with pd.stage("source_pinyin"):
+                source_rows = _source_pinyin_entries(query, limit=limit)
         decorated = decorate(top + source_rows)
         result = decorated[: len(top)]
         # Within the relevance group (whole reading, starts with, contains), put
@@ -4375,7 +4816,8 @@ def search(
             else:
                 pinyin_clause = "pinyin_toneless LIKE ? ESCAPE '\\'"
                 pinyin_params = (pattern,)
-            rows = connection.execute(
+            rows = _fetchall(
+                connection,
                 "SELECT simplified, traditional, pinyin, english, english_normalized "
                 f"FROM entries WHERE {pinyin_clause} "
                 f"OR {_note_or()} "
@@ -4383,7 +4825,8 @@ def search(
                 "(english_normalized LIKE ? ESCAPE '\\') DESC"
                 f"{freq_clause}, length(simplified), id LIMIT ?",
                 (*pinyin_params, note_pattern, pinyin_key, note_pattern, limit),
-            ).fetchall()
+                "pinyin_lookup",
+            )
             # With the Taiwan toggle on, also match MOE (Taiwan) readings, so a
             # query like "lese" finds 垃圾.
             if taiwan:
@@ -4415,7 +4858,11 @@ def search(
             if key not in seen:
                 seen.add(key)
                 entries.append(dict(row))
-        source_rows = [] if part == "primary" else _source_pinyin_entries(query, limit=limit)
+        if part == "primary":
+            source_rows = []
+        else:
+            with pd.stage("source_pinyin"):
+                source_rows = _source_pinyin_entries(query, limit=limit)
         if entries or source_rows:
             decorated = decorate(entries + source_rows)
             if part == "primary":
@@ -4537,6 +4984,16 @@ def search(
             headword_order_params += [pattern, pattern]
     headword_rows: list = []
     if headword_clause:
+        candidates = None
+        if is_chinese or is_numeric:
+            candidates = _headword_candidate_ids(headword_forms)
+        if candidates is not None:
+            if candidates:
+                holes = ",".join("?" * len(candidates))
+                headword_clause += f" AND id IN ({holes})"
+                headword_params += [str(value) for value in sorted(candidates)]
+            else:
+                headword_clause += " AND 0"
         headword_sql = (
             "SELECT simplified, traditional, pinyin, english, english_normalized "
             "FROM entries WHERE " + headword_clause + " ORDER BY "
@@ -4547,15 +5004,26 @@ def search(
         )
         connection = connect()
         try:
-            headword_rows = connection.execute(
+            headword_rows = _fetchall(
+                connection,
                 headword_sql,
                 [*headword_params, *headword_order_params, limit],
-            ).fetchall()
+                "headword_lookup",
+            )
         finally:
             connection.close()
-    source_headwords = (
-        [] if part == "primary" else _source_only_entries(query, limit=limit)
-    )
+    if (
+        headword_rows
+        and os.environ.get("YABAI_SOURCE_HEADWORD_SKIP") == "1"
+    ):
+        # Experimental: source-only headwords can be real results, so this is
+        # off by default. The golden diff showed 50 changed queries.
+        source_headwords = []
+    elif part == "primary":
+        source_headwords = []
+    else:
+        with pd.stage("source_only_headwords"):
+            source_headwords = _source_only_entries(query, limit=limit)
     if headword_rows or source_headwords:
         entries = [dict(row) for row in headword_rows] + source_headwords
         decorated = decorate(entries)
@@ -4570,22 +5038,29 @@ def search(
         definition_patterns = [
             _like_pattern(f"*{form}*") for form in headword_forms
         ]
-    # For a plain English word, let the trigram index find the definitions that
-    # contain it instead of scanning english_normalized.
+    # For a plain ASCII English word, use the trigram index only to find
+    # candidates. The original lower(...) LIKE test remains the exact filter,
+    # so mixed-case definitions and case_sensitive_like=ON behave as before.
+    defs_legacy = os.environ.get("YABAI_DEFS_LEGACY") == "1"
     use_definition_trigram = (
         _has_cedict_trigram()
+        and not defs_legacy
         and not is_chinese
         and not is_numeric
         and "*" not in query
         and len(query) >= 3
+        and query.isascii()
+        and not any(char in query for char in "%_\\")
         and re.fullmatch(r"[A-Za-z0-9üÜ' .\-]+", query) is not None
     )
     if use_definition_trigram:
+        match_query = 'english_normalized : "' + query.replace('"', '""') + '"'
         definition_clause = (
             "id IN (SELECT rowid FROM entries_fts_trigram "
-            "WHERE lower(english_normalized) LIKE ?)"
+            "WHERE english_normalized MATCH ?) "
+            "AND lower(english_normalized) LIKE ? ESCAPE '\\'"
         )
-        definition_patterns = [f"%{query}%"]
+        definition_patterns = [match_query, _like_pattern(f"*{query}*")]
     else:
         definition_clause = "(" + " OR ".join(
             "lower(english_normalized) LIKE ? ESCAPE '\\'" for _ in definition_patterns
@@ -4691,7 +5166,7 @@ def search(
 
     connection = connect()
     try:
-        rows = connection.execute(sql, params).fetchall()
+        rows = _fetchall(connection, sql, params, "definition_fts")
     finally:
         connection.close()  # always close, even if the query raised
 
@@ -4703,17 +5178,25 @@ def search(
     # The non-exact headword scan already ran above (and found nothing, or the
     # search would have returned), and the pinyin branches ran too unless
     # pinyin was explicitly skipped. Tell _source_matches not to repeat them.
-    source_rows = (
-        []
-        if part == "primary"
-        else _source_matches(
-            query,
-            limit=20,
-            heads_checked=True,
-            pinyin_checked=not _skip_pinyin,
-        )
-    )
-    decorated = decorate(entries + source_rows)
+    if part == "primary":
+        source_rows = []
+    else:
+        with pd.stage("source_matches"):
+            source_rows = _source_matches(
+                query,
+                limit=_cap(20),
+                heads_checked=True,
+                pinyin_checked=not _skip_pinyin,
+            )
+    # A CEDICT definition match and a source gloss match can be the same word.
+    # Keep the CEDICT row, and append only genuinely source-only words.
+    if source_rows:
+        entry_keys = {entry["simplified"] for entry in entries}
+        source_rows = [
+            entry for entry in source_rows if entry["simplified"] not in entry_keys
+        ]
+    with pd.stage("search_decorate"):
+        decorated = decorate(entries + source_rows)
     if part == "primary":
         return decorated[: len(entries)], False
     if not decorated:
@@ -4721,7 +5204,9 @@ def search(
         # definition (e.g. 18禁), so an exact search still shows it with its
         # source link instead of an empty page.
         return decorate(
-            _source_only_entries(query, limit=10, exact=True, allow_no_gloss=True)
+            _source_only_entries(
+                query, limit=_cap(10), exact=True, allow_no_gloss=True
+            )
         ), False
     return decorated, False
 
@@ -4774,6 +5259,141 @@ def has_english_match(phrase: str) -> bool:
     return True
 
 
+_PAGE_CACHE_FILES = (
+    DB_PATH,
+    MOE_DB_PATH,
+    MOE_REVISED_DB_PATH,
+    WIKTIONARY_DB_PATH,
+    SOURCE_GLOSS_DB_PATH,
+    HEAD_GRAMS_DB_PATH,
+    ZHWIKTIONARY_DB_PATH,
+    JPWIKTIONARY_DB_PATH,
+    SUBTLEX_DB_PATH,
+    FREQ_DB_PATH,
+    DEFINITION_GRAMS_DB_PATH,
+    GRAM_WORDS_DB_PATH,
+    ENGLISH_WORDS_DB_PATH,
+)
+
+# One warm-up per process. The thread is daemonised so a failed read never
+# keeps the server alive at shutdown.
+_WARM_LOCK = threading.Lock()
+_WARM_STATE = {
+    "started": False,
+    "done": False,
+    "elapsed_ms": None,
+    "bytes": 0,
+    "error": "",
+}
+
+
+def warm_mode() -> str:
+    """Return the page-cache warm-up mode: background, legacy or off.
+
+    `background` (default) reads the data files in a daemon thread so startup
+    does not block. `legacy` keeps the old synchronous behaviour. `off` skips
+    the warm-up, which is useful when measuring a genuinely cold start.
+    """
+    mode = os.environ.get("YABAI_WARM_PAGE_CACHE", "1").strip().lower()
+    if mode in ("0", "off", "false", "no"):
+        return "off"
+    if mode in ("legacy", "sync"):
+        return "legacy"
+    return "background"
+
+
+def page_cache_status() -> dict:
+    """Snapshot used by tests and /__debug/status."""
+    with _WARM_LOCK:
+        return dict(_WARM_STATE)
+
+
+def _warm_page_cache_files() -> int:
+    """Read every dictionary file once and ask the kernel to read ahead.
+
+    `posix_fadvise(WILLNEED)` alone is only a hint and can return before the
+    pages are resident. Reading the file in 1 MiB chunks makes the warm-up
+    deterministic; the data is mapped by SQLite anyway, so this does not keep
+    an extra copy in the Python heap.
+    """
+    total = 0
+    for path in _PAGE_CACHE_FILES:
+        try:
+            if not path.exists():
+                continue
+            with path.open("rb") as handle:
+                try:
+                    os.posix_fadvise(
+                        handle.fileno(), 0, 0, os.POSIX_FADV_WILLNEED
+                    )
+                except (AttributeError, OSError):
+                    pass
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+        except OSError as exc:
+            with _WARM_LOCK:
+                _WARM_STATE["error"] = f"{path.name}: {exc}"
+    return total
+
+
+def _warm_page_cache_worker() -> None:
+    """Background body: page cache first, then representative searches."""
+    start = time.perf_counter()
+    try:
+        total = _warm_page_cache_files()
+        # Run the expensive queries only after the files are resident, so the
+        # first real request does not compete with cold reads.
+        warm_search_queries()
+        with _WARM_LOCK:
+            _WARM_STATE.update(
+                done=True,
+                elapsed_ms=round((time.perf_counter() - start) * 1000, 1),
+                bytes=total,
+            )
+        print(
+            "page cache warm: "
+            f"{total / (1024 * 1024):.0f} MiB in "
+            f"{_WARM_STATE['elapsed_ms']:.0f} ms",
+            flush=True,
+        )
+    except Exception as exc:  # pragma: no cover - best-effort warm-up
+        with _WARM_LOCK:
+            _WARM_STATE.update(
+                done=True,
+                elapsed_ms=round((time.perf_counter() - start) * 1000, 1),
+                error=repr(exc),
+            )
+        print(f"page cache warm failed: {exc!r}", flush=True)
+
+
+def _start_page_cache_warm() -> None:
+    """Start the one background warm-up thread for this process."""
+    with _WARM_LOCK:
+        if _WARM_STATE["started"]:
+            return
+        _WARM_STATE["started"] = True
+    threading.Thread(
+        target=_warm_page_cache_worker,
+        name="page-cache-warm",
+        daemon=True,
+    ).start()
+
+
+def _warm_step(name: str, func, *args):
+    """Run one cache builder and optionally log how long it took."""
+    started = time.perf_counter()
+    result = func(*args)
+    if os.environ.get("YABAI_WARM_LOG") == "1":
+        print(
+            f"warm {name}: {(time.perf_counter() - started) * 1000:.0f} ms",
+            flush=True,
+        )
+    return result
+
+
 def warm_caches() -> None:
     """Build the per-process caches before the first search.
 
@@ -4782,43 +5402,57 @@ def warm_caches() -> None:
     fast, including the multi-second first "*" listing and the first bopomofo
     query.
     """
-    _opencc("t2s")
-    _opencc("s2t")
-    _cedict_heads()
-    _cedict_syllables()
+    started = time.perf_counter()
+    _warm_step("opencc_t2s", _opencc, "t2s")
+    _warm_step("opencc_s2t", _opencc, "s2t")
+    _warm_step("cedict_heads", _cedict_heads)
+    _warm_step("cedict_syllables", _cedict_syllables)
     if MOE_DB_PATH.exists():
-        _moe_toneless_map()
-        _moe_char_map()
-    _reading_counts()
-    _ids_entries()
-    _all_headwords_list()
-    _zhuyin_map()
-    _definition_grams()
-    _source_pinyin_sorted()
-    # Pre-fault the SQLite files into the OS page cache so the first real
-    # search after a restart does not pay cold-read latency.
-    for _db_path in (
-        DB_PATH,
-        MOE_DB_PATH,
-        MOE_REVISED_DB_PATH,
-        WIKTIONARY_DB_PATH,
-        ZHWIKTIONARY_DB_PATH,
-        JPWIKTIONARY_DB_PATH,
-        SUBTLEX_DB_PATH,
-        FREQ_DB_PATH,
-        DEFINITION_GRAMS_DB_PATH,
-        GRAM_WORDS_DB_PATH,
-        ENGLISH_WORDS_DB_PATH,
+        _warm_step("moe_toneless", _moe_toneless_map)
+        _warm_step("moe_chars", _moe_char_map)
+    _warm_step("reading_counts", _reading_counts)
+    _warm_step("ids_entries", _ids_entries)
+    _warm_step("all_headwords", _all_headwords_list)
+    _warm_step("zhuyin", _zhuyin_map)
+    _warm_step("definition_grams", _definition_grams)
+    _warm_step("source_pinyin_sorted", _source_pinyin_sorted)
+    # Hash the CEDICT file at start-up, while no visitor is waiting.
+    _warm_step("source_gloss_hash", _source_gloss_version_ok)
+    _warm_step("head_grams_hash", _head_grams_version_ok)
+    _warm_step("gram_words_hash", _gram_words_version_ok)
+    _warm_step("source_pinyin_rows", _source_pinyin_rows)
+    if os.environ.get("YABAI_WARM_LOG") == "1":
+        print(
+            f"warm total: {(time.perf_counter() - started) * 1000:.0f} ms",
+            flush=True,
+        )
+    mode = warm_mode()
+    if mode == "legacy":
+        _warm_page_cache_files()
+        warm_search_queries()
+    elif mode == "background":
+        _start_page_cache_warm()
+
+
+def warm_search_queries() -> None:
+    """Run representative searches once so their SQLite pages are hot.
+
+    The common English/pinyin queries are included because real visitors type
+    them; leaving them out made the first `the` request pay the cold-read cost.
+    """
+    for query in (
+        "ruan3",
+        "ruan4",
+        "tetragram",
+        "tetragram of the",
+        "d",
+        "shi",
+        "ing",
+        "the",
+        "档案",
     ):
         try:
-            if _db_path.exists():
-                with _db_path.open("rb") as _f:
-                    # Read the first 64 KiB to fault in the first pages.
-                    _f.read(65536)
-                    # Hint the OS to read the whole file ahead.
-                    try:
-                        os.posix_fadvise(_f.fileno(), 0, 0, os.POSIX_FADV_WILLNEED)
-                    except (AttributeError, OSError):
-                        pass
-        except OSError:
+            search(query, limit=25)
+        except Exception:
+            # Warm-up is best effort; a real search must still surface errors.
             pass
