@@ -114,10 +114,8 @@ let currentEntries = [];
 // shown after the result count when the first batch was rendered on its own.
 let lastSearchMs = null;
 let firstSearchMs = null;
-// The two components behind those totals: server (DB) time and browser paint
-// time. `first` is the fast CEDICT tier, `all` is the complete response.
-let firstDbMs = null;
-let allDbMs = null;
+// The two paint milestones, measured from the start of the search. `first` is
+// the fast CEDICT tier, `all` is the complete response.
 let firstPaintMs = null;
 let allPaintMs = null;
 let currentFuzzy = [];
@@ -2179,27 +2177,20 @@ function updateTiming() {
         resultTiming.replaceChildren();
         return;
     }
+    // Four cumulative milestones, all measured from the start of the search:
+    // first response received, first rows painted, complete response received,
+    // complete rows painted.
     const lines = [];
-    const firstParts = [];
-    if (firstSearchMs !== null) firstParts.push(`First Result: ${firstSearchMs} ms`);
-    firstParts.push(`All Results: ${lastSearchMs} ms`);
-    lines.push(firstParts.join(", "));
-
-    // Break the totals into server (DB) time and browser paint time. The first
-    // pair is absent on later pages, where there is no fast CEDICT tier.
-    const dbParts = [];
-    if (firstDbMs !== null) dbParts.push(`First Result DB: ${firstDbMs} ms`);
-    if (allDbMs !== null) dbParts.push(`All Results DB: ${allDbMs} ms`);
-    if (dbParts.length) lines.push(dbParts.join(", "));
-
-    const paintParts = [];
+    if (firstSearchMs !== null) {
+        lines.push(`First Result Received: ${firstSearchMs} ms`);
+    }
     if (firstPaintMs !== null) {
-        paintParts.push(`First Result Paint: ${firstPaintMs} ms`);
+        lines.push(`First Result Painted: ${firstPaintMs} ms`);
     }
+    lines.push(`All Results Received: ${lastSearchMs} ms`);
     if (allPaintMs !== null) {
-        paintParts.push(`All Results Paint: ${allPaintMs} ms`);
+        lines.push(`All Results Painted: ${allPaintMs} ms`);
     }
-    if (paintParts.length) lines.push(paintParts.join(", "));
 
     resultTiming.replaceChildren();
     lines.forEach((line, index) => {
@@ -2388,8 +2379,6 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     releaseClearScrollGuard();
     const url = searchUrl(query, offset);
     const startedAt = performance.now();
-    firstDbMs = null;
-    allDbMs = null;
     firstPaintMs = null;
     allPaintMs = null;
     const seq = ++searchSeq;
@@ -2485,7 +2474,6 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         if (recordTiming) {
             lastSearchMs = firstMs;
             firstSearchMs = null;
-            firstDbMs = typeof first.ms === "number" ? first.ms : null;
         }
         const primaryRenderStart = performance.now();
         render(first.results, query);
@@ -2537,7 +2525,6 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         if (recordTiming) {
             firstSearchMs = showFirst ? firstMs : null;
             lastSearchMs = Math.round(performance.now() - startedAt);
-            allDbMs = typeof full.ms === "number" ? full.ms : null;
         }
         const fullRenderStart = performance.now();
         render(full.results, query);
@@ -2667,7 +2654,6 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     if (recordTiming) {
         firstSearchMs = null;
         lastSearchMs = Math.round(performance.now() - startedAt);
-        allDbMs = typeof first.ms === "number" ? first.ms : null;
     }
     render(first.results, query);
     renderFuzzy(first.fuzzy);
