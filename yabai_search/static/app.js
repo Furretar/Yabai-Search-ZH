@@ -2523,7 +2523,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         currentEntries = full.results;
         currentQuery = query;
         if (recordTiming) {
-            firstSearchMs = showFirst ? firstMs : null;
+            firstSearchMs = first ? firstMs : null;
             lastSearchMs = Math.round(performance.now() - startedAt);
         }
         const fullRenderStart = performance.now();
@@ -2536,6 +2536,9 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         if (recordTiming) {
             // Cumulative from the start of the search, not just the render.
             allPaintMs = Math.round(performance.now() - startedAt);
+            // If the full response won the race and the fast tier was never
+            // shown separately, its rows were painted as part of this render.
+            if (firstPaintMs === null) firstPaintMs = allPaintMs;
             updateTiming();
         }
         recordPhase("full render", fullRenderStart, { rows: full.results.length });
@@ -2652,8 +2655,8 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     currentEntries = first.results;
     currentQuery = query;
     if (recordTiming) {
-        firstSearchMs = null;
         lastSearchMs = Math.round(performance.now() - startedAt);
+        firstSearchMs = lastSearchMs;
     }
     render(first.results, query);
     renderFuzzy(first.fuzzy);
@@ -2664,6 +2667,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     if (recordTiming) {
         // Cumulative from the start of the search, not just the render.
         allPaintMs = Math.round(performance.now() - startedAt);
+        if (firstPaintMs === null) firstPaintMs = allPaintMs;
         updateTiming();
     }
 
