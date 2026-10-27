@@ -2188,14 +2188,18 @@ function updateTiming() {
     // Break the totals into server (DB) time and browser paint time. The first
     // pair is absent on later pages, where there is no fast CEDICT tier.
     const dbParts = [];
-    if (firstDbMs !== null) dbParts.push(`First ${firstDbMs} ms`);
-    if (allDbMs !== null) dbParts.push(`All ${allDbMs} ms`);
-    if (dbParts.length) lines.push(`DB: ${dbParts.join(", ")}`);
+    if (firstDbMs !== null) dbParts.push(`First Result DB: ${firstDbMs} ms`);
+    if (allDbMs !== null) dbParts.push(`All Results DB: ${allDbMs} ms`);
+    if (dbParts.length) lines.push(dbParts.join(", "));
 
     const paintParts = [];
-    if (firstPaintMs !== null) paintParts.push(`First ${firstPaintMs} ms`);
-    if (allPaintMs !== null) paintParts.push(`All ${allPaintMs} ms`);
-    if (paintParts.length) lines.push(`Paint: ${paintParts.join(", ")}`);
+    if (firstPaintMs !== null) {
+        paintParts.push(`First Result Paint: ${firstPaintMs} ms`);
+    }
+    if (allPaintMs !== null) {
+        paintParts.push(`All Results Paint: ${allPaintMs} ms`);
+    }
+    if (paintParts.length) lines.push(paintParts.join(", "));
 
     resultTiming.replaceChildren();
     lines.forEach((line, index) => {
