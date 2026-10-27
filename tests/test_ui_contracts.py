@@ -197,3 +197,20 @@ def test_frequency_chip_has_rank_tooltip():
     assert text in js
     assert text in html
     assert "chip.title = FREQ_TOOLTIP" in js
+
+
+def test_result_timing_shows_four_cumulative_milestones():
+    """The footer names all four milestones and measures them from search start."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    for label in (
+        "First Result Received:",
+        "First Result Painted:",
+        "All Results Received:",
+        "All Results Painted:",
+    ):
+        assert label in js
+    # Paint milestones are cumulative, not just the render duration.
+    assert "firstPaintMs = Math.round(performance.now() - startedAt)" in js
+    assert "allPaintMs = Math.round(performance.now() - startedAt)" in js
+    # A response that wins the race still shows all four lines.
+    assert "if (firstPaintMs === null) firstPaintMs = allPaintMs;" in js

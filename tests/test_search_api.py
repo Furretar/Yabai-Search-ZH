@@ -107,31 +107,98 @@ def test_quoted_english_phrase_search(search):
     )
 
 
-def test_quoted_english_phrase_finds_wiktionary_gloss(search, find_result):
-    """A Wiktionary-only gloss hit must survive the CEDICT-heavy phrase list.
+def _all_senses(entry):
+    return [
+        sense
+        for definition in entry.get("definitions", [])
+        for sense in definition.get("defs", [])
+    ]
 
-    The phrase is shared by 79 Taixuanjing glosses; 䎡 is a source-only word
-    near the end. The old limit*3 source scan dropped it before deduplication.
+
+def test_quoted_english_phrase_only_matches_displayed_glosses(search):
+    """A quoted Latin phrase must match a gloss the result actually shows.
+
+    The live Wiktionary gloss table has extra senses for common characters
+    (the Taixuanjing tetragram named 文, for example) that are not displayed on
+    the CEDICT entry. Searching that table returned 79 results whose visible
+    definitions did not contain the phrase. Only the three source-only glosses
+    should match, and each result must visibly contain the phrase.
     """
     data = search('"tetragram of the"')
-    found = None
-    for offset in range(0, data["total"], data["page_size"]):
-        page = search('"tetragram of the"', offset=offset)
-        found = find_result(page, "䎡")
-        if found is not None:
-            break
-    assert found is not None
-    assert any(
-        "17th tetragram of the" in sense
-        for definition in found.get("definitions", [])
-        for sense in definition.get("defs", [])
+    assert data["total"] == 3
+    assert [entry["simplified"] for entry in data["results"]] == [
+        "礥",
+        "䎡",
+        "𫔵",
+    ]
+    assert all(
+        any("tetragram of the" in sense for sense in _all_senses(entry))
+        for entry in data["results"]
+    )
+    assert not any(
+        entry["simplified"] in {"文", "中", "上", "事", "交"}
+        for entry in data["results"]
     )
 
 
-def test_unquoted_english_phrase_finds_wiktionary_gloss(search, find_result):
-    """The same source-only word is returned by the unquoted definition path."""
+def test_unquoted_english_phrase_matches_same_three_glosses(search):
+    """The unquoted definition path returns the same three displayed glosses."""
     data = search("tetragram of the")
-    assert find_result(data, "䎡") is not None
+    assert data["total"] == 3
+    assert [entry["simplified"] for entry in data["results"]] == [
+        "礥",
+        "䎡",
+        "𫔵",
+    ]
+
+
+def test_quoted_specific_tetragram_returns_exactly_one(search):
+    """A fully specified tetragram phrase resolves to one entry."""
+    data = search('"17th tetragram of the"')
+    assert data["total"] == 1
+    assert data["results"][0]["simplified"] == "䎡"
+
+
+@pytest.mark.skipif(
+    not (DATA / "corpus_freq.sqlite").exists(),
+    reason="frequency database not built",
+)
+def test_frequency_label_page_is_exact_and_deduped(search):
+    """The frequency label page pages over the deduped count, not the raw rows.
+
+    The raw freq table has 405,472 rows, but the pager must reach the deduped
+    count (289,606 with the current list). The last page must contain the
+    remaining rows and one page past the end must be empty.
+    """
+    import sqlite3
+
+    from yabai_search.db import to_simplified
+
+    connection = sqlite3.connect(DATA / "corpus_freq.sqlite")
+    try:
+        seen = set()
+        for (word,) in connection.execute("SELECT word FROM freq ORDER BY rank"):
+            seen.add(to_simplified(word))
+    finally:
+        connection.close()
+
+    first = search('"frequency"')
+    assert first["total"] == len(seen)
+    assert first["total"] > 5_000
+    assert len(first["results"]) == 25
+
+    second = search('"frequency"', offset=25)
+    assert len(second["results"]) == 25
+    assert second["results"][0]["simplified"] != first["results"][0]["simplified"]
+
+    last_offset = ((first["total"] - 1) // 25) * 25
+    last = search('"frequency"', offset=last_offset)
+    assert len(last["results"]) == first["total"] - last_offset
+    assert len(last["results"]) > 0
+
+    past = search('"frequency"', offset=first["total"])
+    assert past["results"] == []
+    assert past["total"] == first["total"]
 
 
 def test_quoted_chinese_definition_phrase(search):
