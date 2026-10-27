@@ -22,7 +22,7 @@ import time
 from contextlib import contextmanager
 
 ENABLED = os.environ.get("YABAI_TRACE") == "1"
-SLOW_PLAN_MS = float(os.environ.get("YABAI_PLAN_MS", "30"))   # EXPLAIN queries slower than this
+SLOW_PLAN_MS = float(os.environ.get("YABAI_PLAN_MS", "30"))   # legacy snapshot value; plan capture is explicit
 ALWAYS_PLAN = os.environ.get("YABAI_PLAN") == "1"
 TRACE_FILE = os.environ.get("YABAI_TRACE_FILE", "debug_trace.jsonl")
 
@@ -184,7 +184,7 @@ def run_sql(conn: sqlite3.Connection, sql: str, params=(), label: str = ""):
     record = {"label": label, "sql": sql_shape(sql), "wall_ms": round(wall, 2),
               "cpu_ms": round((time.thread_time() - cpu0) * 1000, 2),
               "rows": len(rows), "vm_kops": steps[0]}
-    if ALWAYS_PLAN or wall >= SLOW_PLAN_MS:
+    if ALWAYS_PLAN:
         record["plan"] = plan_summary(conn, sql, params)
     trace.sql.append(record)
     return rows

@@ -4678,10 +4678,6 @@ try {
 // scrolling: on a refresh that would jump a restored page back to the top.
 input.focus({ preventScroll: true });
 restoreFromUrl();
-// Safety net: never leave the result area hidden if the first render never
-// arrives (offline, API hang). Slow connections are allowed to finish the
-// complete list first: the alternative is a visible flash of the partial list.
-setTimeout(revealInitialResults, 6000);
 
 // Keep the two-part title on one line: use the design size (2.5rem) while it
 // fits, otherwise scale the whole heading down to the available width.

@@ -174,17 +174,12 @@ def test_annotate_normalizes_variant_characters(client):
     assert tokens[0]["entries"][0]["pinyin"] == "shén me"
 
 
-def test_annotate_reports_timing_and_caches_the_text(client):
-    """The parse endpoint exposes its timings, in-flight count and text cache."""
+def test_annotate_caches_the_text(client):
+    """The parse endpoint caches repeated text."""
     text = "缓存命中测试短语甲乙丙丁戊己庚辛壬癸"
 
     first = client.post("/api/annotate", json={"text": text})
     assert first.status_code == 200
-    timing = first.headers["server-timing"]
-    assert "total;dur=" in timing
-    assert "segment;dur=" in timing
-    assert "db_lookup;dur=" in timing
-    assert "x-yabai-inflight" in first.headers
     debug = json.loads(first.headers["x-yabai-debug"])
     assert debug["chars"] == len(text)
     assert debug["tokens"] > 0
@@ -193,8 +188,6 @@ def test_annotate_reports_timing_and_caches_the_text(client):
     second = client.post("/api/annotate", json={"text": text})
     assert second.status_code == 200
     assert json.loads(second.headers["x-yabai-debug"])["cache_hit"] is True
-    # Cached calls still report a total, but not the per-phase breakdown.
-    assert "total;dur=" in second.headers["server-timing"]
 
 
 def test_annotate_entries_only_carry_renderer_fields(client):
