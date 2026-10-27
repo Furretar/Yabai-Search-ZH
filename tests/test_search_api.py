@@ -129,9 +129,12 @@ def test_quoted_english_phrase_finds_wiktionary_gloss(search, find_result):
 
 
 def test_unquoted_english_phrase_finds_wiktionary_gloss(search, find_result):
-    """The same source-only word is returned by the unquoted definition path."""
+    """The unquoted definition path returns the same 79 source senses."""
     data = search("tetragram of the")
-    assert find_result(data, "䎡") is not None
+    assert data["total"] == 79
+    # The rare characters sort last, so read the final page explicitly.
+    last = search("tetragram of the", offset=data["total"] - 25)
+    assert find_result(last, "䎡") is not None
 
 
 def test_quoted_chinese_definition_phrase(search):

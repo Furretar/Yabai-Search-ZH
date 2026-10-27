@@ -3716,6 +3716,7 @@ def _source_matches(
     limit: int = 20,
     heads_checked: bool = False,
     pinyin_checked: bool = False,
+    cedict_empty: bool = True,
 ) -> list[dict]:
     """Every source-only match for a query: headword, pinyin and English gloss.
 
@@ -3740,6 +3741,14 @@ def _source_matches(
         # IDS characters named inside a Wiktionary gloss).
         entries.extend(_source_definition_entries(query, limit=limit))
     else:
+        # The prebuilt gloss index deliberately excludes headwords CEDICT
+        # already knows, so it cannot surface a distinct source sense for a
+        # common character (e.g. the Taixuanjing tetragram named 文). When
+        # CEDICT itself found nothing, search the source definitions too, the
+        # same way the quoted path does. This fixes phrases such as
+        # "tetragram of the" without changing common words like "the".
+        if cedict_empty:
+            entries.extend(_source_definition_entries(query, limit=limit))
         if not pinyin_checked:
             entries.extend(_source_pinyin_entries(query, limit=limit))
         entries.extend(_source_gloss_entries(query, limit=limit))
@@ -5187,6 +5196,7 @@ def search(
                 limit=_cap(20),
                 heads_checked=True,
                 pinyin_checked=not _skip_pinyin,
+                cedict_empty=not entries,
             )
     # A CEDICT definition match and a source gloss match can be the same word.
     # Keep the CEDICT row, and append only genuinely source-only words.
