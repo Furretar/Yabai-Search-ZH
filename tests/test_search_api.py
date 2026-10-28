@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,20 @@ pytestmark = pytest.mark.skipif(
 
 def _words(data):
     return [entry["simplified"] for entry in data["results"]]
+
+
+def test_search_reports_client_lag_header(client):
+    """The API reports how long the request took to reach the server."""
+    sent = int(time.time() * 1000)
+    response = client.get(
+        "/api/search",
+        params={"q": "gan", "limit": 1},
+        headers={"X-Client-Sent": str(sent)},
+    )
+    assert response.status_code == 200
+    lag = response.headers.get("x-yabai-lag")
+    assert lag is not None
+    assert int(lag) >= 0
 
 
 def test_star_lists_every_headword_in_pages(search):
@@ -54,18 +69,19 @@ def test_chinese_exact_match_is_first(search):
 def test_chinese_results_rank_exact_prefix_contains(search):
     """CEDICT matches are ordered exact, then prefix, then contains.
 
-    Source-only matches are appended after the CEDICT tier, so this checks the
-    ranking within the CEDICT rows rather than across every dictionary.
+    With many prefix matches, the first API page is entirely prefix matches;
+    contains rows such as 倒垃圾 are on later pages.
     """
-    data = search("垃圾")
-    words = _words(data)
-    cedict_words = [
-        entry["simplified"]
-        for entry in data["results"]
-        if any(source["anchor"] == "cedict" for source in entry["sources"])
-    ]
+    first_page = _words(search("垃圾"))
+    assert first_page[0] == "垃圾"
+    assert all(word.startswith("垃圾") for word in first_page)
+
+    from yabai_search import db
+
+    entries, _ = db.search("垃圾", 5000)
+    words = [entry["simplified"] for entry in entries]
     ranks = []
-    for word in cedict_words:
+    for word in words:
         if word == "垃圾":
             ranks.append(0)
         elif word.startswith("垃圾"):
@@ -289,6 +305,197 @@ def test_traditional_variant_query_redirects_to_main(search):
     assert any(form["traditional"] == "柹" for form in shi[0].get("forms", []))
 
 
+def test_variant_expansion_keeps_the_matched_reading(search):
+    """Searching "gan" must not pull in 乾's unrelated qián readings via 乹."""
+    data = search("gan")
+    assert data["pinyin_match"] is True
+    assert all(
+        to_toneless(entry.get("pinyin", "")) != "qian"
+        for entry in data["results"]
+    )
+
+
+def test_traditional_query_keeps_its_own_readings(search):
+    """Searching 乾 must still return the qián entries."""
+    data = search("乾")
+    assert any(
+        to_toneless(entry.get("pinyin", "")) == "qian"
+        for entry in data["results"]
+    )
+
+
+def test_qian2_tonal_search_finds_the_qian_entry(search):
+    """The numeric tonal query qian2 matches 乾[qián]."""
+    data = search("qian2")
+    assert data["pinyin_match"] is True
+    rows = [
+        entry
+        for entry in data["results"]
+        if entry["simplified"] == "乾" and entry["traditional"] == "乾"
+    ]
+    assert rows
+    assert to_toneless(rows[0]["pinyin"]) == "qian"
+
+
+def test_traditional_qian_merges_the_variant_rows(search):
+    """乾 returns one 乾/乾 qián row, not separate 乹/亁 rows."""
+    data = search("乾")
+    qian = [
+        entry
+        for entry in data["results"]
+        if entry["simplified"] == "乾" and entry["traditional"] == "乾"
+    ]
+    assert len(qian) == 1
+    assert to_toneless(qian[0]["pinyin"]) == "qian"
+    # The gān entry also has 乾 as its traditional spelling, but its simplified
+    # headword is 干, so it stays a separate row.
+    assert any(
+        entry["simplified"] == "干" and entry["traditional"] == "乾"
+        for entry in data["results"]
+    )
+    assert not any(
+        entry["traditional"] in {"乹", "亁"} for entry in data["results"]
+    )
+
+
+def test_zhi_keeps_the_only_reading_and_its_variants(search):
+    """zhi keeps 只[zhǐ] "only" and lists 祇/衹 as its forms."""
+    data = search("zhi")
+
+    only = [
+        entry
+        for entry in data["results"]
+        if entry["simplified"] == "只" and entry["traditional"] == "只"
+    ]
+    assert only
+    assert only[0]["pinyin"] == "zhǐ"
+    forms = {form["traditional"] for form in only[0].get("forms", [])}
+    assert {"祇", "衹"} <= forms
+
+    # The classifier 隻 and the grain word 秖 stay separate readings.
+    readings = {
+        (entry["traditional"], entry["pinyin"])
+        for entry in data["results"]
+        if entry["simplified"] == "只"
+    }
+    assert ("隻", "zhī") in readings
+    assert ("秖", "zhī") in readings
+
+    # 纸 must still be on the first page.
+    assert any(entry["simplified"] == "纸" for entry in data["results"])
+
+
+def _cedict_senses(entry):
+    return [
+        sense
+        for definition in entry.get("definitions", [])
+        if definition.get("anchor") == "cedict"
+        for group in definition.get("groups", [])
+        for sense in group.get("senses", [])
+    ]
+
+
+def test_zhi_spellings_keep_their_own_cedict_senses(search):
+    """隻 gets the classifier sense and 秖 gets grain, not the shared pool."""
+    data = search("只", limit=10)
+    rows = {
+        entry["traditional"]: entry
+        for entry in data["results"]
+        if entry["simplified"] == "只"
+    }
+    assert {"隻", "秖", "只"} <= rows.keys()
+
+    classifier = _cedict_senses(rows["隻"])
+    grain = _cedict_senses(rows["秖"])
+    only = _cedict_senses(rows["只"])
+
+    assert classifier and all("classifier" in sense for sense in classifier)
+    assert grain == ["grain that has begun to ripen"]
+    assert only == ["only", "merely", "just"]
+    assert not any("grain" in sense for sense in classifier)
+    assert not any("classifier" in sense for sense in grain)
+
+
+def test_zhi_and_zhi_make_keep_their_own_cedict_senses(search):
+    """制 "system" and 製 "to make" no longer share one pool of senses."""
+    data = search("制", limit=10)
+    rows = {
+        entry["traditional"]: entry
+        for entry in data["results"]
+        if entry["simplified"] in {"制", "製"}
+    }
+    assert {"制", "製"} <= rows.keys()
+    system = _cedict_senses(rows["制"])
+    make = _cedict_senses(rows["製"])
+    assert "system" in system
+    assert "to make" in make
+    assert "system" not in make
+    assert "to make" not in system
+
+
+def test_pinyin_contains_match_is_full_tier_only(search):
+    """nuaile finds 喜怒哀樂 in the full tier, not the fast prefix tier."""
+    primary = search("nuaile", part="primary")
+    assert not any(
+        entry["simplified"] == "喜怒哀乐" for entry in primary["results"]
+    )
+    full = search("nuaile")
+    assert any(
+        entry["simplified"] == "喜怒哀乐" and to_toneless(entry["pinyin"]) == "xinuaile"
+        for entry in full["results"]
+    )
+
+
+def test_pinyin_contains_matches_follow_prefix_matches():
+    """A containing reading (记者 / jìzhě) ranks after prefix matches (这)."""
+    from yabai_search import db
+
+    entries, _ = db.search("zhe", 10000)
+
+    def index(word: str) -> int:
+        return next(
+            position
+            for position, entry in enumerate(entries)
+            if entry["simplified"] == word
+        )
+
+    assert index("这") < index("记者")
+
+
+def test_chinese_contains_matches_are_full_tier_only_and_last(search):
+    """乐 lists 喜怒哀樂 only in the full tier, after prefix matches."""
+    primary = search("乐", part="primary")
+    assert not any(
+        entry["simplified"] == "喜怒哀乐" for entry in primary["results"]
+    )
+
+    from yabai_search import db
+
+    entries, _ = db.search("乐", 5000)
+
+    def index(word: str) -> int:
+        return next(
+            position
+            for position, entry in enumerate(entries)
+            if entry["simplified"] == word
+        )
+
+    assert index("乐") < index("喜怒哀乐")
+
+
+def test_pinyin_prefix_matches_rank_above_contains(search):
+    """All xinu prefixes come before 奧西娜斯, which only contains "xinu"."""
+    data = search("xinu", limit=25)
+    words = [entry["simplified"] for entry in data["results"]]
+    assert "喜怒不形于色" in words
+    assert "奥西娜斯" in words
+    assert words.index("喜怒不形于色") < words.index("奥西娜斯")
+
+    readings = [to_toneless(entry["pinyin"]) for entry in data["results"]]
+    prefix_flags = [reading.startswith("xinu") for reading in readings]
+    assert prefix_flags == sorted(prefix_flags, reverse=True)
+
+
 def test_offset_paginates_wildcard_search(search):
     """Wildcard pages use the fixed 25-result page size, with stable totals."""
     page0 = search("*字", limit=10, offset=0)
@@ -422,8 +629,12 @@ def test_xiang_reading_query_returns_only_readings():
     entries, pinyin_match = db.search("xiang", 50)
     assert pinyin_match is True
     assert entries
-    assert all(
-        to_toneless(entry["pinyin"]).startswith("xiang") for entry in entries
+    readings = [to_toneless(entry["pinyin"]) for entry in entries]
+    assert all("xiang" in reading for reading in readings)
+    assert any(reading.startswith("xiang") for reading in readings)
+    assert any(
+        "xiang" in reading and not reading.startswith("xiang")
+        for reading in readings
     )
 
 
@@ -485,7 +696,13 @@ def test_wu_reading_query_skips_definition_notes():
     assert pinyin_match is True
     words = [entry["simplified"] for entry in entries]
     assert "侬" not in words
-    assert all(to_toneless(entry["pinyin"]).startswith("wu") for entry in entries)
+    readings = [to_toneless(entry["pinyin"]) for entry in entries]
+    assert all("wu" in reading for reading in readings)
+    assert any(reading.startswith("wu") for reading in readings)
+    assert any(
+        "wu" in reading and not reading.startswith("wu")
+        for reading in readings
+    )
 
 
 def test_unquoted_definition_fallback_when_no_headword_or_reading(search, find_result):
@@ -512,3 +729,57 @@ def test_concurrent_searches_use_separate_connections():
     with ThreadPoolExecutor(max_workers=6) as pool:
         counts = list(pool.map(run, range(12)))
     assert all(count > 0 for count in counts)
+
+
+def test_gan_picks_the_word_reading_over_the_surname(search):
+    """gān (12 senses) ranks above Gān (surname, 2 senses) for 干."""
+    data = search("干", lang="EN")
+    rows = [entry for entry in data["results"] if entry["simplified"] == "干"]
+    assert rows
+    first = rows[0]
+    assert first["pinyin"] == "gān"
+
+    groups = [
+        group
+        for definition in first.get("definitions", [])
+        if definition.get("anchor") == "cedict"
+        for group in definition.get("groups", [])
+    ]
+    # The surname group stays under the row, after the common gān reading.
+    readings = [group["pinyin"] for group in groups]
+    assert readings.index("gān") < readings.index("Gān")
+    assert any(
+        group["pinyin"] == "gān" and "dry" in group["senses"]
+        for group in groups
+    )
+    assert any(
+        group["pinyin"] == "Gān" and "surname Gan" in group["senses"]
+        for group in groups
+    )
+
+
+def test_shared_simplified_headword_does_not_repeat_a_sense(search):
+    """CEDICT variants that share a simplified headword dedupe identical senses.
+
+    乾, 干 and 幹 all store their senses under the simplified word 干, so the
+    "surname Gan" sense used to appear twice in the Gān group.
+    """
+    data = search("干", lang="EN")
+    groups = [
+        group
+        for entry in data["results"]
+        for definition in entry.get("definitions", [])
+        if definition.get("anchor") == "cedict"
+        for group in definition.get("groups", [])
+    ]
+    assert groups
+    for group in groups:
+        senses = group.get("senses", [])
+        assert len(senses) == len(set(senses)), (group.get("pinyin"), senses)
+    surname_groups = [
+        group for group in groups if "surname Gan" in group.get("senses", [])
+    ]
+    assert surname_groups
+    assert all(
+        group["senses"].count("surname Gan") == 1 for group in surname_groups
+    )

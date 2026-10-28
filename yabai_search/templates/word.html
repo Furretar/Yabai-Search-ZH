@@ -19,30 +19,36 @@
 
 <body class="word-page">
     <header class="word-header">
-        <h1 class="word-title">
-            <a class="word-home" href="/">牙白查词<span class="site-subtitle">Yabai Search<span
-                        class="site-meta"><span class="site-zh">ZH</span><span
-                            class="site-version">BETA v0.1</span></span></span></a>
-        </h1>
-        <a class="word-back" href="/">Back to search</a>
+        <div class="word-heading">
+            <h1 class="word-title">
+                <a class="word-home" href="/">牙白查词<span class="site-subtitle">Yabai Search</span></a>
+            </h1>
+            <p class="site-byline"><span>Made by Furretar</span><span>Beta v0.1</span></p>
+        </div>
     </header>
 
-    <main class="word-main">
+    <main class="word-main" data-defaults='{{ defaults | tojson }}'>
         {% for entry in entries %}
         <article class="entry word-entry">
             <div class="entry-head">
-                <span class="hanzi">{{ entry.traditional }}</span>
-                {% if entry.simplified and entry.simplified != entry.traditional %}
-                <span class="word-alternate">{{ entry.simplified }}</span>
+                <span class="hanzi">
+                    <span class="furigana word-furigana">
+                        {% if entry.pinyin %}<span class="reading">{{ entry.pinyin }}</span>{% endif %}
+                        <span class="char" data-simplified="{{ entry.simplified }}"
+                            data-traditional="{{ entry.traditional }}">{{ entry.traditional }}</span>
+                    </span>
+                </span>
+                {% if entry.audio %}
+                <button type="button" class="audio-button" data-audio="{{ entry.audio }}"
+                    aria-label="Play pronunciation (male voice)" title="Play pronunciation">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M4 9.5h4l5-4v13l-5-4H4z" fill="currentColor"/>
+                        <path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8 8 0 0 1 0 12" fill="none"
+                            stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    </svg>
+                </button>
                 {% endif %}
-
-                <div class="word-readings">
-                    {% if entry.pinyin %}<span class="pinyin">{{ entry.pinyin }}</span>{% endif %}
-                    {% if entry.pinyin_taiwan and entry.pinyin_taiwan != entry.pinyin %}
-                    <span class="muted">Taiwan: {{ entry.pinyin_taiwan }}</span>
-                    {% endif %}
-                    {% if entry.pinyin_label %}<span class="muted">{{ entry.pinyin_label }}</span>{% endif %}
-                </div>
+                {% if entry.pinyin_label %}<span class="dialect-label">{{ entry.pinyin_label }}</span>{% endif %}
 
                 {% if entry.freq or entry.hsk %}
                 <div class="freq">
@@ -62,7 +68,8 @@
                 <div class="sources-label">Dictionaries</div>
                 <div class="sources">
                     {% for source in entry.sources %}
-                    <a class="source" href="/about#{{ source.anchor }}">{{ source.label }}</a>
+                    <button type="button" class="source on" data-anchor="{{ source.anchor }}"
+                        aria-pressed="true" title="Toggle {{ source.label }}">{{ source.label }}</button>
                     {% endfor %}
                 </div>
                 {% endif %}
@@ -70,16 +77,19 @@
 
             <div class="entry-defs">
                 {% for definition in entry.definitions %}
-                <section class="word-definition">
+                <div class="def-source" data-anchor="{{ definition.anchor }}"
+                    data-lang="{{ definition.lang }}">
                     {% if definition.href %}
-                    <h2><a class="word-source-name" href="{{ definition.href }}"
-                            {% if definition.external %}target="_blank" rel="noopener"{% endif %}>{{ definition.label }}</a></h2>
+                    <a class="def-source-name" href="{{ definition.href }}"
+                        {% if definition.external %}target="_blank" rel="noopener"{% endif %}>{{ definition.label }}</a>
                     {% else %}
-                    <h2>{{ definition.label }}</h2>
+                    <span class="def-source-name">{{ definition.label }}</span>
                     {% endif %}
                     {% if definition.groups %}
                     {% for group in definition.groups %}
-                    {% if group.pinyin %}<div class="def-reading">{{ group.pinyin }}</div>{% endif %}
+                    {% if group.pinyin and definition.groups|length > 1 %}
+                    <div class="def-reading">{{ group.pinyin }}</div>
+                    {% endif %}
                     {% for sense in group.senses %}
                     <div class="def-source-line">
                         <span class="def-source-num">{{ loop.index }}.</span>{{ sense }}
@@ -95,30 +105,238 @@
                     {% endif %}
                     {% for classifier in definition.classifiers %}
                     <div class="def-source-cls">
-                        Classifier: {{ classifier.traditional or classifier.simplified }}
+                        <span class="def-source-cls-label">Classifier:</span>
+                        {{ classifier.traditional or classifier.simplified }}
                         {% if classifier.codes %} ({{ classifier.codes }}){% endif %}
                         {% if classifier.note %} - {{ classifier.note }}{% endif %}
                     </div>
                     {% endfor %}
-                </section>
+                </div>
                 {% endfor %}
 
+                {% if entry.pinyin_taiwan and entry.pinyin_taiwan != entry.pinyin %}
+                <div class="def-source-cls" data-anchor="cedict">
+                    <span class="def-source-cls-label">Taiwan pronunciation:</span>
+                    {{ entry.pinyin_taiwan }}
+                </div>
+                {% endif %}
+
                 {% if entry.forms %}
-                <p class="word-forms">
-                    Other forms:
+                <div class="def-source-cls" data-anchor="cedict">
+                    <span class="def-source-cls-label">Other forms:</span>
                     {% for form in entry.forms %}
                     {% if not loop.first %}; {% endif %}{{ form.traditional }}{% if form.pinyin %} ({{ form.pinyin }}){% endif %}
                     {% endfor %}
-                </p>
+                </div>
                 {% endif %}
             </div>
         </article>
         {% endfor %}
     </main>
 
-    <footer>
-        <a href="/">← Back to search</a>
-    </footer>
+    <!-- Honor the saved simplified/traditional and tone-color choices without
+         loading app.js. -->
+    <script>
+        (function () {
+            var traditional = false;
+            var toneColoring = true;
+            try {
+                traditional = localStorage.getItem("yabai-search-script") === "traditional";
+                toneColoring = localStorage.getItem("yabai-search-tone") !== "false";
+            } catch (error) {
+                // Storage unavailable: keep the server-rendered defaults.
+            }
+            document.querySelectorAll(".word-furigana .char").forEach(function (char) {
+                char.textContent = traditional
+                    ? char.dataset.traditional
+                    : char.dataset.simplified;
+            });
+
+            // Colour each pinyin syllable like the tone-colour switch does on
+            // the search page (tone 5 / neutral stays uncoloured).
+            var toneMarks = [
+                "āēīōūǖĀĒĪŌŪǕ",
+                "áéíóúǘÁÉÍÓÚǗ",
+                "ǎěǐǒǔǚǍĚǏǑǓǙ",
+                "àèìòùǜÀÈÌÒÙǛ",
+            ];
+            function toneOf(syllable) {
+                for (var tone = 1; tone <= 4; tone += 1) {
+                    for (var mark of toneMarks[tone - 1]) {
+                        if (syllable.includes(mark)) return tone;
+                    }
+                }
+                return 5;
+            }
+            if (!toneColoring) return;
+            document.querySelectorAll(".word-furigana .reading, .entry-defs .def-reading").forEach(function (reading) {
+                var syllables = reading.textContent.trim().split(/\s+/);
+                reading.replaceChildren();
+                syllables.forEach(function (syllable, index) {
+                    if (index) reading.append(document.createTextNode(" "));
+                    var span = document.createElement("span");
+                    span.className = "tone" + toneOf(syllable);
+                    span.textContent = syllable;
+                    reading.append(span);
+                });
+            });
+
+            // Colour the headword characters by their own tone when the
+            // characters and syllables line up one-for-one.
+            document.querySelectorAll(".word-furigana").forEach(function (group) {
+                var char = group.querySelector(".char");
+                var reading = group.querySelector(".reading");
+                if (!char || !reading) return;
+                var characters = [...char.textContent];
+                var syllables = reading.textContent.trim().split(/\s+/);
+                if (characters.length !== syllables.length) return;
+                char.replaceChildren();
+                characters.forEach(function (character, index) {
+                    var span = document.createElement("span");
+                    span.className = "tone" + toneOf(syllables[index]);
+                    span.textContent = character;
+                    char.append(span);
+                });
+            });
+        })();
+    </script>
+    <!-- Dictionary toggles and male-voice audio. -->
+    <script>
+        (function () {
+            var main = document.querySelector(".word-main");
+            if (!main) return;
+
+            var defaults = {};
+            try {
+                defaults = JSON.parse(main.dataset.defaults || "{}");
+            } catch (error) {
+                // Keep the fallback.
+            }
+            var lang = "EN";
+            var custom = false;
+            var stored = null;
+            try {
+                lang = localStorage.getItem("yabai-search-lang") || "EN";
+                custom = localStorage.getItem("yabai-search-custom-dicts") === "true";
+                stored = JSON.parse(localStorage.getItem("yabai-search-dicts") || "null");
+            } catch (error) {
+                // Storage unavailable: use the language defaults below.
+            }
+            var enabled = new Set();
+            var available = new Set(
+                [...document.querySelectorAll(".word-main .source[data-anchor]")].map(
+                    (chip) => chip.dataset.anchor
+                )
+            );
+            var anchorLang = {};
+            document.querySelectorAll(".word-main .def-source[data-anchor]").forEach(function (block) {
+                anchorLang[block.dataset.anchor] = block.dataset.lang;
+            });
+            var langGroup = {
+                EN: "english",
+                ZH: "mainland",
+                TW: "taiwan",
+                JP: "japanese",
+            }[lang] || "english";
+            var languageAnchors = Object.keys(anchorLang).filter(function (anchor) {
+                return anchorLang[anchor] === langGroup && available.has(anchor);
+            });
+            var initial;
+            if (custom && Array.isArray(stored) && stored.some((anchor) => available.has(anchor))) {
+                initial = stored;
+            } else if (languageAnchors.length) {
+                // Default mode mirrors a search row: every source in the
+                // selected language (for example CEDICT plus Wiktionary for EN).
+                initial = languageAnchors;
+            } else {
+                initial = defaults[lang] || defaults.EN || ["cedict"];
+            }
+            // If the default has nothing on this page (for example a word only
+            // in MOE while EN is selected), show what is available.
+            if (!initial.some((anchor) => available.has(anchor))) {
+                initial = [...available];
+            }
+            initial.forEach((anchor) => enabled.add(anchor));
+
+            function applyDictionaries() {
+                document.querySelectorAll(".word-main .source[data-anchor]").forEach(function (chip) {
+                    var on = enabled.has(chip.dataset.anchor);
+                    chip.classList.toggle("on", on);
+                    chip.setAttribute("aria-pressed", String(on));
+                });
+                document
+                    .querySelectorAll(
+                        ".word-main .def-source[data-anchor], .word-main .def-source-cls[data-anchor]"
+                    )
+                    .forEach(function (block) {
+                        block.hidden = !enabled.has(block.dataset.anchor);
+                    });
+            }
+
+            document.querySelectorAll(".word-main .source[data-anchor]").forEach(function (chip) {
+                chip.addEventListener("click", function () {
+                    var anchor = chip.dataset.anchor;
+                    if (enabled.has(anchor)) enabled.delete(anchor);
+                    else enabled.add(anchor);
+                    // In custom-dictionary mode the choice carries back to the
+                    // search page; in default mode it stays on this page.
+                    if (custom) {
+                        try {
+                            localStorage.setItem(
+                                "yabai-search-dicts",
+                                JSON.stringify([...enabled])
+                            );
+                        } catch (error) {
+                            // Storage unavailable: page-only toggle.
+                        }
+                    }
+                    applyDictionaries();
+                });
+            });
+            applyDictionaries();
+
+            // Male-voice MP3s, named by numeric pinyin in cjhoward/cedict-tts.
+            var player = null;
+            var activeButton = null;
+            document.querySelectorAll(".audio-button").forEach(function (button) {
+                button.addEventListener("click", function () {
+                    var src = button.dataset.audio;
+                    if (!src) return;
+                    if (!player) {
+                        player = new Audio();
+                        player.addEventListener("ended", function () {
+                            if (activeButton) activeButton.classList.remove("playing");
+                            activeButton = null;
+                        });
+                        player.addEventListener("error", function () {
+                            if (activeButton) activeButton.hidden = true;
+                            activeButton = null;
+                        });
+                    }
+                    if (activeButton === button && !player.paused) {
+                        player.pause();
+                        player.currentTime = 0;
+                        button.classList.remove("playing");
+                        activeButton = null;
+                        return;
+                    }
+                    if (activeButton) activeButton.classList.remove("playing");
+                    activeButton = button;
+                    player.src = src;
+                    player
+                        .play()
+                        .then(function () {
+                            button.classList.add("playing");
+                        })
+                        .catch(function () {
+                            // No file for this reading: hide the icon.
+                            button.hidden = true;
+                            activeButton = null;
+                        });
+                });
+            });
+        })();
+    </script>
     <!-- MOE glyph pictures: swaps "&8ff0._104_0.gif;" references in the
        rendered text for tinted images (this page has no app.js). -->
     <script src="/static/glyphs.js?v={{ asset_version }}"></script>

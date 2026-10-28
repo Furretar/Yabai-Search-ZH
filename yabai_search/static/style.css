@@ -57,8 +57,8 @@ h1 {
     /* Pull the title up: remove the browser's default top margin so only the
        body margin sits above it. */
     margin-top: 0;
-    /* Breathing room between the lowered subtitle and the search box. */
-    margin-bottom: 2.5rem;
+    /* Breathing room is supplied by the byline below the title. */
+    margin-bottom: .1rem;
 }
 
 .site-subtitle {
@@ -76,33 +76,16 @@ h1 {
     transform: translateY(40%);
 }
 
-/* Tiny language / version labels stacked to the right of the subtitle. */
-.site-meta {
-    display: inline-flex;
-    flex-direction: column;
-    align-items: flex-start;
-    margin-left: .15em;
-    font-size: .35em;
-    line-height: 1.1;
-    vertical-align: super;
+/* Author and version, stacked under the site title. */
+.site-byline {
+    margin: 0 0 2.5rem;
+    font-size: .8rem;
+    line-height: 1.4;
     color: var(--muted);
 }
 
-.site-zh,
-.site-version {
-    font-size: 1em;
-    line-height: 1;
-    letter-spacing: .05em;
-}
-
-/* Lift the language tag and push the version further down. */
-.site-zh {
-    transform: translateY(-.5em);
-}
-
-.site-version {
-    margin-top: .3em;
-    white-space: nowrap;
+.site-byline span {
+    display: block;
 }
 
 /* The search form: input and button side by side. */
@@ -286,6 +269,13 @@ body:has(.search-panel:focus-within) .pull-arrow {
     /* Growing the panel must not scroll its own content either. */
     overflow-anchor: none;
     animation: pull-panel-in 160ms ease-out;
+}
+
+/* The pop-out panel hides the fixed top-right menu only while it is stuck to
+   the viewport top. Once it is docked back in its normal place, the menu
+   returns even though pop-out mode is still on. */
+body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
+    display: none;
 }
 
 /* Sliding the panel up before returning it to the page flow. Docked panels
@@ -1121,6 +1111,60 @@ body:has(.search-panel:focus-within) .pull-arrow {
     border-top: 1px solid var(--entry-divider);
 }
 
+/* Hoverable separator between main results. Its tier colour comes from the
+   highest result tier seen above it: exact red, prefix yellow, contains green,
+   dialect blue, read-only purple, no-reading pink. */
+.entry-separator {
+    position: relative;
+    height: 7px;
+}
+
+.entry-separator::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 3px;
+    height: 1px;
+    background: var(--entry-divider);
+    transition: background-color .15s ease, box-shadow .15s ease;
+}
+
+.entry-separator:hover::before {
+    background: var(--tier-color, var(--entry-divider));
+    box-shadow: 0 0 9px 1px var(--tier-color, var(--entry-divider));
+}
+
+.entry-separator[data-tier="1"] {
+    --tier-color: var(--tone1);
+}
+
+.entry-separator[data-tier="2"] {
+    --tier-color: var(--tone2);
+}
+
+.entry-separator[data-tier="3"] {
+    --tier-color: var(--tone3);
+}
+
+.entry-separator[data-tier="4"] {
+    --tier-color: var(--tone4);
+}
+
+.entry-separator[data-tier="5"] {
+    --tier-color: #a855f7;
+}
+
+.entry-separator[data-tier="6"] {
+    --tier-color: #ec4899;
+}
+
+/* The separator below the last result uses the same hover logic. On the
+   results page it replaces the footer's plain top border. */
+.footer-separator + footer {
+    border-top: 0;
+}
+
 /* Wide screens: give the headword its own column on the left, with the
    definitions (and their notes) in the right column. Narrow screens keep the
    word above the definitions. */
@@ -1541,6 +1585,18 @@ html.theme-light .defs {
     height: 1em;
 }
 
+.def-copy .icon-check {
+    display: none;
+}
+
+.def-copy.copied .icon-copy {
+    display: none;
+}
+
+.def-copy.copied .icon-check {
+    display: block;
+}
+
 .def-source-line:hover .def-copy,
 .def-copy:focus-visible {
     width: 1em;
@@ -1567,6 +1623,40 @@ html.theme-light .defs {
     color: var(--control);
 }
 
+/* The spelling a merged reading group's senses belong to: zhī (秖). */
+.def-reading .def-reading-spellings {
+    font-weight: 400;
+    color: var(--muted);
+}
+
+/* Furigana in a note floats above the line. The note's larger line-height
+   leaves room for it; a small padding keeps it from touching the line above. */
+.def-source-cls.has-furigana {
+    padding-top: .2rem;
+}
+
+/* Tone-coloured characters in notes (Other forms / Traditional forms), which
+   show the colour without the furigana reading. */
+.def-source-cls .tone1 {
+    color: var(--tone1);
+}
+
+.def-source-cls .tone2 {
+    color: var(--tone2);
+}
+
+.def-source-cls .tone3 {
+    color: var(--tone3);
+}
+
+.def-source-cls .tone4 {
+    color: var(--tone4);
+}
+
+.def-source-cls .tone5 {
+    color: var(--tone5);
+}
+
 /* Tone colouring for the reading headers (when the option is on). */
 .def-reading .tone1 {
     color: var(--tone1);
@@ -1589,7 +1679,9 @@ html.theme-light .defs {
 }
 
 .def-source-cls {
-    margin-top: 0; /* flush list of Also pronounced lines */
+    /* Same top spacing above every note, whether it sits inside a dictionary
+       block (Other forms) or after the blocks (Traditional forms). */
+    margin-top: .4rem;
     margin-left: 1rem; /* indent them under the definitions */
     /* Same size as the definition text, but muted (classifier, also-pronounced,
        other-form lines). */
@@ -1603,11 +1695,6 @@ html.theme-light .defs {
     line-height: 2.3;
 }
 
-/* The Classifier line (inside a dictionary block) gets a bit more space above it. */
-.def-source .def-source-cls {
-    margin-top: .3rem;
-}
-
 .def-source-cls-label {
     font-weight: 600;
 }
@@ -1617,6 +1704,21 @@ html.theme-light .defs {
    Classifier text; the reading sits a little smaller above it. */
 .def-source-cls .furigana {
     font-size: 1em;
+}
+
+/* Heading above one traditional spelling's definitions in a merged row
+   (for example 後 above its senses when 后 and 後 share a simplified form).
+   Its reading uses the same size as the "Other forms" note. */
+.variant-title {
+    margin: .6rem 0 .2rem;
+    /* The reading floats above the characters, so leave room for it instead of
+       letting it crowd the definitions above. */
+    padding-top: .5rem;
+    font-size: var(--definition-size);
+}
+
+.variant-title .furigana .reading {
+    font-size: var(--furigana-def);
 }
 
 .def-source-cls .furigana .reading {
@@ -1653,6 +1755,53 @@ html.theme-light .defs {
     letter-spacing: .05em;
     text-transform: uppercase;
     color: var(--muted);
+}
+
+/* The exact-word view shows one entry and has no result count or timing. */
+.exact-mode .results-count {
+    display: none;
+}
+
+/* The exact-word view keeps the search bar in the page, never popped out. */
+.exact-mode .pull-arrow {
+    display: none;
+}
+
+/* The time inherits the result-count formatting so the line reads as one
+   string. Only the tooltip keeps its own readable style. */
+.results-count .results-timing {
+    position: relative;
+    display: inline-block;
+    cursor: help;
+}
+
+.timing-tooltip {
+    position: absolute;
+    left: 0;
+    top: calc(100% + .35rem);
+    z-index: 20;
+    display: none;
+    min-width: 14rem;
+    max-width: min(18rem, calc(100vw - 2rem));
+    padding: .45rem .6rem;
+    border: 1px solid var(--border);
+    border-radius: .35rem;
+    background: var(--surface-bg);
+    color: var(--control);
+    font-size: .75rem;
+    font-weight: 400;
+    letter-spacing: normal;
+    line-height: 1.4;
+    text-align: left;
+    text-transform: none;
+    white-space: pre-line;
+    box-shadow: 0 .4rem 1rem rgba(0, 0, 0, .35);
+    pointer-events: none;
+}
+
+.results-count .results-timing:hover .timing-tooltip,
+.results-count .results-timing:focus .timing-tooltip {
+    display: block;
 }
 
 /* Sources & Licenses on the About page: "Title · licence · Updated <date>", with
@@ -2396,9 +2545,11 @@ html.theme-light .defs {
     margin-top: .5rem;
 }
 
-/* Link under a result's last definition. */
+/* Details and Report entry share one text style, whether rendered as an
+   anchor or a button. */
 .report-link {
-    display: inline;
+    display: inline-flex;
+    align-items: center;
     width: fit-content;
     margin: 0;
     padding: 0;
@@ -2407,13 +2558,21 @@ html.theme-light .defs {
     color: var(--accent);
     font: inherit;
     font-size: .8rem;
+    line-height: 1.2;
     text-decoration: underline;
     cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
 }
 
 .report-link:hover {
     color: var(--accent);
     text-decoration-thickness: 2px;
+}
+
+/* A visited Details link must keep the same colour as the Report button. */
+.report-link:visited {
+    color: var(--accent);
 }
 
 .dialog-note {
@@ -2613,23 +2772,6 @@ html.theme-light .defs {
     color: var(--control);
 }
 
-/* No empty timing line on the home page. */
-body:not(.has-query) .result-timing {
-    display: none;
-}
-
-/* Query timings, centered just above the footer. The line always reserves
-   space, so below-screen content never changes the page height after loading. */
-.result-timing {
-    margin: .5rem 0 0;
-    /* Matches one text line, so the empty and filled states are the same
-       height and nothing shifts after loading. */
-    min-height: 1.5em;
-    text-align: center;
-    font-size: .85rem;
-    color: var(--muted);
-}
-
 /* Standalone word details page (no search controls). */
 .word-header {
     display: flex;
@@ -2638,6 +2780,19 @@ body:not(.has-query) .result-timing {
     align-items: baseline;
     gap: 1rem;
     margin-bottom: 1rem;
+}
+
+/* The compact word-page title, with the byline kept inside its column. */
+.word-heading {
+    display: flex;
+    flex-direction: column;
+    gap: .1rem;
+}
+
+.word-heading .site-byline {
+    margin: 0;
+    font-size: .7rem;
+    line-height: 1.3;
 }
 
 /* The word page uses a compact copy of the site title, not the big home-page
@@ -2658,61 +2813,50 @@ body:not(.has-query) .result-timing {
     text-decoration: none;
 }
 
-.word-back {
-    font-size: .9rem;
+/* The details page reuses the search-entry markup. Its single reading line
+   sits above the whole headword, so center it like the per-character readings
+   in search results. */
+.word-furigana .reading {
+    text-align: center;
 }
 
-.word-page .entry {
-    padding-left: 0;
-}
-
-.word-alternate {
-    display: block;
-    margin-top: .1rem;
+/* Speaker beside the headword: plays the male-voice MP3 for this reading. */
+.audio-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 1.6rem;
+    height: 1.6rem;
+    margin-left: .35rem;
+    padding: 0;
+    /* Transparent border reserves the space the hover outline uses. */
+    border: 1px solid transparent;
+    border-radius: .3rem;
+    background: none;
     color: var(--muted);
-    font-size: 1.1rem;
+    cursor: pointer;
+    vertical-align: middle;
 }
 
-.word-readings {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: .5rem;
-    margin-top: .2rem;
+/* Hovering outlines the button; the speaker itself stays muted. */
+.audio-button:hover,
+.audio-button:focus-visible {
+    border-color: var(--accent);
 }
 
-.word-readings .pinyin {
-    margin-left: 0;
-}
-
-.word-definition {
-    margin-bottom: 1.25rem;
-}
-
-.word-definition h2 {
-    margin: 0 0 .35rem;
+/* The icon turns yellow only while audio is actually playing. */
+.audio-button.playing {
     color: var(--accent);
-    font-size: 1rem;
 }
 
-/* Dictionary headers above definitions are links to the source (mirrors
-   .def-source-name on the search page). */
-.word-source-name {
-    color: inherit;
-    text-decoration: none;
+.audio-button svg {
+    width: 1.15rem;
+    height: 1.15rem;
 }
 
-.word-source-name:hover {
-    text-decoration: underline;
-}
-
-.word-forms {
-    color: var(--muted);
-    font-size: .9rem;
-}
-
-/* Page footer, centered. Two stacked rows: page links on top, the support
-   and debug links below. */
+/* Page footer, centered. Three stacked rows: the donate button, the project
+   links, then the page and debug links. */
 footer {
     display: flex;
     flex-direction: column;
@@ -2734,9 +2878,11 @@ footer {
     gap: .75rem;
 }
 
-/* GitHub and Ko-fi links with their marks, kept aligned with the footer text. */
+/* GitHub, Ko-fi and Discord links with their marks, kept aligned with the
+   footer text. */
 .github-link,
-.kofi-link {
+.kofi-link,
+.discord-link {
     display: inline-flex;
     align-items: center;
     gap: .3rem;
@@ -2744,10 +2890,33 @@ footer {
 }
 
 .github-link svg,
-.kofi-link svg {
+.kofi-link svg,
+.discord-link svg {
     width: 1rem;
     height: 1rem;
     fill: currentColor;
+}
+
+/* The Ko-fi link is the footer's call to action: a pill-shaped button around
+   the cup-and-heart mark and the "Donate" label. */
+.kofi-donate {
+    padding: .4rem .9rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--panel-bg);
+    text-decoration: none;
+    transition: border-color .15s ease, background-color .15s ease;
+}
+
+.kofi-donate:hover,
+.kofi-donate:focus-visible {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.kofi-donate svg {
+    width: 1.1rem;
+    height: 1.1rem;
 }
 
 /* Local bug-report reader. */
@@ -2843,6 +3012,21 @@ footer {
 
 .search-tips-link:hover {
     color: var(--accent);
+}
+
+/* The narrow-screen copy of Search Tips. The header link is used on wide
+   screens; .search-tips-row sits under the Custom Dictionaries button and is
+   revealed by the phone media query below. */
+.search-tips-row {
+    display: none;
+}
+
+.search-tips-bottom {
+    position: static;
+    top: auto;
+    right: auto;
+    transform: none;
+    display: inline-flex;
 }
 
 /* Search tips table on the home page. */
@@ -2947,6 +3131,36 @@ footer {
     color: var(--control);
 }
 
+/* Debug-log download, sitting under the theme control in the menu. */
+.menu-item {
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    width: 100%;
+    margin-top: .45rem;
+    padding: .5rem .25rem 0;
+    border: 0;
+    border-top: 1px solid var(--options-divider);
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: .8rem;
+    text-align: left;
+    cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+    text-decoration: underline;
+}
+
+.menu-item svg {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: none;
+    fill: none;
+}
+
 /* Light theme: override the dark defaults when <html> has .theme-light. */
 html.theme-light {
     color-scheme: light;
@@ -3037,25 +3251,6 @@ html.theme-light .custom-dicts-button[aria-pressed="false"] {
     color: #555555;
 }
 
-/* The copy-log control looks like a link but is a button (no form submit). */
-.copy-log-button {
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--accent);
-    font: inherit;
-    cursor: pointer;
-    text-decoration: underline;
-}
-
-.copy-log-button:hover {
-    text-decoration: underline;
-}
-
-.copy-log-button.copied {
-    color: var(--muted);
-}
-
 /* Leave room on the right for the fixed hamburger menu icon. */
 .page-main h1 {
     margin-right: 3.5rem;
@@ -3092,7 +3287,7 @@ html.initial-search-pending #hint,
 html.initial-search-pending #pagination-top,
 html.initial-search-pending #results,
 html.initial-search-pending #pagination,
-html.initial-search-pending .result-timing {
+html.initial-search-pending .results-timing {
     visibility: hidden;
 }
 
@@ -3164,9 +3359,9 @@ html.initial-search-pending .result-timing {
     text-decoration: underline;
     text-underline-offset: .12em;
 }
-/* Digits/other uncoloured pieces: default text colour (white in dark mode). */
+/* Digits/punctuation and other untoned pieces use the neutral tone-5 grey. */
 .furigana .plain {
-    color: CanvasText;
+    color: var(--tone5);
 }
 
 /* Keep the character row tight, so the reading sits close above the characters
@@ -3204,6 +3399,27 @@ html.initial-search-pending .result-timing {
         display: inline-flex;
         margin-left: -.4rem;
         padding-left: 0;
+    }
+
+    /* The fixed top-right menu would overlap the expanded options dropdown. */
+    body:has(.options.open) .menu-toggle-wrap {
+        display: none;
+    }
+
+    /* Search Tips moves from the header to the bottom right of the menu,
+       under the Custom Dictionaries button. */
+    .search-options-header .search-tips-link {
+        display: none;
+    }
+
+    .search-tips-row {
+        display: block;
+        padding: 0 .5rem .2rem;
+        text-align: right;
+    }
+
+    .search-tips-bottom {
+        display: inline-flex;
     }
 
     .lang-select {

@@ -57,6 +57,109 @@ def test_numeric_and_marked_pinyin_round_trip():
     assert to_numeric("hàn yǔ") == "han4 yu3"
 
 
+def test_reading_key_is_tone_aware():
+    """Readings that differ only by tone stay distinct."""
+    assert db.reading_key("zhī") == db.reading_key("zhi1") == "zhi1"
+    assert db.reading_key("zhǐ") == "zhi3"
+    assert db.reading_key("") == ""
+
+
+def test_reading_counts_keep_surname_capitalisation():
+    """Gān (surname) and gān (dry) are separate readings, not one."""
+    counts = db._cedict_reading_counts(["干"])
+    by_reading = counts["干"]
+    assert by_reading["gān"] > by_reading["Gān"] > 0
+
+
+def test_entry_sense_count_uses_the_key_that_has_the_reading():
+    """A traditional key with other readings must not score this reading as 0."""
+    counts = {"乾": {"qián": 4}, "干": {"gān": 12, "Gān": 2}}
+    assert (
+        db._entry_sense_count(
+            counts, {"traditional": "乾", "simplified": "干", "pinyin": "gān"}
+        )
+        == 12
+    )
+    assert (
+        db._entry_sense_count(
+            counts, {"traditional": "乾", "simplified": "干", "pinyin": "Gān"}
+        )
+        == 2
+    )
+
+
+def test_sense_count_for_prefers_the_exact_reading():
+    """Case decides which group a reading's senses come from."""
+    by_reading = {"gān": 12, "Gān": 2}
+    assert db.sense_count_for(by_reading, "gān") == 12
+    assert db.sense_count_for(by_reading, "Gān") == 2
+    # Numeric and marked spellings of the same tone still match.
+    assert db.sense_count_for({"gan1": 3}, "gān") == 3
+
+
+def test_entry_sense_count_prefers_exact_case_across_both_keys():
+    """An exact reading in the other key beats a case variant in this one."""
+    counts = {"乾": {"Gān": 1}, "干": {"gān": 12}}
+    assert (
+        db._entry_sense_count(
+            counts, {"traditional": "乾", "simplified": "干", "pinyin": "gān"}
+        )
+        == 12
+    )
+    assert (
+        db._entry_sense_count(
+            counts, {"traditional": "乾", "simplified": "干", "pinyin": "Gān"}
+        )
+        == 1
+    )
+
+
+def test_light_decorate_scores_each_reading_from_its_own_key():
+    """The light path sees the 12 gān senses, not the surname's 2."""
+    entries = [
+        {"traditional": "乾", "simplified": "干", "pinyin": "Gān"},
+        {"traditional": "乾", "simplified": "干", "pinyin": "gān"},
+        {"traditional": "乾", "simplified": "乾", "pinyin": "qián"},
+    ]
+    db._light_decorate(entries)
+    scores = {entry["pinyin"]: entry["_reading_count"] for entry in entries}
+    assert scores["gān"] > scores["Gān"] > 0
+    assert scores["qián"] > 0
+
+
+def test_xref_senses_are_not_counted_as_definitions():
+    """Variant pointers are lookup hints, not meanings."""
+    assert db.is_xref_sense("variant of 隻|只[zhi1]")
+    assert db.is_xref_sense("old variant of 柿[shi4]")
+    assert db.is_xref_sense("also written 沒|没[mei2]")
+    assert not db.is_xref_sense("to dry")
+
+
+def test_owned_by_entry_splits_semicolon_and_slash_rows():
+    """A shared CEDICT pool is split using the spelling's own english text."""
+    senses = [
+        ("zhī", "grain that has begun to ripen"),
+        ("zhī", "classifier for birds and certain animals"),
+    ]
+    classifier = {"english": "classifier for birds and certain animals"}
+    assert db._owned_by_entry(senses, classifier) == [senses[1]]
+
+    slash = {
+        "english": "grain that has begun to ripen"
+        "/classifier for birds and certain animals"
+    }
+    assert db._owned_by_entry(senses, slash) == senses
+
+    semicolon = {
+        "english": "grain that has begun to ripen"
+        "; classifier for birds and certain animals"
+    }
+    assert db._owned_by_entry(senses, semicolon) == senses
+
+    # A format surprise keeps the whole pool instead of hiding a definition.
+    assert db._owned_by_entry(senses, {"english": "something else"}) == senses
+
+
 def test_like_pattern_turns_star_into_sql_wildcard():
     """The app wildcard becomes SQL %, while literal % and _ are escaped."""
     assert db._like_pattern("a*b") == "a%b"

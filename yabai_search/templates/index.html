@@ -9,7 +9,7 @@
     <meta name="data-version" content="{{ data_version }}">
     <!-- Make the page scale correctly on mobile devices. -->
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Yabai Search ZH</title>
+    <title>Yabai Search</title>
     <!-- Browser tab icon (served from the /static mount). -->
     <link rel="icon" type="image/png" href="/static/favicon.png">
     <!-- Web app manifest and icons, so the dictionary can be installed as an app. -->
@@ -22,14 +22,18 @@
     <style>{{ variables_css | safe }}</style>
     <!-- Stylesheet served from the /static mount (yabai_search/static/style.css). -->
     <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+    {% if word_query %}
+    <!-- Exact-word view: app.js opens this word through the exact API. -->
+    <script>window.__wordQuery = {{ word_query | tojson }};window.__exactSearch = true;try{document.documentElement.classList.add("initial-search-pending")}catch(e){}</script>
+    {% endif %}
     {% if initial_primary is not none %}
     <!-- Embedded primary search results for instant first paint. -->
-    <script>window.__initialPrimary = {{ initial_primary | tojson }};</script>
+    <script>window.__initialPrimary = {{ initial_primary | tojson }};window.__initialPrimaryLang = {{ lang | tojson }};</script>
     {% endif %}
     {% if q and initial_page and initial_primary is none %}
     <!-- Fallback: if the server could not embed the fast tier, start its fetch
          before app.js runs. -->
-    <link rel="preload" as="fetch" href="/api/search?q={{ q | urlencode }}&taiwan=0&offset=0&part=primary&dv={{ data_version | urlencode }}" crossorigin>
+    <link rel="preload" as="fetch" href="/api/search?q={{ q | urlencode }}&taiwan=0&offset=0&part=primary&lang={{ lang | urlencode }}&dv={{ data_version | urlencode }}" crossorigin>
     {% endif %}
     <!-- Browser-side dictionary imports (IndexedDB). Load before app.js so the
        search hook can wait for the imported term index. -->
@@ -40,7 +44,10 @@
         try {
             var on = localStorage.getItem("yabai-search-custom-dicts") === "true";
             var has = localStorage.getItem("yabai-search-custom-dicts-has");
-            var url = new URLSearchParams(location.search).has("custom");
+            // A custom=0 setting in the URL (written by the page itself) must
+            // not load the large script; only an explicit "on" value does.
+            var value = new URLSearchParams(location.search).get("custom");
+            var url = value !== null && value !== "0" && value !== "false" && value !== "off";
             need = on || url || has !== "false";
         } catch (e) { need = true; }
         if (need) {
@@ -59,15 +66,14 @@
     <script src="/static/pwa.js" defer></script>
     </head>
 
-<body>
+<body{% if exact %} class="exact-mode"{% endif %}>
     <!-- Everything above the timings/footer. -->
     <main class="page-main">
         <!-- Page title / heading. -->
         <h1>
-            <a id="home-link" href="/">牙白查词<span class="site-subtitle">Yabai Search<span
-                        class="site-meta"><span class="site-zh">ZH</span><span
-                            class="site-version">BETA v0.1</span></span></span></a>
+            <a id="home-link" href="/">牙白查词<span class="site-subtitle">Yabai Search</span></a>
         </h1>
+        <p class="site-byline"><span>Made by Furretar</span><span>Beta v0.1</span></p>
         <!-- Hamburger menu, top right. -->
         <div class="menu-toggle-wrap">
             <button type="button" class="menu-toggle" aria-label="Menu" aria-expanded="false">
@@ -85,6 +91,25 @@
                     </div>
                     <span class="theme-label">Theme</span>
                 </div>
+                {% if show_debug %}
+                <!-- Debug log download, available to every client. -->
+                <button type="button" id="download-log-button" class="menu-item"
+                    title="Download the current search state and any error stack as a .txt file.">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M5 2.75h6.8l4.7 4.7V18a2.25 2.25 0 0 1-2.25 2.25H5A2.25 2.25 0 0 1 2.75 18V5A2.25 2.25 0 0 1 5 2.75Z"
+                            fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                        <path d="M11.8 2.75v4.2a.6.6 0 0 0 .6.6h4.1" fill="none"
+                            stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                        <path d="M5.2 8.2h3.6M5.2 11h2.8M5.2 13.8h2.1" fill="none"
+                            stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                        <ellipse cx="17" cy="17.2" rx="2.4" ry="2.9" fill="none"
+                            stroke="currentColor" stroke-width="1.3"/>
+                        <path d="M17 14.3v1M14.8 15.4l-1.4-1.1M19.2 15.4l1.4-1.1M14.6 17.2h-1.7M19.4 17.2h1.6M14.8 19l-1.4 1.1M19.2 19l1.4 1.1"
+                            fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                    </svg>
+                    <span class="menu-item-label">Download debug log</span>
+                </button>
+                {% endif %}
             </div>
         </div>
         <!-- Search bar and its options share one surface, so the expanded options
@@ -177,6 +202,10 @@
                             <!-- Same dark-chip design as the tone control above. -->
                             <button type="button" id="custom-dicts-button" class="quick-toggle custom-dicts-button"
                                 aria-pressed="false" title="Show the dictionary picker.">Custom Dictionaries</button>
+                        </div>
+                        <!-- Narrow screens move Search Tips here, under the controls. -->
+                        <div class="search-tips-row">
+                            <a class="search-tips-link search-tips-bottom" href="/about#search-tips">Search Tips</a>
                         </div>
                         <!-- Hidden switches hold the state; the controls above flip them. -->
                         <input type="checkbox" id="script-toggle" hidden>
@@ -376,7 +405,7 @@
                 if (query) {
                     if (input) input.value = query;
                     if (clearBtn) clearBtn.hidden = false;
-                    document.title = query + " - Yabai Search ZH";
+                    document.title = query + " - Yabai Search";
                     document.body.classList.add("has-query");
                 }
 
@@ -423,16 +452,14 @@
         <!-- Pager for "*" (all-headwords) searches; hidden otherwise. -->
         <nav id="pagination" class="pagination" hidden></nav>
     </main>
-    <!-- Bottom of the page: search timings just above the About footer. -->
+    <!-- Bottom of the page: the About footer. -->
     <div class="page-bottom">
-        <p id="result-timing" class="result-timing"></p>
+        <!-- Hoverable tier separator below the last result. -->
+        <div class="footer-separator entry-separator" aria-hidden="true"></div>
         <footer>
+            <!-- Donate button: Ko-fi cup-and-heart mark plus a plain label. -->
             <div class="footer-row">
-                <a href="/about">About</a>
-                {% if show_reports %}<a class="footer-link" href="/reports">Reports</a>{% endif %}
-            </div>
-            <div class="footer-row">
-                <a class="footer-link kofi-link" href="https://ko-fi.com/furretar" target="_blank"
+                <a class="footer-link kofi-link kofi-donate" href="https://ko-fi.com/furretar" target="_blank"
                     rel="noopener noreferrer">
                     <svg viewBox="3.2 2.4 16 16" aria-hidden="true" focusable="false">
                         <path d="M4 7h11v6.2A4.8 4.8 0 0 1 10.2 18H8.8A4.8 4.8 0 0 1 4 13.2V7Z"/>
@@ -443,8 +470,11 @@
                             stroke-linecap="round"/>
                         <path d="M9.5 11.2c.7-.9 2.2.2 1.2 1.2L9.5 13.6l-1.2-1.2c-1-1 .5-2.1 1.2-1.2Z"/>
                     </svg>
-                    Ko-fi
+                    Donate
                 </a>
+            </div>
+            <!-- Project links, directly below the donate button. -->
+            <div class="footer-row">
                 <a class="footer-link github-link" href="https://github.com/Furretar/Yabai-Search-ZH"
                     target="_blank" rel="noopener noreferrer">
                     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -452,10 +482,18 @@
                     </svg>
                     GitHub
                 </a>
-                {% if show_debug %}<button type="button" id="copy-log-button" class="copy-log-button"
-                    title="Copy the current search state and any error stack to the clipboard.">Copy debug log</button>
-                <button type="button" id="download-log-button" class="copy-log-button"
-                    title="Download the current search state and any error stack as a .txt file.">Download .txt</button>{% endif %}
+                <a class="footer-link discord-link" href="https://discord.gg/huCv9K2U3"
+                    target="_blank" rel="noopener noreferrer">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189z"/>
+                    </svg>
+                    Discord
+                </a>
+            </div>
+            <!-- Secondary tools first, with About as the last (bottom) link. -->
+            <div class="footer-row">
+                {% if show_reports %}<a class="footer-link" href="/reports">Reports</a>{% endif %}
+                <a href="/about">About</a>
             </div>
         </footer>
     </div>

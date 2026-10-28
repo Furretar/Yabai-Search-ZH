@@ -22,8 +22,115 @@ from yabai_search.overrides import (
     IDS_IMAGES,
     PREFERRED_READINGS,
     TAIWAN_READINGS,
+    normalize_english,
 )
 from yabai_search.pinyin import numeric_to_marked, split_pinyin, to_numeric, to_toneless
+
+
+def reading_key(pinyin: str | None) -> str:
+    """A tone-aware identity for one reading: 'zhī' / 'zhi1' / 'Zhi1' -> 'zhi1'.
+
+    `to_toneless` deliberately throws the tone away (it is the search key), so it
+    cannot tell 只 zhī from 只 zhǐ. Anything that decides which reading a row
+    belongs to (variant redirects, "Other forms", preferred readings, which
+    definition group to show) must compare these keys instead. Tone-marked and
+    numeric spellings of the same reading give the same key; '' means "unknown".
+    """
+    text = (pinyin or "").strip().lower()
+    if not text:
+        return ""
+    text = text.replace("u:", "ü")
+    if any(char.isdigit() for char in text):  # already numeric ("zhi1")
+        return " ".join(text.replace("v", "ü").split())
+    return to_numeric(text).replace("v", "ü")
+
+
+# CEDICT cross-reference senses ("variant of 隻|只[zhi1]", "old variant of ...")
+# say where to look, not what a word means. They must not count when choosing
+# the representative reading of a headword, or a reading that is mostly
+# cross-references outranks the real one. (SQL: use with `s.text`/`text`.)
+_XREF_PREFIXES = (
+    "variant of ",
+    "old variant of ",
+    "archaic variant of ",
+    "erhua variant of ",
+    "also written ",
+)
+_XREF_SQL = " AND ".join(
+    f"lower(ltrim(text)) NOT LIKE '{prefix}%'" for prefix in _XREF_PREFIXES
+)
+
+
+def _preferred_key(pinyin: str | None) -> str:
+    """Comparison key for a preferred reading (tone-aware)."""
+    return reading_key(pinyin)
+
+
+# "variant of 隻|只[zhi1]" -> groups ("隻", "只"): the traditional and simplified
+# form being pointed at (the simplified part is optional).
+_XREF_TARGET_RE = re.compile(
+    r"^(?:old |archaic |erhua )?variant of ([^\s|\[;,]+)(?:\|([^\s\[;,]+))?"
+)
+
+
+def _owned_by_entry(senses: list[tuple[str, str]], entry: dict) -> list[tuple[str, str]]:
+    """Of a shared sense pool, the senses written on this entry's own CEDICT row.
+
+    CEDICT senses are keyed by the simplified word, so 隻 [zhī] "classifier…" and
+    秖 [zhī] "grain that has begun to ripen" sit in one pool. A sense belongs to
+    the entry whose definition text contains it as a whole item (items are
+    separated by "/" or "; "). Returns the input unchanged when nothing matches,
+    so a format surprise can only fail to split, never hide a definition.
+    """
+    english = entry.get("english_normalized") or entry.get("english") or ""
+    if not english:
+        return senses
+    text = normalize_english(_strip_pron_notes(english)).replace("CL:", "Classifier:")
+    haystacks = [f"{sep}{text}{sep}" for sep in ("/", "; ")]
+    owned = [
+        value
+        for value in senses
+        if any(
+            f"{sep}{value[1]}{sep}" in hay
+            for sep, hay in zip(("/", "; "), haystacks)
+        )
+    ]
+    return owned or senses
+
+
+def _drop_self_references(
+    values: list[tuple[str, str]], own_words: set[str]
+) -> list[tuple[str, str]]:
+    """Remove "variant of <this very word>" senses from a headword's own block.
+
+    CEDICT stores 只's redirect row ("variant of 隻|只[zhi1]") and 祇's ("variant
+    of 只[zhi3]") as senses of the shared simplified word 只. Shown on 隻 or 只
+    itself, they read as the word being a variant of itself; the variants are
+    already listed under "Other forms". A reading whose senses would all vanish
+    keeps them (a real variant row, viewed on its own page, has nothing else).
+    """
+
+    def points_at_self(text: str) -> bool:
+        match = _XREF_TARGET_RE.match((text or "").strip())
+        return bool(match) and any(g in own_words for g in match.groups() if g)
+
+    droppable = [points_at_self(text) for _reading, text in values]
+    kept_readings = {
+        reading_key(reading)
+        for (reading, _text), drop in zip(values, droppable)
+        if not drop
+    }
+    return [
+        value
+        for value, drop in zip(values, droppable)
+        if not drop or reading_key(value[0]) not in kept_readings
+    ]
+
+
+def is_xref_sense(text: str | None) -> bool:
+    """True for a CEDICT "variant of X" style sense (see `_XREF_PREFIXES`)."""
+    return (text or "").strip().lower().startswith(_XREF_PREFIXES)
+
 
 # --- Simplified <-> Traditional conversion (OpenCC) -------------------------
 # OpenCC converts with word/phrase dictionaries, so it handles the one-to-many
@@ -359,6 +466,10 @@ _SOURCE_QUERIES = [
         "sql": "SELECT DISTINCT word FROM moe WHERE word IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM moe "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        # Prefix-only lookup for the fast first response, with the reading.
+        "prefix_sql": "SELECT word, word AS traditional, '' AS simplified, "
+                      "MAX(pinyin) AS pinyin FROM moe "
+                      "WHERE word LIKE ? ESCAPE '\\' GROUP BY word",
         # The trigram senses_fts table also indexes the headword column, so a
         # 3+ character query can use it instead of scanning `moe`.
         "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
@@ -381,6 +492,10 @@ _SOURCE_QUERIES = [
         "sql": "SELECT DISTINCT word FROM moe WHERE word IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM moe "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        # Prefix-only lookup for the fast first response, with the reading.
+        "prefix_sql": "SELECT word, word AS traditional, '' AS simplified, "
+                      "MAX(pinyin) AS pinyin FROM moe "
+                      "WHERE word LIKE ? ESCAPE '\\' GROUP BY word",
         # See the concise MOE source above.
         "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
                         "WHERE word LIKE ? ORDER BY word",
@@ -449,6 +564,9 @@ _SOURCE_QUERIES = [
         "sql": "SELECT DISTINCT word FROM headwords WHERE word IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM headwords "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        # Prefix-only lookup for the fast first response.
+        "prefix_sql": "SELECT word, traditional, simplified, pinyin FROM headwords "
+                      "WHERE word LIKE ? ESCAPE '\\'",
         # The trigram senses_fts table indexes the headword column too.
         "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
                         "WHERE word LIKE ? ORDER BY word",
@@ -472,6 +590,9 @@ _SOURCE_QUERIES = [
         "sql": "SELECT DISTINCT word FROM headwords WHERE word IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM headwords "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        # Prefix-only lookup for the fast first response.
+        "prefix_sql": "SELECT word, traditional, simplified, pinyin FROM headwords "
+                      "WHERE word LIKE ? ESCAPE '\\'",
         # See the Chinese Wiktionary source above.
         "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
                         "WHERE word LIKE ? ORDER BY word",
@@ -1274,63 +1395,97 @@ def _variant_form_rows(words: list[str]) -> list[tuple]:
     return rows
 
 
+class _VariantIndex:
+    """Variant-form rows, indexed per (traditional form, reading).
+
+    CEDICT variant rows are per reading: 只 is both "variant of 隻 [zhī]" and
+    the real word 只 [zhǐ] "only", and 祇 is both "variant of 只 [zhǐ]" and the
+    unrelated word 祇 [qí] "earth spirit". Indexing by the traditional form alone
+    made the redirect for one reading swallow every other reading of that form.
+
+    A form row whose reading is blank applies to every reading of its form.
+    """
+
+    def __init__(self, form_rows_all: list[tuple]) -> None:
+        rows: dict[tuple[str, str, str], tuple] = {}
+        for row in form_rows_all:
+            variant_trad, _vs, main_trad, _ms, pinyin, _qualifier, redirect = row
+            key = (main_trad, variant_trad, reading_key(pinyin))
+            current = rows.get(key)
+            if current is None or (redirect and not current[6]):
+                rows[key] = row
+        self._main: dict[tuple[str, str], str] = {}
+        self._forms: dict[tuple[str, str], list[dict]] = {}
+        for (main_trad, variant_trad, reading), row in rows.items():
+            _vt, variant_simp, _mt, _ms, pinyin, qualifier, redirect = row
+            if redirect and main_trad != variant_trad:
+                self._main.setdefault((variant_trad, reading), main_trad)
+            self._forms.setdefault((main_trad, reading), []).append(
+                {
+                    "traditional": variant_trad,
+                    "simplified": variant_simp or variant_trad,
+                    "pinyin": pinyin or "",
+                    "qualifier": qualifier or "",
+                }
+            )
+        self._variant_readings: dict[str, set[str]] = {}
+        for variant_trad, reading in self._main:
+            self._variant_readings.setdefault(variant_trad, set()).add(reading)
+
+    def main_for(self, traditional: str, reading: str) -> str | None:
+        """The form this (traditional, reading) is a variant of, if any."""
+        reading = reading_key(reading)
+        if reading:
+            return self._main.get((traditional, reading)) or self._main.get(
+                (traditional, "")
+            )
+        for known in sorted(self._variant_readings.get(traditional, ())):
+            return self._main[(traditional, known)]
+        return None
+
+    def is_redirect(self, traditional: str, reading: str) -> bool:
+        return self.main_for(traditional, reading) is not None
+
+    def forms_for(self, traditional: str, reading: str) -> list[dict]:
+        """Variants listed under this (traditional, reading), de-duplicated."""
+        reading = reading_key(reading)
+        keys = (
+            [(traditional, reading), (traditional, "")]
+            if reading
+            else [key for key in self._forms if key[0] == traditional]
+        )
+        found: list[dict] = []
+        seen: set[str] = set()
+        for key in keys:
+            for form in self._forms.get(key, ()):
+                if form["traditional"] not in seen:
+                    seen.add(form["traditional"])
+                    found.append(form)
+        return found
+
+
 def _set_variant_fields(entries: list[dict], form_rows_all: list[tuple]) -> list[dict]:
     """Set entry["main"] and entry["forms"] from variant-form rows.
 
     `main` is the redirect target when this entry is a "see X" / "variant of X"
     entry pointing at a *different* form (self-references like 血[xiě] ->
     血[xuè] are ignored). `forms` lists the variants that point at this entry,
-    shown as "Other forms". Matching is by the traditional form, which stays
-    distinct even when simplified collide (軟 vs 輭, both simplified 软).
+    shown as "Other forms". Matching is by traditional form AND reading (see
+    `_VariantIndex`): the traditional form stays distinct even when simplified
+    collide (軟 vs 輭, both simplified 软), and the reading keeps one reading's
+    redirect from hiding the form's other readings (只 zhǐ vs 只 zhī).
     `redirect` marks a real cross-reference; "also written X" rows are
-    display-only and never set `main`. Duplicate variant/main pairs keep the
-    redirect row, so a form note cannot override a real cross-reference.
+    display-only and never set `main`.
     """
-    # Index the rows once, de-duplicating pairs and preferring redirect rows.
-    rows_by_pair: dict[tuple[str, str], tuple] = {}
-    for row in form_rows_all:
-        (
-            variant_trad,
-            _variant_simp,
-            main_trad,
-            _main_simp,
-            _pinyin,
-            _qualifier,
-            redirect,
-        ) = row
-        key = (main_trad, variant_trad)
-        current = rows_by_pair.get(key)
-        if current is None or (redirect and not current[6]):
-            rows_by_pair[key] = row
-
-    main_by_variant: dict[str, str] = {}
-    forms_by_main: dict[str, list[dict]] = {}
-    for (
-        variant_trad,
-        variant_simp,
-        main_trad,
-        _main_simp,
-        pinyin,
-        qualifier,
-        redirect,
-    ) in rows_by_pair.values():
-        if redirect and main_trad != variant_trad:
-            main_by_variant.setdefault(variant_trad, main_trad)
-        forms_by_main.setdefault(main_trad, []).append(
-            {
-                "traditional": variant_trad,
-                "simplified": variant_simp or variant_trad,
-                "pinyin": pinyin or "",
-                "qualifier": qualifier or "",
-            }
-        )
+    index = _VariantIndex(form_rows_all)
     for entry in entries:
         trad = entry["traditional"]
-        entry["main"] = main_by_variant.get(trad)
+        reading = entry.get("pinyin") or ""
+        entry["main"] = index.main_for(trad, reading)
         if trad in HIDE_FORMS or entry["simplified"] in HIDE_FORMS:
             entry["forms"] = []
         else:
-            entry["forms"] = forms_by_main.get(trad, [])
+            entry["forms"] = index.forms_for(trad, reading)
     return entries
 
 
@@ -1349,6 +1504,7 @@ def _cedict_reading_counts(words: list[str]) -> dict[str, dict[str, int]]:
             "SELECT word, reading, COUNT(*) FROM senses "
             f"WHERE word IN ({placeholders}) "
             "AND text IS NOT NULL AND TRIM(text) <> '' "
+            f"AND {_XREF_SQL} "
             "GROUP BY word, reading",
             tuple(words),
         ).fetchall()
@@ -1356,8 +1512,51 @@ def _cedict_reading_counts(words: list[str]) -> dict[str, dict[str, int]]:
         connection.close()
     counts: dict[str, dict[str, int]] = {}
     for word, reading, count in rows:
+        # Keyed by the reading exactly as stored: capitalisation separates a
+        # surname ("Gān", 1 sense) from the word ("gān", 12 senses), and the
+        # representative reading is chosen by these counts.
         counts.setdefault(word, {})[reading or ""] = min(count, _MAX_DEFS)
     return counts
+
+
+def _entry_sense_count(counts: dict[str, dict[str, int]], entry: dict) -> int:
+    """Senses of this entry's own reading, from `_cedict_reading_counts`.
+
+    CEDICT keys senses by the simplified word, but a traditional spelling can
+    also be a key of its own (乾 holds the qián senses, 干 holds gān). Like
+    `_attach_definitions`, use the key that actually has this reading; trying the
+    traditional key first and stopping there scored every gān row of 乾/干 as 0,
+    so a tie let the surname "Gān" win over "gān" (12 senses).
+    """
+    pinyin = entry.get("pinyin") or ""
+    key = reading_key(pinyin)
+    candidates = [
+        counts[word]
+        for word in (entry["traditional"], entry["simplified"])
+        if counts.get(word)
+    ]
+    # Exact reading first, across both keys: "Gān" and "gān" are different.
+    for by_reading in candidates:
+        if pinyin in by_reading:
+            return by_reading[pinyin]
+    # Then accept a spelling difference for the same tone (numeric vs marked).
+    for by_reading in candidates:
+        if any(reading_key(r) == key for r in by_reading):
+            return sense_count_for(by_reading, pinyin)
+    return 0
+
+
+def sense_count_for(by_reading: dict[str, int], pinyin: str | None) -> int:
+    """Senses for one reading: the exact string first (case and tone), then a
+    tone-aware match for a reading spelled differently (numeric vs marked)."""
+    pinyin = pinyin or ""
+    if pinyin in by_reading:
+        return by_reading[pinyin]
+    key = reading_key(pinyin)
+    return max(
+        (n for reading, n in by_reading.items() if reading_key(reading) == key),
+        default=0,
+    )
 
 
 def _light_decorate(entries: list[dict]) -> list[dict]:
@@ -1379,13 +1578,49 @@ def _light_decorate(entries: list[dict]) -> list[dict]:
     _set_variant_fields(entries, _variant_form_rows(words))
     counts = _cedict_reading_counts(words)
     for entry in entries:
-        by_reading = (
-            counts.get(entry["traditional"])
-            or counts.get(entry["simplified"])
-            or {}
-        )
-        entry["_reading_count"] = by_reading.get(entry.get("pinyin", ""), 0)
+        entry["_reading_count"] = _entry_sense_count(counts, entry)
     return entries
+
+
+def _own_readings(
+    entries: list[dict], index: "_VariantIndex"
+) -> tuple[dict[tuple[str, str], set[str]], set[tuple[str, str]]]:
+    """The readings each (traditional, simplified) headword really owns in CEDICT.
+
+    CEDICT keys its senses by the *simplified* word, so 隻 and 秖 and 只 (all
+    simplified 只) share one pool of senses. A traditional spelling only owns the
+    readings of its own CEDICT rows, minus rows that are just a cross-reference
+    to another form (只 [zhī] is "variant of 隻", so 只 owns zhǐ only; 隻 owns zhī
+    only; 長 owns both cháng and zhǎng). Used to keep a row from showing another
+    spelling's readings under its own headword.
+    """
+    simplified = sorted(
+        {entry["simplified"] for entry in entries if entry["simplified"]}
+    )
+    if not simplified:
+        return {}, set()
+    placeholders = ",".join("?" * len(simplified))
+    connection = connect()
+    try:
+        rows = connection.execute(
+            "SELECT traditional, simplified, pinyin FROM entries "
+            f"WHERE simplified IN ({placeholders})",
+            tuple(simplified),
+        ).fetchall()
+    finally:
+        connection.close()
+    own: dict[tuple[str, str], set[str]] = {}
+    spellings: dict[tuple[str, str], set[str]] = {}
+    for traditional, simp, pinyin in rows:
+        if not pinyin or index.is_redirect(traditional, pinyin):
+            continue
+        own.setdefault((traditional, simp), set()).add(reading_key(pinyin))
+        spellings.setdefault((simp, reading_key(pinyin)), set()).add(traditional)
+    # (simplified, reading) pairs that several traditional spellings share: their
+    # senses sit in one pool (隻 and 秖 are both 只 zhī), so each spelling's own
+    # senses have to be told apart by its CEDICT row.
+    pooled = {key for key, forms in spellings.items() if len(forms) > 1}
+    return own, pooled
 
 
 def _attach_definitions(entries: list[dict]) -> list[dict]:
@@ -1411,6 +1646,8 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
     senses: dict[str, dict[str, list[str]]] = {}
     classifiers: dict[str, dict[str, list[dict]]] = {}
     form_rows_all = _variant_form_rows(words)
+    variant_index = _VariantIndex(form_rows_all)
+    own_readings, pooled_readings = _own_readings(entries, variant_index)
     # Classifier characters, collected so they can all get a furigana reading.
     classifier_forms: set[str] = set()
     for source in _SOURCE_QUERIES:
@@ -1427,11 +1664,17 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                 if text and text.strip():
                     value = text.strip()
                     if anchor == "cedict":
-                        value = _strip_pron_notes(value)
+                        value = normalize_english(_strip_pron_notes(value))
                         # A classifier inside a sense is written "(CL:棵[ke1])";
                         # spell out the label for the numbered definition.
                         value = value.replace("CL:", "Classifier:")
-                    senses[anchor].setdefault(word, []).append((reading or "", value))
+                    bucket = senses[anchor].setdefault(word, [])
+                    item = (reading or "", value)
+                    # Traditional spellings that share a simplified headword can
+                    # contribute the same sense twice (e.g. 乾 and 干 both list
+                    # "surname Gan"): keep it once per reading.
+                    if item not in bucket:
+                        bucket.append(item)
             if anchor == "wiktionary":
                 # Wiktionary can store a gloss on a different traditional
                 # spelling of the same simplified word (e.g. 寧為 vs 寧爲).
@@ -1477,6 +1720,19 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                 return word, mapping[word]
         return None, []
 
+    def for_senses(mapping: dict, entry: dict) -> tuple[str | None, list]:
+        """Like for_entry, but prefer the key that actually has this reading.
+
+        CEDICT stores senses under the simplified headword, so e.g. 乾 (gān)
+        would otherwise borrow 乾's qián senses just because 乾 is listed first.
+        """
+        reading = reading_key(entry.get("pinyin", ""))
+        for word in (entry["traditional"], entry["simplified"]):
+            values = mapping.get(word)
+            if values and any(reading_key(value[0]) == reading for value in values):
+                return word, values
+        return for_entry(mapping, entry)
+
     # Readings for the classifier characters (furigana above each classifier).
     classifier_readings = _classifier_readings(classifier_forms)
     for per_word in classifiers.values():
@@ -1493,7 +1749,40 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
         defs = []
         for source in _SOURCE_QUERIES:
             anchor = source["anchor"]
-            headword, values = for_entry(senses[anchor], entry)
+            headword, values = for_senses(senses[anchor], entry)
+            if anchor == "cedict" and values:
+                # Only this spelling's own readings (see `_own_readings`). Never
+                # filter down to nothing: a reading we cannot match keeps all.
+                if variant_index.is_redirect(
+                    entry["traditional"], entry.get("pinyin")
+                ):
+                    # A "variant of X" row owns just its own reading (只 [zhī]).
+                    wanted = {reading_key(entry.get("pinyin"))}
+                else:
+                    wanted = own_readings.get(
+                        (entry["traditional"], entry["simplified"])
+                    )
+                if wanted:
+                    scoped = [v for v in values if reading_key(v[0]) in wanted]
+                    if scoped:
+                        values = scoped
+                values = _drop_self_references(
+                    values, {entry["traditional"], entry["simplified"]}
+                )
+                own_key = reading_key(entry.get("pinyin"))
+                if (entry["simplified"], own_key) in pooled_readings:
+                    # Several spellings share this reading's senses: keep only
+                    # the ones on this spelling's row (grain -> 秖, classifier ->
+                    # 隻). Match the exact reading first so "Gān" (surname) is not
+                    # treated as the same group as "gān" (dry).
+                    own_reading = entry.get("pinyin") or ""
+                    same_reading = [v for v in values if v[0] == own_reading]
+                    if not same_reading:
+                        same_reading = [
+                            v for v in values if reading_key(v[0]) == own_key
+                        ]
+                    mine = _owned_by_entry(same_reading, entry)
+                    values = [v for v in values if v not in same_reading] + mine
             _cls_headword, clss = for_entry(classifiers[anchor], entry)
             if values or clss:
                 # Group the senses by reading (CEDICT); other sources carry none.
@@ -1879,7 +2168,8 @@ def lookup(word: str) -> list[dict]:
             "FROM entries WHERE simplified = ? OR traditional = ? "
             "ORDER BY (SELECT COUNT(*) FROM senses s "
             "          WHERE s.word = entries.simplified "
-            "          AND s.reading = entries.pinyin) DESC, "
+            "          AND s.reading = entries.pinyin "
+            f"          AND {_XREF_SQL}) DESC, "
             "entries.id",
             (word, word),
         ).fetchall()
@@ -1894,8 +2184,8 @@ def lookup(word: str) -> list[dict]:
         or PREFERRED_READINGS.get(to_traditional(word))
     )
     if preferred:
-        target = to_toneless(preferred)
-        entries.sort(key=lambda entry: to_toneless(entry["pinyin"]) != target)
+        target = _preferred_key(preferred)
+        entries.sort(key=lambda entry: _preferred_key(entry["pinyin"]) != target)
     return entries
 
 
@@ -1929,7 +2219,8 @@ def lookup_reading(word: str) -> list[dict]:
             "FROM entries WHERE simplified = ? OR traditional = ? "
             "ORDER BY (SELECT COUNT(*) FROM senses s "
             "          WHERE s.word = entries.simplified "
-            "          AND s.reading = entries.pinyin) DESC, "
+            "          AND s.reading = entries.pinyin "
+            f"          AND {_XREF_SQL}) DESC, "
             "entries.id",
             (word, word),
         ).fetchall()
@@ -1944,8 +2235,8 @@ def lookup_reading(word: str) -> list[dict]:
         or PREFERRED_READINGS.get(to_traditional(word))
     )
     if preferred:
-        target = to_toneless(preferred)
-        raw.sort(key=lambda entry: to_toneless(entry["pinyin"] or "") != target)
+        target = _preferred_key(preferred)
+        raw.sort(key=lambda entry: _preferred_key(entry["pinyin"] or "") != target)
     decorated = _decorate(raw[:1])
     return [slim_entry(decorated[0])] if decorated else []
 
@@ -2585,14 +2876,21 @@ def _source_pinyin_raw(query: str, limit: int = 20) -> tuple[dict, ...]:
                 return
         elif rank is None:
             # A plain reading search matches readings that start with the
-            # query; a wildcard uses its own segment pattern.
+            # query first, then readings that merely contain it. A wildcard uses
+            # its own segment pattern.
             key = to_toneless(marked)
             if wildcard_re is not None:
                 if not wildcard_re.fullmatch(key):
                     return
-            elif not key.startswith(letters):
+                rank = 0 if key == letters else 1
+            elif key == letters:
+                rank = 0
+            elif key.startswith(letters):
+                rank = 1
+            elif letters in key:
+                rank = 2
+            else:
                 return
-            rank = 0 if key == letters else 1
         found.append(((rank, len(marked), word), word, marked, simplified))
 
     if WIKTIONARY_DB_PATH.exists():
@@ -4052,6 +4350,101 @@ def source_entries(word: str) -> list[dict]:
     return _decorate(_source_only_entries(word, limit=1, exact=True))
 
 
+def prefix_entries(query: str, anchor: str, limit: int = 25) -> list[dict]:
+    """Headwords that START WITH `query` from one dictionary, exact first.
+
+    Used by the primary (fast) search tier for Chinese queries: instead of
+    always previewing CEDICT, preview the first dictionary for the selected
+    search language (see default_dictionaries.py). Only prefix matches are
+    returned; words that merely contain the query are left to the full tier.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+    forms = _script_forms(query)
+    exact = set(forms)
+
+    if anchor == "cedict":
+        clauses = []
+        params: list[str] = []
+        for form in forms:
+            pattern = _like_pattern(f"{form}*")
+            clauses.append(
+                "(simplified LIKE ? ESCAPE '\\' OR traditional LIKE ? ESCAPE '\\')"
+            )
+            params += [pattern, pattern]
+        exact_clause = "(" + " OR ".join(
+            "(simplified = ? OR traditional = ?)" for _ in forms
+        ) + ")"
+        exact_params: list[str] = []
+        for form in forms:
+            exact_params += [form, form]
+        order = [exact_clause + " DESC"] + _freq_order() + [
+            "length(simplified)",
+            "id",
+        ]
+        connection = connect()
+        try:
+            rows = _fetchall(
+                connection,
+                "SELECT simplified, traditional, pinyin, english, english_normalized "
+                "FROM entries WHERE "
+                + " OR ".join(clauses)
+                + " ORDER BY "
+                + ", ".join(order)
+                + " LIMIT ?",
+                [*params, *exact_params, limit],
+                "primary_prefix",
+            )
+        finally:
+            connection.close()
+        return _decorate([dict(row) for row in rows])
+
+    source = next((item for item in _SOURCE_QUERIES if item["anchor"] == anchor), None)
+    if (
+        source is None
+        or not source["database"].exists()
+        or not source.get("prefix_sql")
+    ):
+        return []
+
+    connection = _connect(source["database"])
+    try:
+        found: dict[str, tuple] = {}
+        for form in forms:
+            pattern = _like_pattern(f"{form}*")
+            for word, traditional, simplified, pinyin in connection.execute(
+                source["prefix_sql"], (pattern,)
+            ):
+                if word and word not in found:
+                    found[word] = (word, traditional, simplified, pinyin)
+    finally:
+        connection.close()
+
+    entries = [
+        {
+            "simplified": simplified or to_simplified(word),
+            # Keep the dictionary's own spelling; convert only when it has none.
+            "traditional": traditional or word or to_traditional(word),
+            "pinyin": pinyin or "",
+            "english": "",
+            "english_normalized": "",
+        }
+        for word, traditional, simplified, pinyin in found.values()
+    ]
+    _attach_freq(entries)
+    entries.sort(
+        key=lambda entry: (
+            entry["simplified"] not in exact and entry["traditional"] not in exact,
+            entry.get("freq") is None,
+            entry["freq"]["rank"] if entry.get("freq") else 0,
+            len(entry["simplified"]),
+            entry["simplified"],
+        )
+    )
+    return _decorate(entries[:limit])
+
+
 def wildcard_search(
     query: str, limit: int = 50, offset: int = 0
 ) -> tuple[list[dict], int, bool]:
@@ -4153,11 +4546,14 @@ def wildcard_search(
                 where = f"pinyin_toneless LIKE ? ESCAPE '\\' OR {_note_or()}"
                 count_params = (pattern, note_pattern)
                 order = (
-                    "(pinyin_toneless = ?) DESC, "
-                    "(english_normalized LIKE ? ESCAPE '\\') DESC"
+                    # Direct readings before note-only matches, then the whole
+                    # reading, then frequency (a "Taiwan pr." note must not
+                    # outrank a more common word with its own matching reading).
+                    "(pinyin_toneless LIKE ? ESCAPE '\\') DESC, "
+                    "(pinyin_toneless = ?) DESC"
                     f"{freq_clause}, length(simplified), id"
                 )
-                order_params = (pinyin_key, note_pattern)
+                order_params = (pattern, pinyin_key)
                 total = connection.execute(
                     f"SELECT COUNT(*) FROM entries WHERE {where}", count_params
                 ).fetchone()[0]
@@ -4385,9 +4781,20 @@ def _number_query_forms(text: str, limit: int = 12) -> list[str]:
 
 
 def headword_query_forms(query: str) -> list[str]:
-    """Headword substrings to try for a query, including number variants."""
-    text = to_simplified(query).replace("*", "").strip()
-    return _number_query_forms(text) if text else []
+    """Headword substrings to try for a query, including number variants.
+
+    The form the user typed is kept as well as its OpenCC simplification, so a
+    traditional query such as 乾 can keep the qián entries whose own simplified
+    form is 乾 even when the simplified form 干 is also searched.
+    """
+    original = (query or "").replace("*", "").strip()
+    text = to_simplified(original)
+    if not text:
+        return []
+    forms = _number_query_forms(text)
+    if original and original not in forms:
+        forms.insert(0, original)
+    return forms
 
 
 # Parenthetical notes in CEDICT definitions, e.g. "to turn left (Shanghainese)".
@@ -4822,18 +5229,23 @@ def search(
                     "WHERE pinyin_toneless LIKE ?)"
                 )
                 pinyin_params = (f"{pinyin_key}%",)
+                direct_pattern = f"{pinyin_key}%"
             else:
                 pinyin_clause = "pinyin_toneless LIKE ? ESCAPE '\\'"
                 pinyin_params = (pattern,)
+                direct_pattern = pattern
             rows = _fetchall(
                 connection,
                 "SELECT simplified, traditional, pinyin, english, english_normalized "
                 f"FROM entries WHERE {pinyin_clause} "
                 f"OR {_note_or()} "
-                "ORDER BY (pinyin_toneless = ?) DESC, "
-                "(english_normalized LIKE ? ESCAPE '\\') DESC"
+                # Direct readings first, then the whole reading, then frequency.
+                # An alternate-pronunciation note ("Taiwan pr. [wei2]") must not
+                # outrank a more common word whose own reading is the query.
+                "ORDER BY (pinyin_toneless LIKE ? ESCAPE '\\') DESC, "
+                "(pinyin_toneless = ?) DESC"
                 f"{freq_clause}, length(simplified), id LIMIT ?",
-                (*pinyin_params, note_pattern, pinyin_key, note_pattern, limit),
+                (*pinyin_params, note_pattern, direct_pattern, pinyin_key, limit),
                 "pinyin_lookup",
             )
             # With the Taiwan toggle on, also match MOE (Taiwan) readings, so a
@@ -4848,6 +5260,33 @@ def search(
                         "ORDER BY length(simplified), id LIMIT ?",
                         (*words, limit),
                     ).fetchall()
+
+            # The full tier also matches readings that merely contain the query,
+            # e.g. "nuaile" -> 喜怒哀樂 (xǐ nù āi lè). They stay after every
+            # exact and prefix match. The fast tier deliberately skips this.
+            if part != "primary" and not wildcard:
+                contains_pattern = _like_pattern(f"*{pinyin_key}*")
+                if use_trigram:
+                    contains_clause = (
+                        "id IN (SELECT rowid FROM entries_fts_trigram "
+                        "WHERE pinyin_toneless LIKE ?)"
+                    )
+                    contains_params = (f"%{pinyin_key}%",)
+                else:
+                    contains_clause = "pinyin_toneless LIKE ? ESCAPE '\\'"
+                    contains_params = (contains_pattern,)
+                contains_order = ", ".join(
+                    _freq_order() + ["length(simplified)", "id"]
+                )
+                rows += _fetchall(
+                    connection,
+                    "SELECT simplified, traditional, pinyin, english, english_normalized "
+                    f"FROM entries WHERE {contains_clause} "
+                    "AND pinyin_toneless NOT LIKE ? ESCAPE '\\' "
+                    f"ORDER BY {contains_order} LIMIT ?",
+                    (*contains_params, direct_pattern, limit),
+                    "pinyin_contains",
+                )
         finally:
             connection.close()
         # Only real (hanzi) words count; skip latin headwords like the slang
@@ -4873,10 +5312,35 @@ def search(
             with pd.stage("source_pinyin"):
                 source_rows = _source_pinyin_entries(query, limit=limit)
         if entries or source_rows:
-            decorated = decorate(entries + source_rows)
             if part == "primary":
-                return decorated[: len(entries)], True
-            return decorated, True
+                return decorate(entries), True
+
+            # Keep the CEDICT order intact. Source prefixes only move ahead of
+            # the first CEDICT row that merely contains the query; source
+            # contains-only rows stay at the end.
+            def pinyin_rank(entry: dict) -> int:
+                reading = to_toneless(entry.get("pinyin", ""))
+                if reading == pinyin_key:
+                    return 0
+                if reading.startswith(pinyin_key):
+                    return 1
+                return 2
+
+            source_prefix = [e for e in source_rows if pinyin_rank(e) <= 1]
+            source_contains = [e for e in source_rows if pinyin_rank(e) == 2]
+            insert_at = next(
+                (i for i, entry in enumerate(entries) if pinyin_rank(entry) == 2),
+                len(entries),
+            )
+            return (
+                decorate(
+                    entries[:insert_at]
+                    + source_prefix
+                    + entries[insert_at:]
+                    + source_contains
+                ),
+                True,
+            )
 
     # Chinese: convert to simplified. A plain query matches anywhere in the word,
     # ranked exact first, then words starting with the query, then the rest.
@@ -4897,6 +5361,13 @@ def search(
         if "*" not in query and (is_chinese or is_numeric)
         else [chinese]
     )
+    if is_chinese and "*" not in query and query != chinese:
+        # Search the form the user typed as well as its OpenCC simplification.
+        # Otherwise 乾 becomes 干 and finds only the gān entries, never the
+        # qián entries whose own simplified form is 乾.
+        headword_forms = [query] + [
+            form for form in headword_forms if form != query
+        ]
     contains_patterns = [
         _like_pattern(f"*{form}*") for form in headword_forms
     ]
@@ -5038,7 +5509,36 @@ def search(
         decorated = decorate(entries)
         if part == "primary":
             return decorated[: len(headword_rows)], False
-        return decorated, False
+
+        # Keep the CEDICT order (it already handles exact, prefix, contains and
+        # number variants) and only move source prefixes ahead of the first
+        # CEDICT contains-only row.
+        def chinese_rank(entry: dict) -> int:
+            words = (entry.get("simplified", ""), entry.get("traditional", ""))
+            if any(word == form for word in words for form in headword_forms):
+                return 0
+            if any(word.startswith(form) for word in words for form in headword_forms):
+                return 1
+            return 2
+
+        if not source_headwords:
+            return decorated, False
+        cedict_count = len(headword_rows)
+        cedict = decorated[:cedict_count]
+        sources = decorated[cedict_count:]
+        source_prefix = [e for e in sources if chinese_rank(e) <= 1]
+        source_contains = [e for e in sources if chinese_rank(e) == 2]
+        insert_at = next(
+            (i for i, entry in enumerate(cedict) if chinese_rank(entry) == 2),
+            len(cedict),
+        )
+        return (
+            cedict[:insert_at]
+            + source_prefix
+            + cedict[insert_at:]
+            + source_contains,
+            False,
+        )
 
     # Definitions can use a different numeral spelling too (2026 vs 二零二六).
     if "*" in query:

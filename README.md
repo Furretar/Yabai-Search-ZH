@@ -1,4 +1,4 @@
-#
+## Introduction
 
 A Chinese dictionary web app with Chinese-English, Chinese-Chinese, and Taiwanese Mandarin support.
 
@@ -6,7 +6,15 @@ The interface design was inspired by [jisho.org](https://jisho.org/), since it h
 
 ---
 
-#### Quick Search Tips
+## Contact
+
+You can email me at `wyattpetrock2@gmail.com`.
+
+Or add `furretar2` on Discord.
+
+---
+
+## Quick Tips
 
 <span id="search-tips"></span>
 
@@ -25,16 +33,65 @@ The interface design was inspired by [jisho.org](https://jisho.org/), since it h
 | Zhuyin (Bopomofo) | `ㄉㄢㄍㄢˋ` | 单干 |
 
 
-#### Search Logic
+---
 
-Searches have 6 levels of priority. Results within the same level will be sorted by frequency.
 
-1. **Exact matches** for your search query.
-2. Results that **start with** your search query.
-3. Results that **contain** your query somewhere inside.
-4. Matches with the **only listed reading in another language** (i.e. Shanghainese, Wu, Xiang).
-5. All words from Wiktionary with a **reading but no definition**.
-6. All words with **no reading and no definition**.
+## Search Documentation
+
+### Step 1: Search Settings
+
+#### Language Codes
+
+The language of the search results is decided by the language code. You can choose a language code from the drop-down menu on the left of the search bar.
+
+After selecting a language, results with definitions in the selected language will be shown first. Matching results in other languages will be shown in a section called "Other Dictionaries" below the main results.
+
+Searching with `Taiwanese readings` enabled will match to Taiwanese readings instead of of Mainland readings.
+
+#### Custom Dictionaries
+
+`Custom Dictionaries` can be enabled in the `Search Options` drop-down. When enabled, you will be able to choose exactly which dictionaries you want to see for any language. 
+
+The order of dictionaries within each language can be changed by dragging them up or down.
+
+You can import [Yomitan](https://yomitan.wiki/) dictionaries by clicking the `+` button at the bottom of an expanded language category. They will be stored in your browser's local storage.
+
+The language code will still decide which language appears at the top of each entry.
+
+
+### Step 2: Queries
+
+When making a search, two requests are sent. The first request is meant to populate results quickly. The second request takes longer but gets all matching entries.
+
+1. Searches containing Chinese characters or valid pinyin will first query the highest priority dictionary for headwords that start with the query string. This is a very fast search and usually only takes a few milliseconds. 
+2. The second request will find all headwords in all dictionaries that contain the query string anywhere inside.
+
+If a search contains a Chinese character, and is more than 40 characters long, search will be skipped and the text will be parsed instead. If the CJK-containing search has no results, it will fallback to parsing. 
+
+You can also search for English words and phrases in the search bar. A search will match dictionary definitions if it doesn't match any pinyin readings, or if the query was surrounded by quotes `""`. 
+
+Searches have 3 categories and 6 tiers of priority. Results within the same category are sorted by tier, and tiers are sorted by frequency.
+
+The 3 categories in order are:
+
+1. Results with at least 1 definition in any dictionary in the currently selected language.
+    - When Custom Dictionaries is enabled, this includes all selected dictionaries.
+
+2. Results with matches only in dictionaries in other languages.
+    - When Custom Dictionaries is enabled, this includes all unselected dictionaries.
+
+3. Fuzzy matches when searching with tones and pinyin (`shi2shi4`).
+
+The 6 tiers are:
+
+1. Exact matches for your search query.
+2. Results that start with your search query.
+3. Results that contain your query somewhere inside.
+4. Matches with the only listed reading in another language (i.e. Shanghainese, Wu, Xiang).
+5. All words from Wiktionary with a reading but no definition.
+6. All words with no reading and no definition.
+
+The separator line below each entry will glow a certain color according to which tier it is. I implemented this to help debug but I thought it looked nice so I kept it. The colors in order are red, yellow, green, blue, purple, pink.
 
 By default, searches will attempt to match headwords or readings. Definitions will be searched as a fallback if there are no matching headwords or readings for your search.
 
@@ -48,59 +105,54 @@ All syllable combinations will be matched. For example, `dangan` will match both
 
 You can also specify tones for specific characters, i.e. `shi4shi` will return any results for shi4 with any tone shi after it.
 
-Tone-insensitive entries are shown in a "Fuzzy match" section below the main results, both when the tonal search finds nothing and alongside tonal results.
+Tone-insensitive entries are shown in a `Fuzzy match` section below the main results, both when the tonal search finds nothing and alongside tonal results.
 
+#### Zhuyin / Bopomofo
 
-#### Bopomofo
-
-Bopomofo is converted to tonal pinyin first, so it is fully supported.
+Zhuyin is converted to tonal pinyin first, so it is fully supported. Enabling zhuyin will convert all pinyin readings to zhuyin.
 
 
 #### Wildcard
 
 A wildcard is a placeholder for normal text, `?` is a single character wildcard, and `*` is a multiple character wildcard.
 
-Use `?` to match exactly 1 character: `国家?` matches 国家级, and `?怒??` matches 喜怒哀乐.
+Use `?` to match exactly 1 character: `国家?` matches `国家级`, and `?怒??` matches `喜怒哀乐`.
 
-It works with pinyin too: `guojia?` matches 国家级.
+It works with pinyin too: `guojia?` matches `国家级`.
 
-Use `*` to match any number of characters: `国家*` matches 国家, 国家级, 国家安全部, etc.
+Use `*` to match any number of characters: `国家*` matches `国家`, `国家级`, `国家安全部`, etc.
 
-#### Language Codes
+### Step 3: Formatting Results
 
-You can choose a language code from the drop-down menu on the left of the search bar.
+#### Simplified and Traditional
 
-After selecting a language, results with definitions in the selected language will be shown first. Matching results in other languages will be shown in a section called "Other Dictionaries" below the main results.
+Some characters were combined when converting from Traditional to Simplified. For example, `干`, `幹`, and `乾` all simplified into `干`. These are all displayed as different entries in traditional mode, but are combined in simplified mode. However, the definitions are kept separate with headers showing the traditional version that they apply to. You can see this [here](https://yabaisearch.org/?q=干&script=simplified&tone=1&phonetic=pinyin&taiwan=0&custom=0&compact=1&lang=TW).
 
-Searching with Taiwanese enabled will match to Taiwanese readings instead of of Mainland readings.
+Taiwanese definitions will also stay in traditional Chinese even in simplified mode.
 
----
+#### CC-CEDICT
 
-### Dictionaries and Sources
+CEDICT has separate entries for proper nouns and normal words. For example, the word/name 阮. The custom dictionary toggle is reliant on standardization of headwords into entries, so these are merged into 1 entry. Within the merged entry there are headers that show which traditional character applies to which meaning. This can be seen [here](https://yabaisearch.org/?q=%E5%8F%AA&script=simplified&tone=1&phonetic=pinyin&taiwan=0&custom=0&compact=1&lang=EN).
+
+CEDICT has entries that are cross-references, e.g. `血 [xiě] /see 血[xuè]/`. The UI lists them under **Other forms:** and merges all duplicates.
+
+<h2 id="sources">Sources &amp; Licenses</h2>
 
 #### Taiwan (MOE) readings
 
 Taiwanese Mandarin is mostly the same as Mainland Mandarin, with a handful of different pronunciations for words and characters, and slightly different word usage.
 
-The Taiwanese Ministry of Education publishes dictionaries of Taiwanese Mandarin. 2 of these are used as sources for Yabai Search: the concise version 國語辭典簡編本, and the comprehensive version 重編國語辭典修訂本.
+The Taiwanese Ministry of Education publishes dictionaries of Taiwanese Mandarin. 2 of these are used as sources for Yabai Search: the concise version `國語辭典簡編本`, and the comprehensive version `重編國語辭典修訂本`.
 
 When the Taiwanese pronunciation toggle is turned on, matched readings from the Taiwanese dictionaries are shown instead. If there are no matches in Taiwanese Dictionaries but CEDICT lists a Taiwanese Pronunciation, the CEDICT Taiwanese pronunciation is used.
 
 There are many characters in Taiwanese Mandarin that are always pronounced a certain way. There is not a detailed list of these, so all single character words with only 1 listed reading have their readings mapped onto all characters that only have 1 listed reading in the Chinese-English dictionaries.
 
-This method is mostly accurate, but the Taiwanese readings displayed are not guaranteed to be accurate. There is a list of characters that must have their readings overridden manually. Please report an entry if you notice incorrect information.
+This method is mostly accurate, but the Taiwanese readings displayed are not guaranteed to be correct. There is a list of characters that must have their readings overridden manually. Please report an entry if you notice incorrect information.
 
+---
 
-#### Entries / CEDICT
-
-CEDICT has separate entries for proper nouns and normal words. For example, the word/name 阮. The custom dictionary toggle is reliant on standardization of headwords into entries, these are collapsed into 1 entry.
-
-CEDICT has entries whose entire definition is a cross-reference, e.g. `血 血 [xiě] /see 血[xuè]/`. The UI lists them under **Other forms:** and combines all duplicates.
-
-<h2 id="sources">Sources &amp; Licenses</h2>
-
-The application code is AGPL-3.0-licensed, copyright (c) 2026 Wyatt Petrock (see [LICENSE](https://github.com/Furretar/Yabai-Search-ZH/blob/master/LICENSE)). The dictionary data listed below is not covered by that license and remains under the licenses shown for each source.
-
+## Sources
 
 ### English
 
@@ -141,12 +193,12 @@ The application code is AGPL-3.0-licensed, copyright (c) 2026 Wyatt Petrock (see
 ### Frequency
 
 - <span id="fineweb2-frequency"></span>**[FineWeb2 Mandarin Frequency List](https://github.com/Furretar/FineWeb2-Mandarin-Frequency-List)**
-  270,160 merged entries · ODC-BY corpus · Updated 2026-10-27
-    - Temporary frequency source: rank is the row number in the combined FineWeb2 list, with traditional and simplified variants sharing their merged entry's rank. Frequency under 20,000 is common; the number is not reliable past 100,000.
+   270,160 entries · ODC-BY corpus · Updated 2026-10-27
+    - A frequency list we developed using 20GB of the FineWeb2 corpus.
 
 - <span id="subtlex"></span>**[SUBTLEX-CH](https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexch)**
   99,121 words · CC BY 4.0 · Updated 2026-10-16
-    - Chinese word frequencies from film and TV subtitles (Cai & Brysbaert, 2010). Retained as a fallback; set `YABAI_FREQ_SOURCE=subtlex` to use it.
+    - Chinese word frequencies from film and TV subtitles (Cai & Brysbaert, 2010). Used to develop the FineWeb2 Mandarin Frequency List.
 
 
 ### Vocabulary
@@ -160,18 +212,13 @@ The application code is AGPL-3.0-licensed, copyright (c) 2026 Wyatt Petrock (see
 
 - <span id="opencc"></span>**[OpenCC](https://github.com/BYVoid/OpenCC)**
   Apache-2.0
-    - Simplified and Traditional Chinese conversion (used to match and display both scripts).
+    - Simplified and Traditional Chinese conversion.
 
 - <span id="jieba"></span>**[jieba](https://github.com/fxsjy/jieba)**
   MIT
-    - Chinese word segmentation (used to split text into words and syllables for search and furigana).
+    - Chinese word parser.
 
 
 ---
 
 
-## Contact
-
-You can email me at `wyattpetrock2@gmail.com`.
-
-Or add `furretar2` on Discord.

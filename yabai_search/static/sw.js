@@ -4,7 +4,7 @@
 // reload paints instantly. The search results, API responses, and other HTML
 // pages always go to the network.
 
-const CACHE_NAME = "yabai-shell-v7";
+const CACHE_NAME = "yabai-shell-v8";
 
 // Fetch the home page, cache it under "/", and pre-cache the /static/*?v=*
 // assets it references. Then prune any versioned assets the new shell no

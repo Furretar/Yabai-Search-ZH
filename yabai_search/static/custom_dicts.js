@@ -145,7 +145,7 @@
     };
     window.customDictsStats = customStats;
 
-    // Snapshot for the "Copy debug log" button. It describes the imported
+    // Snapshot for the "Download debug log" item. It describes the imported
     // dictionaries and which of them are currently selected, without copying
     // any dictionary content.
     window.customDictionaryDebugInfo = () => {

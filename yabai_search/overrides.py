@@ -22,6 +22,9 @@ PREFERRED_READINGS: dict[str, str] = {
     # 没 on its own is usually the negating méi, not the verb mò ("to sink"),
     # even though mò has more senses. Use méi when parsing single characters.
     "没": "méi",
+    # 只 is mostly zhǐ "only; merely", not the classifier zhī (隻), which has its
+    # own traditional spelling. Readings are compared with their tone.
+    "只": "zhǐ",
 }
 
 # Words whose "Other forms" row should be hidden (e.g. when it just repeats a
@@ -72,6 +75,8 @@ NORMALIZE_RULES: list[tuple[str, str]] = [
     (r"\(Tw\)", "(Taiwan)"),
     # "fig." = figurative.
     (r"\bfig\.", "figurative"),
+    # "(lit.)" = literally / literal.
+    (r"\(lit\.\)", "(literal)"),
     # "coll." = colloquial.
     (r"\bcoll\.", "colloquial"),
 

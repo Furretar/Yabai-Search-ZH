@@ -10,6 +10,7 @@ const form = document.getElementById("search-form");
 const input = document.getElementById("q");
 const clearButton = document.getElementById("clear-button");
 const results = document.getElementById("results");
+const footerSeparator = document.querySelector(".footer-separator");
 // MOE glyph masking (duplicated from glyphs.js so it is always available).
 const MOE_GLYPH_RE_APP = /&([A-Za-z0-9][A-Za-z0-9._-]*\.(?:gif|png));/g;
 const _glyphNamesApp = new Map();
@@ -26,7 +27,6 @@ function maskGlyphs(text) {
     });
 }
 
-const resultTiming = document.getElementById("result-timing");
 const pagination = document.getElementById("pagination");
 const paginationTop = document.getElementById("pagination-top");
 const parsed = document.getElementById("parsed");
@@ -108,12 +108,27 @@ const state = {
     lang: "EN",
 };
 
+// True when this page was opened with display settings in the URL. Developer
+// links may do this; the values are shown for this page but never overwrite the
+// visitor's own localStorage preferences. Normal URLs never get these params.
+let settingsFromUrl = false;
+
+// /word/<word> renders the normal search page but asks the API for the exact
+// entries of that word instead of a prefix/contains search.
+let exactMode = window.__exactSearch === true;
+
 // The most recent results, kept so the toggles can re-render without re-fetching.
 let currentEntries = [];
 // Server-reported durations: the initial batch and the whole query. Both are
 // shown after the result count when the first batch was rendered on its own.
 let lastSearchMs = null;
 let firstSearchMs = null;
+// Request lag (client send to server receive), the server-side time for the
+// first tier, and the server-side time for the complete query. These are
+// separate measurements, not cumulative milestones.
+let lagMs = null;
+let firstDbMs = null;
+let allDbMs = null;
 // The two paint milestones, measured from the start of the search. `first` is
 // the fast CEDICT tier, `all` is the complete response.
 let firstPaintMs = null;
@@ -125,7 +140,7 @@ let currentQuery = "";
 let currentTokens = [];
 
 // --- Copyable debug log ------------------------------------------------
-// A small in-memory log for the "Copy debug log" footer button. It collects
+// A small in-memory log for the "Download debug log" menu item. It collects
 // search milestones and every console.error (including the stack), so a bug
 // report can show the current state and the traceback that led to it.
 const DEBUG_EVENT_LIMIT = 200;
@@ -366,52 +381,8 @@ function debugSnapshot() {
     return "Yabai Search debug log\n" + JSON.stringify(info, null, 2) + "\n";
 }
 
-// Fallback for browsers where the async clipboard API is unavailable.
-function copyTextFallback(text) {
-    const area = document.createElement("textarea");
-    area.value = text;
-    area.setAttribute("readonly", "");
-    area.style.position = "fixed";
-    area.style.opacity = "0";
-    document.body.append(area);
-    area.select();
-    let copied = false;
-    try {
-        copied = document.execCommand("copy");
-    } catch (error) {
-        recordDebug("error", "Clipboard fallback failed", error);
-    }
-    area.remove();
-    return copied;
-}
-
-async function copyDebugLog() {
-    const button = document.getElementById("copy-log-button");
-    const text = debugSnapshot();
-    let copied = false;
-    try {
-        if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(text);
-            copied = true;
-        }
-    } catch (error) {
-        recordDebug("error", "Clipboard write failed", error);
-    }
-    if (!copied) copied = copyTextFallback(text);
-    if (!button) return;
-    button.textContent = copied ? "Copied" : "Copy failed";
-    button.classList.toggle("copied", copied);
-    window.setTimeout(() => {
-        button.textContent = "Copy debug log";
-        button.classList.remove("copied");
-    }, 1500);
-}
-
-const copyLogButton = document.getElementById("copy-log-button");
-if (copyLogButton) copyLogButton.addEventListener("click", copyDebugLog);
-
-// Same text as Copy debug log, saved as a .txt file so it can be attached to
-// a report or opened in an editor.
+// Save the debug snapshot as a .txt file so it can be attached to a report or
+// opened in an editor. The menu item shows brief "Downloaded" feedback.
 function downloadDebugLog() {
     const text = debugSnapshot();
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -426,12 +397,11 @@ function downloadDebugLog() {
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     const button = document.getElementById("download-log-button");
-    if (!button) return;
-    button.textContent = "Downloaded";
-    button.classList.add("copied");
+    const label = button ? button.querySelector(".menu-item-label") : null;
+    if (!label) return;
+    label.textContent = "Downloaded";
     window.setTimeout(() => {
-        button.textContent = "Download .txt";
-        button.classList.remove("copied");
+        label.textContent = "Download debug log";
     }, 1500);
 }
 
@@ -558,6 +528,14 @@ function toToneless(text) {
         .map((c) => MARK_TO_BASE[c] || c)
         .join("")
         .replace(/[^a-zü]/g, "");
+}
+
+// Tone-aware reading identity: "zhī" and "zhi1" both become "zhi1". Used to put
+// an "Other forms" note under the reading it actually belongs to.
+function readingKey(text) {
+    return pinyinSyllables(text)
+        .map((syllable) => `${plainSyllable(syllable)}${toneOf(syllable)}`)
+        .join(" ");
 }
 
 // Every standard Hanyu Pinyin syllable can be validated from the zhuyin
@@ -725,6 +703,36 @@ function readingContent(readings, syllables, colored = state.toneColoring) {
         span.textContent = reading;
         fragment.append(span);
     });
+    return fragment;
+}
+
+// Characters with tone colouring but no reading above them. Used in notes where
+// the section heading already gives the reading.
+function toneColoredText(text, pinyin) {
+    const raw = String(text || "");
+    const chars = [...raw];
+    const syllables = pinyinSyllables(pinyin || "");
+    const spoken = chars.filter((ch) => !PUNCT_CHAR_RE.test(ch));
+    if (
+        !state.toneColoring ||
+        !syllables.length ||
+        syllables.length !== spoken.length
+    ) {
+        return document.createTextNode(raw);
+    }
+    const fragment = document.createDocumentFragment();
+    let index = 0;
+    for (const ch of chars) {
+        if (PUNCT_CHAR_RE.test(ch)) {
+            fragment.append(ch);
+            continue;
+        }
+        const span = document.createElement("span");
+        span.className = `tone${toneOf(syllables[index])}`;
+        span.textContent = ch;
+        fragment.append(span);
+        index += 1;
+    }
     return fragment;
 }
 
@@ -913,6 +921,10 @@ function furigana(text, pinyin, allowTones = true) {
             glyph.textContent = ch;
             if (colored && syllablesByChar[i]) {
                 glyph.className = `tone${toneOf(syllablesByChar[i])}`;
+            } else if (!syllablesByChar[i]) {
+                // Numbers, punctuation and other unread characters are not
+                // toned; show them in the neutral tone-5 grey.
+                glyph.className = "plain";
             }
             cell.append(glyph);
             char.append(cell);
@@ -935,7 +947,13 @@ function furigana(text, pinyin, allowTones = true) {
                 cell.append(glyph);
             });
         } else {
-            cell.textContent = text;
+            chars.forEach((ch) => {
+                const glyph = document.createElement("span");
+                glyph.textContent = ch;
+                // Punctuation, digits and other unread pieces are neutral grey.
+                if (!CJK_RE.test(ch)) glyph.className = "plain";
+                cell.append(glyph);
+            });
         }
         char.append(cell);
     }
@@ -1229,7 +1247,37 @@ function copyReading(pinyin) {
         .join(" ");
 }
 
-function copyDefinitionButton(reading, word, definition) {
+// Convert pinyin inside a definition to bopomofo for the copy button. Only
+// bracketed readings and a leading transliteration of the headword are safe to
+// rewrite; ordinary English words that happen to look like pinyin are left
+// alone.
+function pinyinToZhuyinForCopy(text, reading) {
+    if (state.phonetic !== "zhuyin") return text;
+    let out = String(text || "").replace(/\[([^\]]+)\]/g, (whole, inner) => {
+        const syllables = pinyinSyllables(inner);
+        if (!syllables.length || !syllables.every((s) => isPinyinSyllable(s))) {
+            return whole;
+        }
+        return `[${syllables.map((s) => toZhuyin(s)).join(" ")}]`;
+    });
+
+    if (!reading) return out;
+    const syllables = pinyinSyllables(reading);
+    if (!syllables.length || !syllables.every((s) => isPinyinSyllable(s))) {
+        return out;
+    }
+    const first = out.match(/^([A-Za-züÜ:]+)\b/);
+    if (
+        first &&
+        toToneless(first[1]) &&
+        toToneless(first[1]) === toToneless(syllables.join(""))
+    ) {
+        out = out.replace(first[0], syllables.map((s) => toZhuyin(s)).join(" "));
+    }
+    return out;
+}
+
+function copyDefinitionButton(reading, word, definition, pinyin = "") {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "def-copy";
@@ -1257,9 +1305,32 @@ function copyDefinitionButton(reading, word, definition) {
     front.setAttribute("stroke", "currentColor");
     front.setAttribute("stroke-width", "1.3");
     svg.append(back, front);
-    button.append(svg);
+    svg.classList.add("icon-copy");
 
-    const text = [reading, word, definition].filter(Boolean).join("\n");
+    // The same button switches to a checkmark after a successful copy.
+    const check = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    check.setAttribute("viewBox", "0 0 16 16");
+    check.setAttribute("width", "14");
+    check.setAttribute("height", "14");
+    check.setAttribute("aria-hidden", "true");
+    check.classList.add("icon-check");
+    const tick = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    tick.setAttribute("d", "M3 8.5 6.3 11.8 13 4.8");
+    tick.setAttribute("fill", "none");
+    tick.setAttribute("stroke", "currentColor");
+    tick.setAttribute("stroke-width", "1.6");
+    tick.setAttribute("stroke-linecap", "round");
+    tick.setAttribute("stroke-linejoin", "round");
+    check.append(tick);
+    button.append(svg, check);
+
+    const text = [
+        reading,
+        word,
+        pinyinToZhuyinForCopy(definition, pinyin),
+    ]
+        .filter(Boolean)
+        .join("\n");
     button.addEventListener("click", async (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -1282,9 +1353,11 @@ function copyDefinitionButton(reading, word, definition) {
         }
         button.classList.add("copied");
         button.title = "Copied";
+        button.setAttribute("aria-label", "Copied");
         setTimeout(() => {
             button.classList.remove("copied");
             button.title = "Copy definition";
+            button.setAttribute("aria-label", "Copy definition");
         }, 1200);
     });
     return button;
@@ -1296,6 +1369,12 @@ function definitionBody(source, taiwanRefs, copy) {
     // dictionary's own prose (MOE) is not a list of headwords to look up.
     const linkChinese = source.lang === "english";
 
+    // CC-CEDICT variant forms ("Other forms") belong under the reading they are
+    // pronounced with, not at the bottom of the whole entry.
+    const forms =
+        source.anchor === "cedict" && copy && copy.forms ? copy.forms : [];
+    const formKey = (form) => readingKey(form.pinyin || "");
+
     // Senses, grouped by reading. CEDICT polyphonic words get a header per
     // reading; other sources have a single (unlabelled) group.
     const groups =
@@ -1305,12 +1384,28 @@ function definitionBody(source, taiwanRefs, copy) {
     // Only label the readings when a word actually has more than one.
     const showReadings = groups.length > 1;
     for (const group of groups) {
-        if (showReadings && group.pinyin) {
+        if (group.variantTitle) {
+            // A merged headword: show this traditional spelling's reading and
+            // character inside the dictionary block.
+            body.append(variantTitleNode(group.variantTitle));
+        } else if (showReadings && group.pinyin) {
             const head = document.createElement("div");
             head.className = "def-reading";
             const syllables = pinyinSyllables(group.pinyin);
             const readings = syllables.map((s) => (state.phonetic === "zhuyin" ? toZhuyin(s) : s));
             head.append(readingContent(readings, syllables, state.toneColoring));
+            // The spelling these senses belong to: zhī (秖).
+            if (group.spellings && group.spellings.length) {
+                const spellings = document.createElement("span");
+                spellings.className = "def-reading-spellings";
+                spellings.append(" (");
+                group.spellings.forEach((word, i) => {
+                    if (i) spellings.append(", ");
+                    spellings.append(toneColoredText(word, group.pinyin));
+                });
+                spellings.append(")");
+                head.append(spellings);
+            }
             body.append(head);
         }
         group.senses.forEach((text, i) => {
@@ -1327,12 +1422,30 @@ function definitionBody(source, taiwanRefs, copy) {
                     copyDefinitionButton(
                         copyReading(group.pinyin || copy.reading),
                         copy.word,
-                        text
+                        text,
+                        group.pinyin || copy.reading
                     )
                 );
             }
             body.append(line);
         });
+        // Forms pronounced with this reading: the `zhǐ` group of 只 shows
+        // "Other forms: 祇; 衹" underneath its own senses.
+        if (forms.length) {
+            const key = readingKey(group.pinyin || "");
+            const matching = forms.filter((form) => formKey(form) === key);
+            if (matching.length) body.append(...formsRows(matching, group.pinyin));
+        }
+    }
+
+    // A form whose reading is not one of the entry's groups (rare) stays at the
+    // bottom of the block rather than disappearing.
+    if (forms.length) {
+        const groupKeys = new Set(
+            groups.map((group) => readingKey(group.pinyin || ""))
+        );
+        const unmatched = forms.filter((form) => !groupKeys.has(formKey(form)));
+        if (unmatched.length) body.append(...formsRows(unmatched));
     }
 
     // Standardized classifiers, shown in the chosen script (Traditional toggle).
@@ -1381,7 +1494,7 @@ const WIKTIONARY_PAGE = "https://en.wiktionary.org/wiki/";
 // A labeled block showing one dictionary's definitions for a result. CC-CEDICT
 // and Wiktionary names open that word in the source; other names link to their
 // section on the About page.
-function definitionsBlock(source, taiwanRefs, word, reading) {
+function definitionsBlock(source, taiwanRefs, word, reading, forms = []) {
     const block = document.createElement("div");
     block.className = "def-source";
     // Imported dictionaries preserve their source line breaks; official
@@ -1412,7 +1525,7 @@ function definitionsBlock(source, taiwanRefs, word, reading) {
         name.href = `/about#${encodeURIComponent(source.anchor)}`;
     }
     name.textContent = source.label;
-    block.append(name, definitionBody(source, taiwanRefs, { reading, word }));
+    block.append(name, definitionBody(source, taiwanRefs, { reading, word, forms }));
     return block;
 }
 
@@ -1577,6 +1690,223 @@ function formNoteLabel(qualifier) {
     return `${text.charAt(0).toUpperCase()}${text.slice(1)} variant`;
 }
 
+// "Other forms" rows for the forms that belong to one reading. They are grouped
+// by the CEDICT qualifier so "Old variant: 柹" is not lumped in with plain
+// "Other forms". Returned as an array so the caller can place them under the
+// matching reading heading.
+function formsRows(forms, sectionReading = null) {
+    const rows = [];
+    const groups = new Map();
+    for (const form of forms) {
+        const label = formNoteLabel(form.qualifier);
+        if (!groups.has(label)) groups.set(label, []);
+        groups.get(label).push(form);
+    }
+    for (const [label, items] of groups) {
+        const fragment = document.createDocumentFragment();
+        let hasFurigana = false;
+        items.forEach((form, i) => {
+            if (i) fragment.append(", ");
+            // Shown as-is, without the traditional/simplified toggle.
+            const word = form.traditional;
+            if (!word) {
+                if (form.pinyin) fragment.append(form.pinyin);
+                return;
+            }
+            // The reading heading already gives the reading, so repeat it above
+            // the form only when this form is pronounced differently.
+            const differs =
+                sectionReading !== null &&
+                form.pinyin &&
+                readingKey(form.pinyin) !== readingKey(sectionReading);
+            if (differs) {
+                hasFurigana = true;
+                fragment.append(furigana(word, form.pinyin));
+            } else {
+                fragment.append(toneColoredText(word, form.pinyin));
+            }
+        });
+        const row = detailRow(`${label}: `, fragment);
+        // Furigana in the note also needs room above it, or the reading can
+        // overlap the last definition line.
+        if (hasFurigana) row.classList.add("has-furigana");
+        rows.push(row);
+    }
+    return rows;
+}
+
+// Heading above one traditional spelling's definitions in a merged row: its
+// reading and character (e.g. hòu / 後 above the 後 senses).
+// Heading for one traditional spelling inside a dictionary block: its reading
+// and character (e.g. gān / 乾 above that spelling's senses).
+function variantTitleNode(variant) {
+    const title = document.createElement("div");
+    title.className = "variant-title";
+    title.append(
+        furigana(maskGlyphs(variant.traditional || ""), variant.reading || "", true),
+    );
+    return title;
+}
+
+// Merge several blocks of one dictionary into one, combining groups with the
+// same reading and dropping repeated senses. Used for CC-CEDICT, whose senses
+// are stored under the simplified headword, so its traditional variants share
+// rows and cannot be separated reliably.
+function mergeSharedGroups(blocks, headword = "") {
+    const groups = [];
+    const classifiers = [];
+    for (const block of blocks) {
+        const blockGroups =
+            block.groups && block.groups.length
+                ? block.groups
+                : [{ pinyin: "", senses: block.defs || [] }];
+        // The spelling these senses are written on. The row's own headword is
+        // never labelled; any other spelling is shown after its reading, e.g.
+        // "zhī (秖)" above grain and "zhī (隻)" above the classifier sense.
+        const spelling = block.traditional || "";
+        const label = spelling && spelling !== headword ? spelling : "";
+        for (const group of blockGroups) {
+            const reading = group.pinyin || "";
+            const senses = group.senses || [];
+            // Spellings that say exactly the same thing under the same reading
+            // (制 and 製 sharing a pool) share one group.
+            const same = groups.find(
+                (g) =>
+                    g.pinyin === reading &&
+                    g.senses.length === senses.length &&
+                    g.senses.every((sense, i) => sense === senses[i]),
+            );
+            if (same) {
+                if (label && !same.spellings.includes(label)) same.spellings.push(label);
+                continue;
+            }
+            groups.push({
+                pinyin: reading,
+                senses: [...senses],
+                spellings: label ? [label] : [],
+            });
+        }
+        if (block.classifiers && block.classifiers.length) {
+            for (const classifier of block.classifiers) {
+                const key = JSON.stringify(classifier);
+                if (!classifiers.some((item) => JSON.stringify(item) === key)) {
+                    classifiers.push(classifier);
+                }
+            }
+        }
+    }
+    // Same reading next to each other (zhǐ, zhī, zhī (秖)...) keeps the headings tidy.
+    const order = [];
+    for (const group of groups) if (!order.includes(group.pinyin)) order.push(group.pinyin);
+    groups.sort((x, y) => order.indexOf(x.pinyin) - order.indexOf(y.pinyin));
+    return { ...blocks[0], groups, defs: [], classifiers };
+}
+
+// Merge one dictionary's blocks for several traditional spellings into one
+// block. The dictionary header stays single, and the first sense group of each
+// spelling carries its own reading/character header. CEDICT stores its senses
+// under the simplified headword, so its variants share identical rows; those are
+// left as one block instead of repeating every definition.
+function mergeVariantBlocks(blocks) {
+    const signature = (block) =>
+        JSON.stringify(
+            (block.groups && block.groups.length
+                ? block.groups
+                : [{ pinyin: "", senses: block.defs || [] }]
+            ).map((group) => [group.pinyin || "", group.senses || []]),
+        );
+    const first = signature(blocks[0]);
+    if (blocks.every((block) => signature(block) === first)) return blocks[0];
+
+    const base = blocks[0];
+    const groups = [];
+    const classifiers = [];
+    for (const block of blocks) {
+        const variant = {
+            traditional: block.traditional ?? "",
+            reading: block.reading ?? "",
+        };
+        const blockGroups =
+            block.groups && block.groups.length
+                ? block.groups
+                : [{ pinyin: "", senses: block.defs || [] }];
+        blockGroups.forEach((group, index) => {
+            groups.push({
+                pinyin: group.pinyin || "",
+                senses: [...(group.senses || [])],
+                ...(index === 0 ? { variantTitle: variant } : {}),
+            });
+        });
+        if (block.classifiers && block.classifiers.length) {
+            classifiers.push(...block.classifiers);
+        }
+    }
+    return { ...base, groups, defs: [], classifiers };
+}
+
+// Male-voice pronunciation player shared by every speaker button.
+let audioPlayer = null;
+let activeAudioButton = null;
+
+function speakerIcon() {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    const cone = document.createElementNS(ns, "path");
+    cone.setAttribute("d", "M4 9.5h4l5-4v13l-5-4H4z");
+    cone.setAttribute("fill", "currentColor");
+    const waves = [
+        "M16 8.5a5 5 0 0 1 0 7",
+        "M18.5 6a8 8 0 0 1 0 12",
+    ].map((d) => {
+        const path = document.createElementNS(ns, "path");
+        path.setAttribute("d", d);
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", "currentColor");
+        path.setAttribute("stroke-width", "1.8");
+        path.setAttribute("stroke-linecap", "round");
+        return path;
+    });
+    svg.append(cone, ...waves);
+    return svg;
+}
+
+function playEntryAudio(button) {
+    const src = button.dataset.audio;
+    if (!src) return;
+    if (!audioPlayer) {
+        audioPlayer = new Audio();
+        audioPlayer.addEventListener("ended", () => {
+            if (activeAudioButton) activeAudioButton.classList.remove("playing");
+            activeAudioButton = null;
+        });
+        audioPlayer.addEventListener("error", () => {
+            if (activeAudioButton) activeAudioButton.hidden = true;
+            activeAudioButton = null;
+        });
+    }
+    if (activeAudioButton === button && !audioPlayer.paused) {
+        audioPlayer.pause();
+        audioPlayer.currentTime = 0;
+        button.classList.remove("playing");
+        activeAudioButton = null;
+        return;
+    }
+    if (activeAudioButton) activeAudioButton.classList.remove("playing");
+    activeAudioButton = button;
+    audioPlayer.src = src;
+    audioPlayer
+        .play()
+        .then(() => button.classList.add("playing"))
+        .catch(() => {
+            // No file for this reading: hide the icon.
+            button.hidden = true;
+            activeAudioButton = null;
+        });
+}
+
 // Build one result row for an entry.
 function entryRow(entry) {
     const row = document.createElement("div");
@@ -1638,6 +1968,17 @@ function fillEntryRow(row, entry) {
         event.preventDefault();
     });
     head.append(hanzi);
+    if (entry.audio) {
+        const audio = document.createElement("button");
+        audio.type = "button";
+        audio.className = "audio-button";
+        audio.dataset.audio = entry.audio;
+        audio.setAttribute("aria-label", "Play pronunciation (male voice)");
+        audio.title = "Play pronunciation";
+        audio.append(speakerIcon());
+        audio.addEventListener("click", () => playEntryAudio(audio));
+        head.append(audio);
+    }
     // A dialect reading (Xiang, Wu, Shanghainese) is tagged next to the word.
     if (entry.pinyin_label) {
         const label = document.createElement("span");
@@ -1682,6 +2023,12 @@ function fillEntryRow(row, entry) {
     for (const source of entry.definitions || []) {
         if (!langOrder.has(source.lang)) langOrder.set(source.lang, langOrder.size);
     }
+    // Variant order: traditional spellings that share a simplified headword.
+    const variantOrder = new Map();
+    for (const source of entry.definitions || []) {
+        const key = source.traditional ?? "";
+        if (!variantOrder.has(key)) variantOrder.set(key, variantOrder.size);
+    }
     const definitions = [...(entry.definitions || [])].sort((a, b) => {
         const aFirst = a.lang === langGroup ? 1 : 0;
         const bFirst = b.lang === langGroup ? 1 : 0;
@@ -1695,7 +2042,7 @@ function fillEntryRow(row, entry) {
     // Source chips are toggles: they are lit yellow when on, but stay in a
     // stable order so clicking one does not make the row reshuffle. A small
     // header names the row, sitting below the frequency/HSK chips.
-    if (definitions.length && state.customDicts) {
+    if (definitions.length && (state.customDicts || exactMode)) {
         const label = document.createElement("div");
         label.className = "sources-label";
         label.textContent = "Dictionaries";
@@ -1750,47 +2097,57 @@ function fillEntryRow(row, entry) {
                 const label = note.label ? `Also pronounced (${note.label}): ` : "Also pronounced: ";
                 notes.push(detailRow(label, furigana(primaryMasked, numericToMarked(note.reading))));
             }
-        if (entry.forms && entry.forms.length) {
-            // Group by the CEDICT qualifier so "Old variant: 柹" is not lumped
-            // in with plain "Other forms".
-            const groups = new Map();
-            for (const form of entry.forms) {
-                const label = formNoteLabel(form.qualifier);
-                if (!groups.has(label)) groups.set(label, []);
-                groups.get(label).push(form);
-            }
-            for (const [label, forms] of groups) {
-                const fragment = document.createDocumentFragment();
-                forms.forEach((form, i) => {
-                    if (i) fragment.append("; ");
-                    // Shown as-is, without the traditional/simplified toggle.
-                    const word = form.traditional;
-                    if (!word) {
-                        if (form.pinyin) fragment.append(form.pinyin);
-                        return;
-                    }
-                    // Every form is a search link too, with furigana when known.
-                    fragment.append(
-                        form.pinyin
-                            ? searchLink(word, furigana(word, form.pinyin))
-                            : searchLink(word)
-                    );
-                });
-                notes.push(detailRow(`${label}: `, fragment));
-            }
-        }
     }
 
-    let notesPlaced = false;
+    // One block per dictionary. When several traditional spellings share a
+    // headword, their reading/character headers go inside that block, after the
+    // dictionary name, so the dictionary header is not repeated.
+    const byAnchor = new Map();
     for (const source of definitions) {
         if (!enabled.has(source.anchor)) continue;
-        defsBox.append(definitionsBlock(source, entry.taiwan_refs, primary, reading));
-        if (source.anchor === "cedict" && notes.length) {
+        if (!byAnchor.has(source.anchor)) byAnchor.set(source.anchor, []);
+        byAnchor.get(source.anchor).push(source);
+    }
+    let notesPlaced = false;
+    for (const [anchor, blocks] of byAnchor) {
+        blocks.sort(
+            (a, b) =>
+                (variantOrder.get(a.traditional ?? "") ?? 0) -
+                (variantOrder.get(b.traditional ?? "") ?? 0),
+        );
+        const source =
+            blocks.length > 1
+                ? anchor === "cedict"
+                    ? mergeSharedGroups(blocks, displayWord(entry))
+                    : mergeVariantBlocks(blocks)
+                : blocks[0];
+        defsBox.append(definitionsBlock(source, entry.taiwan_refs, primary, reading, entry.forms || []));
+        if (anchor === "cedict" && notes.length) {
             defsBox.append(...notes);
             notesPlaced = true;
         }
     }
     if (notes.length && !notesPlaced) defsBox.append(...notes);
+
+    // Traditional spellings merged into this row from the same simplified form.
+    const mergedForms = entry.mergedForms || [];
+    if (mergedForms.length) {
+        const line = document.createElement("div");
+        line.className = "def-source-cls";
+        const label = document.createElement("span");
+        label.className = "def-source-cls-label";
+        label.textContent = "Traditional forms:";
+        line.append(label, document.createTextNode(" "));
+        mergedForms.forEach((form, index) => {
+            if (index) line.append(document.createTextNode(", "));
+            const word = form.traditional ?? form;
+            const pinyin = form.pinyin || "";
+            // No furigana here: the forms are not under a reading heading.
+            // Tone colour still shows how each one is pronounced.
+            line.append(toneColoredText(word, pinyin));
+        });
+        defsBox.append(line);
+    }
 
     // A result kept only because nothing else matched has no definitions, but it
     // should still show which dictionary lists it (with the usual source link).
@@ -2026,15 +2383,30 @@ function cloneEntry(entry) {
         ...entry,
         sources: [...(entry.sources || [])],
         forms: [...(entry.forms || [])],
-        definitions: (entry.definitions || []).map((source) => ({
-            ...source,
-            groups: (source.groups || []).map((group) => ({
-                pinyin: group.pinyin,
-                senses: [...(group.senses || [])],
-            })),
-            defs: [...(source.defs || [])],
-            classifiers: (source.classifiers || []).map((c) => ({ ...c })),
+        mergedForms: [...(entry.mergedForms || [])],
+        definitions: (entry.definitions || []).map((source) => cloneDefinition(source, entry)),
+    };
+}
+
+// The reading shown for an entry (the Taiwan reading when Taiwan is on).
+function entryReading(entry) {
+    return state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
+}
+
+// Copy one dictionary block and tag it with the traditional headword and reading
+// of the entry it came from. Merged rows use these tags to keep each traditional
+// spelling's definitions in its own group.
+function cloneDefinition(source, entry) {
+    return {
+        ...source,
+        traditional: entry.traditional,
+        reading: entryReading(entry),
+        groups: (source.groups || []).map((group) => ({
+            pinyin: group.pinyin,
+            senses: [...(group.senses || [])],
         })),
+        defs: [...(source.defs || [])],
+        classifiers: (source.classifiers || []).map((c) => ({ ...c })),
     };
 }
 
@@ -2043,10 +2415,30 @@ let mainResultCount = 0;
 
 // Add one entry's definitions, source chips and forms to another entry.
 function mergeEntry(target, addition) {
+    if (
+        !addition.main &&
+        addition.traditional &&
+        addition.traditional !== target.traditional &&
+        !target.mergedForms.some(
+            (form) => (form.traditional ?? form) === addition.traditional
+        ) &&
+        !(target.forms || []).some(
+            (form) => form.traditional === addition.traditional
+        )
+    ) {
+        target.mergedForms.push({
+            traditional: addition.traditional,
+            pinyin: addition.pinyin || "",
+        });
+    }
     for (const source of addition.definitions || []) {
-        const block = target.definitions.find((s) => s.anchor === source.anchor);
+        // Blocks are matched by dictionary and traditional spelling, so two
+        // spellings that share a simplified headword keep separate definitions.
+        const block = target.definitions.find(
+            (s) => s.anchor === source.anchor && s.traditional === addition.traditional,
+        );
         if (!block) {
-            target.definitions.push(source);
+            target.definitions.push(cloneDefinition(source, addition));
             continue;
         }
         for (const group of source.groups || []) {
@@ -2073,6 +2465,9 @@ function mergeEntry(target, addition) {
         if (!target.sources.some((s) => s.anchor === chip.anchor)) target.sources.push(chip);
     }
     for (const form of addition.forms || []) {
+        // Never list a row's own spelling as one of its "Other forms" (the 隻 row
+        // lists 只 as a form; merged into the 只 row that would be 只 under 只).
+        if (form.traditional === target.traditional) continue;
         if (!target.forms.some((f) => f.traditional === form.traditional)) {
             target.forms.push(form);
         }
@@ -2084,13 +2479,163 @@ function mergeEntry(target, addition) {
 // 瞭 in simplified view, where both display as 了). Their definitions, readings,
 // chips and other forms are combined.
 function mergeEntries(entries) {
-    const byWord = new Map();
+    // Simplified mode collapses everything that shares a simplified headword.
+    // Traditional mode only merges an identical traditional + simplified pair,
+    // so 隻/只, 秖/只 and 只/只 stay separate while the two 只/只 readings
+    // still combine.
+    const groups = new Map();
     for (const entry of entries) {
-        const key = displayWord(entry);
-        if (!byWord.has(key)) byWord.set(key, cloneEntry(entry));
-        else mergeEntry(byWord.get(key), entry);
+        const key =
+            state.script === "traditional"
+                ? `${entry.simplified || ""}\u0000${entry.traditional || ""}`
+                : entry.simplified || entry.traditional || displayWord(entry);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(entry);
     }
-    return [...byWord.values()];
+    // The merged row is built on one entry and shows that entry's reading. Use the
+    // entry whose reading best represents the headword (`reading_score`, set by
+    // the server: most real senses, plus manual preferred readings), not whichever
+    // row happened to arrive first. Otherwise 只 shows zhī (the classifier) just
+    // because its row sorted ahead of zhǐ "only". Ties keep the server's order.
+    const rows = [...groups.values()].map((group) => {
+        let base = group[0];
+        for (const entry of group) {
+            if ((entry.reading_score ?? 0) > (base.reading_score ?? 0)) base = entry;
+        }
+        const merged = cloneEntry(base);
+        for (const entry of group) {
+            if (entry !== base) mergeEntry(merged, entry);
+        }
+        return merged;
+    });
+    return state.script === "traditional" ? mergeIdenticalRows(rows) : rows;
+}
+
+// Traditional mode keeps each spelling in its own row, but two spellings that
+// simplify alike and have the same reading and exactly the same definitions
+// (隻 and 秖, which CEDICT stores under one shared 只 entry) say the same thing
+// twice. Fold those into the first one and add the other spelling to its
+// "Other forms" list. Rows without any definition are never folded.
+function mergeIdenticalRows(rows) {
+    const bySignature = new Map();
+    const out = [];
+    for (const row of rows) {
+        // Compare only the dictionaries this row actually shows. 隻 and 秖
+        // share CEDICT's senses, but MOE/Wiktionary may have separate entries;
+        // folding them while those are visible would hide real definitions.
+        const visible = visibleDicts(row);
+        const definitions = (row.definitions || [])
+            .filter((block) => visible.has(block.anchor))
+            .map((block) => [
+                block.anchor,
+                (block.groups || []).map((group) => [
+                    group.pinyin || "",
+                    group.senses || [],
+                ]),
+                block.defs || [],
+            ]);
+        const hasSenses = definitions.some(
+            ([, groups, defs]) => groups.length || defs.length
+        );
+        if (!hasSenses) {
+            out.push(row);
+            continue;
+        }
+        // The signature deliberately ignores the traditional spelling: 隻 and
+        // 秖 differ only by headword, not by what the visible dictionaries say.
+        const signature = JSON.stringify([
+            row.simplified || "",
+            entryReading(row) || "",
+            definitions,
+        ]);
+        const existing = bySignature.get(signature);
+        if (existing) {
+            mergeEntry(existing, row);
+            // mergeEntry would list this row under "Traditional forms"; these
+            // rows have the same definitions, so put the spelling in the
+            // "Other forms" list instead.
+            const merged = existing.mergedForms || [];
+            const at = merged.findIndex(
+                (form) => (form.traditional ?? form) === row.traditional
+            );
+            if (at >= 0) merged.splice(at, 1);
+            if (
+                row.traditional &&
+                !existing.forms.some(
+                    (form) => form.traditional === row.traditional
+                )
+            ) {
+                existing.forms.push({
+                    traditional: row.traditional,
+                    simplified: row.simplified || existing.simplified || "",
+                    pinyin: row.pinyin || "",
+                    qualifier: "",
+                });
+            }
+        } else {
+            bySignature.set(signature, row);
+            out.push(row);
+        }
+    }
+    return out;
+}
+
+// How closely a result matches the query. The README defines six tiers:
+// 1 exact, 2 starts with, 3 contains, 4 dialect reading, 5 reading without a
+// definition, 6 no reading and no definition.
+function matchTier(entry, query) {
+    const text = (query || "").trim();
+    if (!text) return null;
+    if (CJK_RE.test(text)) {
+        const words = [entry.simplified, entry.traditional].filter(Boolean);
+        if (words.some((word) => word === text)) return 1;
+        if (words.some((word) => word.startsWith(text))) return 2;
+        if (words.some((word) => word.includes(text))) return 3;
+        return null;
+    }
+    const key = toToneless(text);
+    if (!key) return null;
+    const reading = toToneless(entry.pinyin || "");
+    if (reading === key) return 1;
+    if (reading.startsWith(key)) return 2;
+    if (reading.includes(key)) return 3;
+    return null;
+}
+
+function entryTier(entry, query) {
+    // A dialect-only reading is tier 4 even if it happens to match the query.
+    if (entry.pinyin_label || entry.pinyin_no_tone) return 4;
+    const match = matchTier(entry, query);
+    if (match) return match;
+    const hasDefinitions = (entry.definitions || []).some(
+        (definition) =>
+            (definition.defs || []).length ||
+            (definition.groups || []).some(
+                (group) => (group.senses || []).length
+            ),
+    );
+    if (entry.pinyin) return hasDefinitions ? 3 : 5;
+    return hasDefinitions ? 3 : 6;
+}
+
+// Highest tier among the main results, used to keep the Fuzzy section's
+// separators below the official ones.
+let lastResultTier = 0;
+
+function addEntrySeparator(tier) {
+    const separator = document.createElement("div");
+    separator.className = "entry-separator";
+    separator.dataset.tier = String(tier || 1);
+    separator.setAttribute("aria-hidden", "true");
+    results.append(separator);
+}
+
+// The bottom separator follows the highest tier above it, like every separator
+// between rows. With no results it stays neutral.
+function updateFooterSeparator(tier) {
+    if (!footerSeparator) return;
+    if (tier > 0) footerSeparator.dataset.tier = String(tier);
+    else delete footerSeparator.dataset.tier;
 }
 
 // Build the results list from the array of entries returned by the API.
@@ -2148,55 +2693,102 @@ function render(entries, query) {
     window.__debugRender = { merged: merged.length, withDefs: withDefs.length, otherReading: otherReading.length, headwordsOnly: headwordsOnly.length, withoutReadingWithDefs: withoutReadingWithDefs.length, withoutReadingOnly: withoutReadingOnly.length, otherEntries: otherEntries.length, idsMain: idsMain.length, dialectMain: dialectMain.length, customDicts: state.customDicts, dicts: [...state.dicts], compact: state.compact };
     updateTiming();
 
+    let hasEntry = false;
+    let maxTier = 0;
+    const appendEntry = (entry) => {
+        const tier = entryTier(entry, query);
+        if (hasEntry) addEntrySeparator(maxTier || tier);
+        results.append(entryRow(entry));
+        hasEntry = true;
+        maxTier = Math.max(maxTier, tier);
+    };
+
     try {
-        for (const entry of withDefs) results.append(entryRow(entry));
-        for (const entry of withoutReadingWithDefs) results.append(entryRow(entry));
-        for (const entry of idsMain) results.append(entryRow(entry));
-        for (const entry of dialectMain) results.append(entryRow(entry));
-        if (otherEntries.length) {
-            const heading = document.createElement("p");
-            heading.className = "other-heading";
-            heading.textContent = "Other Dictionaries";
-            results.append(heading);
-            for (const entry of otherEntries) results.append(entryRow(entry));
+        // Priority is the six-level search tier. Within one tier the section
+        // order above is kept (definitions first), because the sort is stable.
+        const ordered = [
+            ...withDefs,
+            ...withoutReadingWithDefs,
+            ...idsMain,
+            ...dialectMain,
+            ...otherEntries,
+            ...headwordsOnly,
+            ...withoutReadingOnly,
+        ];
+        ordered.sort((a, b) => entryTier(a, query) - entryTier(b, query));
+
+        const otherSet = new Set(otherEntries);
+        let otherHeadingShown = false;
+        for (const entry of ordered) {
+            if (!otherHeadingShown && otherSet.has(entry)) {
+                const heading = document.createElement("p");
+                heading.className = "other-heading";
+                heading.textContent = "Other Dictionaries";
+                results.append(heading);
+                otherHeadingShown = true;
+            }
+            appendEntry(entry);
         }
-        for (const entry of headwordsOnly) results.append(entryRow(entry));
-        for (const entry of withoutReadingOnly) results.append(entryRow(entry));
     } catch (err) {
         window.__renderError = String(err);
         const errEl = document.createElement("p");
         errEl.textContent = "RENDER ERROR: " + String(err);
         results.append(errEl);
     }
+    lastResultTier = maxTier;
+    updateFooterSeparator(maxTier);
 }
 
-// Move the query timings to the line above the footer.
+// Show the first-paint time in parentheses after the result count, e.g.
+// "4 RESULTS (4 ms)". Hovering or focusing it reveals lag, first-results DB
+// time, all-results DB time, and first paint.
 function updateTiming() {
-    if (!resultTiming) return;
-    if (lastSearchMs === null) {
-        resultTiming.replaceChildren();
+    const count = results.querySelector(".results-count");
+    let timing = count ? count.querySelector(".results-timing") : null;
+    if (!count || lastSearchMs === null) {
+        if (timing) timing.remove();
         return;
     }
-    // Four cumulative milestones, all measured from the start of the search:
-    // first response received, first rows painted, complete response received,
-    // complete rows painted.
+    const visible = firstPaintMs !== null ? firstPaintMs : allPaintMs;
+    if (visible === null) {
+        if (timing) timing.remove();
+        return;
+    }
+    if (!timing) {
+        timing = document.createElement("span");
+        timing.className = "results-timing";
+        timing.tabIndex = 0;
+    }
+    // Keep one literal space between the count text and the timing span.
+    const previous = timing.previousSibling;
+    if (!previous || previous.nodeType !== 3 || previous.nodeValue !== " ") {
+        count.append(document.createTextNode(" "));
+    }
+    count.append(timing);
+
+    // Separate measurements: network lag, server time for the first tier,
+    // server time for the complete query, then the cumulative first paint.
     const lines = [];
-    if (firstSearchMs !== null) {
-        lines.push(`First Result Received: ${firstSearchMs} ms`);
+    if (lagMs !== null) {
+        lines.push(`Lag: ${lagMs} ms`);
+    }
+    if (firstDbMs !== null) {
+        lines.push(`First results DB: ${firstDbMs} ms`);
+    }
+    if (allDbMs !== null) {
+        lines.push(`All results DB: ${allDbMs} ms`);
     }
     if (firstPaintMs !== null) {
-        lines.push(`First Result Painted: ${firstPaintMs} ms`);
-    }
-    lines.push(`All Results Received: ${lastSearchMs} ms`);
-    if (allPaintMs !== null) {
-        lines.push(`All Results Painted: ${allPaintMs} ms`);
+        lines.push(`First paint: ${firstPaintMs} ms`);
     }
 
-    resultTiming.replaceChildren();
-    lines.forEach((line, index) => {
-        if (index) resultTiming.append(document.createElement("br"));
-        resultTiming.append(document.createTextNode(line));
-    });
+    const value = document.createElement("span");
+    value.className = "timing-value";
+    value.textContent = `(${visible} ms)`;
+    const tooltip = document.createElement("span");
+    tooltip.className = "timing-tooltip";
+    tooltip.textContent = lines.join("\n");
+    timing.replaceChildren(value, tooltip);
 }
 
 // Append the tone-insensitive "Fuzzy match" section under a separator.
@@ -2206,12 +2798,24 @@ function renderFuzzy(entries) {
     // The count covers both the main list and these fuzzy rows.
     const total = mainResultCount + currentFuzzy.length;
     const count = results.querySelector(".results-count");
-    if (count) count.textContent = `${total} RESULT${total === 1 ? "" : "S"}`;
+    if (count) {
+        count.textContent = `${total} RESULT${total === 1 ? "" : "S"}`;
+        // Setting textContent removes the timing span; put it back.
+        updateTiming();
+    }
     const heading = document.createElement("p");
     heading.className = "fuzzy-heading";
     heading.textContent = "Fuzzy match";
     results.append(heading);
-    for (const entry of currentFuzzy) results.append(entryRow(entry));
+    let fuzzyHasEntry = false;
+    let fuzzyTier = lastResultTier;
+    for (const entry of currentFuzzy) {
+        if (fuzzyHasEntry) addEntrySeparator(fuzzyTier || 3);
+        results.append(entryRow(entry));
+        fuzzyHasEntry = true;
+        fuzzyTier = Math.max(fuzzyTier, entryTier(entry, currentQuery));
+    }
+    updateFooterSeparator(fuzzyTier);
 }
 
 // Re-draw the current results (and any fuzzy section) after a display toggle.
@@ -2260,7 +2864,8 @@ function completeInOneResponse(query) {
 
 // Build an /api/search URL, including the cache version when the page has one.
 function searchUrl(query, offset) {
-    let url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}`;
+    let url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}&lang=${encodeURIComponent(state.lang)}`;
+    if (exactMode) url += "&exact=1";
     if (DATA_VERSION) url += `&dv=${encodeURIComponent(DATA_VERSION)}`;
     return url;
 }
@@ -2282,6 +2887,11 @@ async function fetchSearchPart(
     }
     const parseStart = performance.now();
     const data = await response.json();
+    const lagHeader = response.headers.get("x-yabai-lag");
+    if (lagHeader !== null) {
+        const lag = Number(lagHeader);
+        if (Number.isFinite(lag)) data.lag = lag;
+    }
     if (!silent) {
         recordPhase(`${label} parse`, parseStart, {
             results: Array.isArray(data.results) ? data.results.length : 0,
@@ -2379,6 +2989,9 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     releaseClearScrollGuard();
     const url = searchUrl(query, offset);
     const startedAt = performance.now();
+    lagMs = null;
+    firstDbMs = null;
+    allDbMs = null;
     firstPaintMs = null;
     allPaintMs = null;
     const seq = ++searchSeq;
@@ -2400,12 +3013,12 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     // Phase 1: the fast CEDICT tier. Render it as soon as the server replies.
     // Wildcard / all-headword queries come complete in one response, so they
     // skip the second phase entirely.
-    const twoPhase = !completeInOneResponse(query);
+    const twoPhase = !completeInOneResponse(query) && !exactMode;
     const primaryUrl = url + "&part=primary";
     const cacheKey = pageCacheKey(query, offset);
     // Use server-embedded primary results if available (avoids the fetch). The
     // embed is always mainland readings, so skip it when Taiwan is selected.
-    const embeddedPrimary = (!state.taiwan && window.__initialPrimary && window.__initialPrimary.query === query && offset === 0)
+    const embeddedPrimary = (!state.taiwan && window.__initialPrimary && window.__initialPrimary.query === query && offset === 0 && window.__initialPrimaryLang === state.lang)
         ? window.__initialPrimary
         : null;
     if (embeddedPrimary) delete window.__initialPrimary;
@@ -2460,6 +3073,10 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     // Client wall-clock for both numbers. The server's first.ms is stale when
     // the response came from the page cache or the embedded primary.
     const firstMs = first ? Math.round(performance.now() - startedAt) : null;
+    if (first) {
+        if (typeof first.lag === "number") lagMs = first.lag;
+        if (typeof first.ms === "number") firstDbMs = first.ms;
+    }
     const showFirst =
         twoPhase &&
         first &&
@@ -2518,6 +3135,9 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             "response",
             `Complete search response: ${full.results.length} results, total ${full.total}`
         );
+        if (typeof full.lag === "number" && lagMs === null) lagMs = full.lag;
+        if (typeof full.ms === "number") allDbMs = full.ms;
+        if (firstDbMs === null) firstDbMs = allDbMs;
 
         // Show official results first; custom matches follow as a third tier.
         currentEntries = full.results;
@@ -2654,6 +3274,11 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     // the local dictionary tier when it is ready.
     currentEntries = first.results;
     currentQuery = query;
+    if (typeof first.lag === "number") lagMs = first.lag;
+    if (typeof first.ms === "number") {
+        firstDbMs = first.ms;
+        allDbMs = first.ms;
+    }
     if (recordTiming) {
         lastSearchMs = Math.round(performance.now() - startedAt);
         firstSearchMs = lastSearchMs;
@@ -3258,7 +3883,7 @@ async function annotate(text) {
 // Put the current query in the browser tab title (like Jisho), or the site name
 // when there is no query.
 function setTitle(query) {
-    document.title = query ? `${query} - Yabai Search ZH` : "Yabai Search ZH";
+    document.title = query ? `${query} - Yabai Search` : "Yabai Search";
     // Only search pages reserve a screen for the below-the-fold timings/About.
     document.body.classList.toggle("has-query", Boolean(query));
 }
@@ -3320,22 +3945,32 @@ function performSearch(query) {
     updateClearButton();
     setTitle(query);
     showTagline(false);
-    history.pushState({ q: query }, "", `?q=${encodeURIComponent(query)}`);
+    // A search started from /word/<word> is a normal search at the home URL.
+    if (exactMode) document.body.classList.remove("exact-mode");
+    exactMode = false;
+    history.pushState({ q: query }, "", `/?q=${encodeURIComponent(query)}`);
     annotate(query);
 }
 
 // Restore the view (results or home) from whatever is in the URL now.
 function restoreFromUrl() {
-    const query = queryFromUrl();
+    const urlQuery = queryFromUrl();
+    const wordQuery = window.__wordQuery || "";
+    // A real ?q= wins over the /word/<word> page's embedded word.
+    if (urlQuery && urlQuery !== wordQuery) exactMode = false;
+    const query = urlQuery || wordQuery;
     const page = pageFromUrl();
     if (query) {
-        input.value = query;
+        // The exact-word page performs the lookup but leaves the search box
+        // empty; only a real ?q= search fills it.
+        input.value = exactMode && !urlQuery ? "" : query;
         setTitle(query);
         showTagline(false);
         // A paged "*" result: go straight to the requested page. Restore the
         // saved scroll once the page's results are in the DOM (browser scroll
         // anchoring can otherwise land near the bottom).
         if (page > 1) search(query, (page - 1) * RESULTS_PAGE_SIZE).finally(restoreScroll);
+        else if (exactMode) search(query).finally(restoreScroll);
         else annotate(query);
     } else {
         input.value = "";
@@ -3373,7 +4008,9 @@ function goHome(keepScroll = false) {
     clearResults();
     showTagline(true);
     revealInitialResults();
-    history.pushState({}, "", location.pathname);
+    exactMode = false;
+    document.body.classList.remove("exact-mode");
+    history.pushState({}, "", "/");
     if (keepScroll) {
         document.body.style.minHeight = `${height}px`;
         document.body.dataset.clearScrollGuard = "true";
@@ -3426,8 +4063,11 @@ function loadPrefs() {
     applyLang(state.lang);
 }
 
-// Persist the display preferences.
+// Persist the display preferences. Settings supplied by a developer URL are
+// shown for this page but never written back, so they cannot replace the
+// visitor's saved preferences.
 function savePrefs() {
+    if (settingsFromUrl) return;
     try {
         localStorage.setItem("yabai-search-script", state.script);
         localStorage.setItem("yabai-search-tone", String(state.toneColoring));
@@ -3492,12 +4132,14 @@ function applySettingsFromUrl() {
         changed = true;
     }
     // Report links can carry dictionary choices, but they are ignored unless
-    // custom dictionaries are on.
+    // custom dictionaries are on. A URL-provided setting must not rewrite the
+    // visitor's saved dictionary order either.
+    settingsFromUrl = changed;
     if (!state.customDicts) {
         state.dicts = defaultDictsForLanguage(state.lang);
         state.compact = true;
         dictOrder = {};
-        saveDictOrder();
+        if (!settingsFromUrl) saveDictOrder();
         entryDictState.clear();
     }
     if (!changed) return;
@@ -3514,7 +4156,6 @@ function applySettingsFromUrl() {
     syncDictPanel();
     applyLang(state.lang);
     updateDictMode();
-    savePrefs();
 }
 
 // The quick controls mirror the display switches. Only the tone square's
@@ -4289,6 +4930,8 @@ function suppressRowTransition() {
 
 function setPulled(open) {
     if (!searchPanel) return;
+    // The exact-word view keeps the search bar in the page, never popped out.
+    if (open && exactMode) return;
     if (open) {
         // If a close animation is still running, cancel it and stay open.
         if (closeTimer) {
@@ -4668,9 +5311,10 @@ setupDictionaryOrdering();
 // Reserve space so restoring the scroll position does not visibly jump once the
 // results render.
 prepareInitialScroll();
-// Re-open the panel if it was expanded when the page was last left.
+// Re-open the panel if it was expanded when the page was last left. The
+// exact-word view never uses the popped-out panel.
 try {
-    if (sessionStorage.getItem(PULL_KEY) === "true") setPulled(true);
+    if (!exactMode && sessionStorage.getItem(PULL_KEY) === "true") setPulled(true);
 } catch (error) {
     // Storage disabled - start with the panel in the page.
 }
@@ -4704,8 +5348,8 @@ document.documentElement.classList.remove("no-anim");
 document.documentElement.style.setProperty("--theme-transition", "180ms");
 
 // --- Page load timing (debug) ---------------------------------------------
-// Record how long the UI took to become interactive, so the "Copy debug log"
-// button can report it. Uses the Navigation Timing and Paint Timing APIs.
+// Record how long the UI took to become interactive, so the "Download debug log"
+// item can report it. Uses the Navigation Timing and Paint Timing APIs.
 function recordPageLoadTiming() {
     try {
         const nav = performance.getEntriesByType("navigation")[0];

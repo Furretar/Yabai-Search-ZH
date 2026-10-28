@@ -1,8 +1,9 @@
-"""Browser test for furigana line selection.
+"""Browser tests for frontend interactions.
 
-The other UI contract tests only read the source. This one drives a real
-headless Chromium, because double-click selection and copy behaviour depend on
-the browser's Range and Selection APIs.
+The other UI contract tests only read the source. These drive a real headless
+Chromium because furigana selection depends on the browser's Range and
+Selection APIs, and the traditional-row merge depends on the rendered result
+rows.
 
 The app runs in a separate process. Starting it in a thread inside pytest left
 uvicorn's event loop and the app's caches alive for the rest of the session,
@@ -109,6 +110,114 @@ tick();
 </script>
 """
 
+# Same-origin harness for the traditional-mode row merge: wait for the search,
+# then report each row's headword and only the notes the test cares about.
+MERGE_HARNESS = """<!doctype html>
+<meta charset="utf-8">
+<title>sense group harness</title>
+<iframe id="app" style="width:900px;height:800px"></iframe>
+<pre id="out">pending</pre>
+<script>
+const out = document.getElementById("out");
+const frame = document.getElementById("app");
+const mode = new URLSearchParams(location.search).get("script") || "traditional";
+frame.src = `/?q=%E5%8F%AA&script=${mode}&dicts=cedict`;
+let tries = 0;
+function tick() {
+    tries += 1;
+    try {
+        const doc = frame.contentDocument;
+        const loaded = doc && !doc.documentElement.classList.contains("initial-search-pending");
+        if (loaded) {
+            const rows = [...doc.querySelectorAll(".entry")].map((row) => ({
+                head: row.querySelector(".hanzi")?.textContent || "",
+                readings: [...row.querySelectorAll(".def-reading")]
+                    .map((reading) => reading.textContent),
+                spellingClasses: [...row.querySelectorAll(
+                    ".def-reading-spellings [class^='tone']"
+                )].map((char) => char.className),
+                spellingLinks: row.querySelectorAll(".def-reading-spellings a").length,
+                noteLinks: row.querySelectorAll(".def-source-cls a").length,
+                lines: [...row.querySelectorAll(".def-source-line")]
+                    .map((line) => line.textContent),
+                notes: [...row.querySelectorAll(".def-source-cls")]
+                    .map((note) => note.textContent)
+                    .filter((text) => text.startsWith("Other forms")
+                        || text.startsWith("Traditional forms")),
+            }));
+            if (rows.length) {
+                const footer = doc.querySelector(".footer-separator");
+                out.textContent = JSON.stringify({
+                    rows,
+                    footerTier: footer?.dataset.tier || "",
+                });
+                return;
+            }
+        }
+    } catch (error) {
+        out.textContent = "error: " + error;
+        return;
+    }
+    if (tries > 150) {
+        out.textContent = "timeout";
+        return;
+    }
+    setTimeout(tick, 100);
+}
+tick();
+</script>
+"""
+
+# Same-origin harness for the definition copy button: intercept the clipboard
+# write and report the text, so the test can check that zhuyin is used.
+COPY_HARNESS = """<!doctype html>
+<meta charset="utf-8">
+<title>definition copy harness</title>
+<iframe id="app"
+        src="/word/%E7%9B%B4?script=traditional&tone=1&phonetic=zhuyin&taiwan=0&custom=0&compact=1&lang=EN"
+        style="width:900px;height:800px"></iframe>
+<pre id="out">pending</pre>
+<script>
+const out = document.getElementById("out");
+const frame = document.getElementById("app");
+let tries = 0;
+function tick() {
+    tries += 1;
+    try {
+        const doc = frame.contentDocument;
+        const win = frame.contentWindow;
+        const loaded = doc && !doc.documentElement.classList.contains("initial-search-pending");
+        if (loaded) {
+            const row = [...doc.querySelectorAll(".entry")].find(
+                (entry) => (entry.querySelector(".hanzi")?.textContent || "").includes("直")
+            );
+            if (row) {
+                const line = [...row.querySelectorAll(".def-source-line")].find(
+                    (node) => node.textContent.includes("Flame Emperors")
+                );
+                if (line) {
+                    win.navigator.clipboard.writeText = async (text) => {
+                        out.textContent = JSON.stringify({ text });
+                    };
+                    line.querySelector(".def-copy").click();
+                    return;
+                }
+            }
+        }
+    } catch (error) {
+        out.textContent = "error: " + error;
+        return;
+    }
+    if (tries > 150) {
+        out.textContent = "timeout";
+        return;
+    }
+    setTimeout(tick, 100);
+}
+tick();
+</script>
+"""
+
 # The wrapper adds the same-origin harness page to the real app, then mounts the
 # app at /. It lives in a temporary file only while the browser test runs.
 WRAPPER = """\
@@ -118,6 +227,8 @@ from fastapi.responses import HTMLResponse
 from yabai_search.main import app as real_app
 
 HARNESS = {harness}
+MERGE_HARNESS = {merge_harness}
+COPY_HARNESS = {copy_harness}
 
 app = FastAPI()
 
@@ -125,6 +236,16 @@ app = FastAPI()
 @app.get("/__furigana_test__")
 def harness() -> HTMLResponse:
     return HTMLResponse(HARNESS)
+
+
+@app.get("/__merge_test__")
+def merge_harness() -> HTMLResponse:
+    return HTMLResponse(MERGE_HARNESS)
+
+
+@app.get("/__copy_test__")
+def copy_harness() -> HTMLResponse:
+    return HTMLResponse(COPY_HARNESS)
 
 
 app.mount("/", real_app)
@@ -142,11 +263,18 @@ def _free_port() -> int:
 def search_server():
     """Serve the real app plus the harness page from a separate process."""
     if not CHROMIUM:
-        pytest.skip("Chromium is needed for the furigana selection test")
+        pytest.skip("Chromium is needed for the browser tests")
 
-    workdir = tempfile.mkdtemp(prefix="yabai-furigana-")
+    workdir = tempfile.mkdtemp(prefix="yabai-browser-")
     wrapper = Path(workdir) / "harness_app.py"
-    wrapper.write_text(WRAPPER.format(harness=repr(HARNESS)), encoding="utf-8")
+    wrapper.write_text(
+        WRAPPER.format(
+            harness=repr(HARNESS),
+            merge_harness=repr(MERGE_HARNESS),
+            copy_harness=repr(COPY_HARNESS),
+        ),
+        encoding="utf-8",
+    )
     log_path = Path(workdir) / "server.log"
     log = log_path.open("w", encoding="utf-8")
     port = _free_port()
@@ -204,8 +332,8 @@ def search_server():
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def test_double_click_selects_one_furigana_line(search_server, tmp_path):
-    """Each line selects and copies on its own, without the other line."""
+def _dump_report(url: str, tmp_path: Path) -> dict:
+    """Run one harness in headless Chromium and return its JSON report."""
     result = subprocess.run(
         [
             CHROMIUM,
@@ -217,7 +345,7 @@ def test_double_click_selects_one_furigana_line(search_server, tmp_path):
             f"--user-data-dir={tmp_path / 'chromium'}",
             "--virtual-time-budget=10000",
             "--dump-dom",
-            f"{search_server}/__furigana_test__",
+            url,
         ],
         capture_output=True,
         text=True,
@@ -233,7 +361,12 @@ def test_double_click_selects_one_furigana_line(search_server, tmp_path):
 
     assert payload not in ("pending", "timeout"), payload
     assert not payload.startswith("error:"), payload
-    report = json.loads(payload)
+    return json.loads(payload)
+
+
+def test_double_click_selects_one_furigana_line(search_server, tmp_path):
+    """Each line selects and copies on its own, without the other line."""
+    report = _dump_report(f"{search_server}/__furigana_test__", tmp_path)
 
     # Readings first, then characters: a range over one kind stays contiguous.
     assert report["order"] == ["reading", "char"]
@@ -250,3 +383,48 @@ def test_double_click_selects_one_furigana_line(search_server, tmp_path):
     # puts the spaces back.
     assert report["readingClick"]["selected"] == "fāzhǎnzhōngguójiā"
     assert report["readingClick"]["copied"] == "fā zhǎn zhōng guó jiā"
+
+
+def test_traditional_zhi_spellings_keep_their_own_senses(search_server, tmp_path):
+    """Traditional 隻/秖 each show only the senses from their own CEDICT row."""
+    report = _dump_report(f"{search_server}/__merge_test__?script=traditional", tmp_path)
+    rows = report["rows"]
+    assert report["footerTier"] == "2"
+
+    by_trad = {row["head"][-1]: row for row in rows if row["head"][-1:] in "隻秖只"}
+    assert "classifier for birds" in by_trad["隻"]["lines"][0]
+    assert by_trad["秖"]["lines"] == ["1.grain that has begun to ripen"]
+    assert by_trad["只"]["lines"] == ["1.only", "2.merely", "3.just"]
+
+    # The definitions differ now, so the identical-row fold must not run.
+    assert "Other forms: 只, 秖" not in by_trad["隻"]["notes"]
+    assert all(row["noteLinks"] == 0 for row in by_trad.values())
+
+
+def test_simplified_zhi_labels_each_spelling_group(search_server, tmp_path):
+    """Simplified 只 labels the 隻 and 秖 sense groups above their definitions."""
+    report = _dump_report(f"{search_server}/__merge_test__?script=simplified", tmp_path)
+    assert report["footerTier"] == "2"
+    row = next(row for row in report["rows"] if "Traditional forms" in " ".join(row["notes"]))
+
+    assert row["readings"] == ["zhǐ", "zhī (隻)", "zhī (秖)"]
+    # Both labels are zhī, so the characters keep the tone-1 colour (red).
+    assert row["spellingClasses"] == ["tone1", "tone1"]
+    # Header spellings and notes are labels, not search links.
+    assert row["spellingLinks"] == 0
+    assert row["noteLinks"] == 0
+    assert "Other forms: 祇, 衹" in row["notes"]
+    assert "Traditional forms: 隻, 秖" in row["notes"]
+    assert "1.classifier for birds" in " ".join(row["lines"])
+    assert "1.grain that has begun to ripen" in row["lines"]
+
+
+def test_definition_copy_converts_pinyin_to_zhuyin(search_server, tmp_path):
+    """The copy button writes zhuyin for the reading and inline annotations."""
+    report = _dump_report(f"{search_server}/__copy_test__", tmp_path)
+    text = report["text"]
+    assert text.startswith("ㄓˊ\n直\nㄓˊ (c. 2000 BC)")
+    assert "炎帝[ㄧㄢˊ ㄉㄧˋ]" in text
+    assert "神農|神农[ㄕㄣˊ ㄋㄨㄥˊ]" in text
+    assert "[Yan2 di4]" not in text
+    assert "[Shen2 nong2]" not in text

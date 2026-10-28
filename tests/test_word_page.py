@@ -1,8 +1,7 @@
-"""Tests for the standalone word detail page."""
+"""Tests for the exact-word view at /word/<word>."""
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -14,52 +13,99 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_word_page_has_no_search_controls(client):
-    """The details page is information-only, with no search bar or panels."""
+def _exact(client, word: str) -> dict:
+    response = client.get("/api/search", params={"q": word, "exact": 1, "limit": 25})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_word_page_opens_the_normal_search_view(client):
+    """The details URL renders the search page with the exact word embedded."""
     response = client.get("/word/档案")
     assert response.status_code == 200
-    assert 'id="search-form"' not in response.text
-    assert "search-panel" not in response.text
+    html = response.text
+    assert 'id="search-form"' in html
+    assert 'class="menu-toggle"' in html
+    assert 'class="site-subtitle"' in html
+    assert 'class="site-byline"' in html
+    assert "window.__wordQuery" in html
+    assert "window.__exactSearch = true" in html
 
 
-def test_word_page_shows_frequency_hsk_and_revised_moe(client):
-    """The page shows the same metadata and dictionary blocks as a result row."""
-    response = client.get("/word/档案")
-    assert response.status_code == 200
-    match = re.search(r"Frequency: #([\d,]+)", response.text)
-    assert match and int(match.group(1).replace(",", "")) > 0
-    assert "Frequency under 20,000 is common. This number is not reliable past 100,000." in response.text
-    assert "HSK 6" in response.text
-    assert '<div class="sources-label">Dictionaries</div>' in response.text
-    assert "重編國語辭典修訂本" in response.text
+def test_exact_api_has_frequency_hsk_and_revised_moe(client):
+    """The exact API returns the same decorated row a search would show."""
+    data = _exact(client, "档案")
+    entry = next(
+        entry
+        for entry in data["results"]
+        if entry["simplified"] == "档案" or entry["traditional"] == "檔案"
+    )
+    assert entry["freq"]["rank"] > 0
+    assert entry["hsk"]
+    labels = {definition["label"] for definition in entry["definitions"]}
+    assert "重編國語辭典修訂本" in labels
 
 
-def test_word_page_works_for_source_only_words(client):
-    """A word that only a secondary dictionary has still gets a details page."""
+def test_exact_api_works_for_source_only_words(client):
+    """A word that only a secondary dictionary has still gets an exact view."""
     response = client.get("/word/劣性")
     assert response.status_code == 200
-    assert "劣性" in response.text
-    assert "重編國語辭典修訂本" in response.text
+    data = _exact(client, "劣性")
+    assert any(entry["simplified"] == "劣性" for entry in data["results"])
+    labels = {
+        definition["label"]
+        for entry in data["results"]
+        for definition in entry["definitions"]
+    }
+    assert "重編國語辭典修訂本" in labels
 
 
 def test_word_page_accepts_traditional_forms(client):
-    """The route matches both script forms, not just simplified input."""
+    """The route and exact API both accept the traditional spelling."""
     response = client.get("/word/檔案")
     assert response.status_code == 200
-    assert "檔案" in response.text
-    assert "档案" in response.text
+    assert "window.__wordQuery" in response.text
+    assert _exact(client, "檔案")["results"]
 
 
 def test_word_page_returns_404_for_unknown_words(client):
-    """An unknown non-Chinese word has no details page."""
+    """An unknown non-Chinese word has no exact view."""
     assert client.get("/word/qqzzxxnotaword").status_code == 404
 
 
-def test_word_page_dictionary_headers_are_links(client):
-    """Each dictionary header links to its source or the About-page anchor."""
-    html = client.get("/word/档案").text
-    assert 'class="word-source-name"' in html
-    assert "https://cc-cedict.org/editor/" in html
+def test_exact_api_links_male_voice_audio(client):
+    """Readings expose the CC0 male MP3 used by the speaker button."""
+    data = _exact(client, "律师")
+    audios = [entry.get("audio") for entry in data["results"]]
+    assert any(
+        audio and audio.endswith("/male/lv4shi1.mp3") for audio in audios
+    )
+
+
+def test_exact_api_has_dictionary_anchors_for_toggles(client):
+    """Definitions keep their anchors so the result chips can toggle them."""
+    data = _exact(client, "档案")
+    anchors = {
+        definition["anchor"]
+        for entry in data["results"]
+        for definition in entry["definitions"]
+    }
+    assert "cedict" in anchors
+    assert len(anchors) > 1
+
+
+def test_conversion_literally_is_displayed(client):
+    """The (lit.) normalization rule is applied to CEDICT definitions."""
+    data = _exact(client, "一人得道，鸡犬升天")
+    text = " ".join(
+        sense
+        for entry in data["results"]
+        for definition in entry["definitions"]
+        if definition["anchor"] == "cedict"
+        for sense in definition.get("defs", [])
+    )
+    assert "(literal)" in text
+    assert "(lit.)" not in text
 
 
 GLYPH = DATA / "moe_glyphs" / "8ff0._104_0.gif"
