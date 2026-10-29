@@ -32,13 +32,15 @@ def _wildcard_words(query: str, limit: int = 1000):
 
 def test_question_matches_exactly_one_han_character(search, find_result):
     """国家? matches 国家级 but not 国家 or the longer 国家级旅游度假区."""
-    data = search("国家?")
+    data = search("国家?", dicts="cedict,wiktionary")
     assert data["pinyin_match"] is False
     assert find_result(data, "国家级") is not None
     assert find_result(data, "国家队") is not None
     assert find_result(data, "国家") is None
     assert find_result(data, "国家级旅游度假区") is None
-    assert all(len(word) == 3 and word.startswith("国家") for word in _words(data))
+    from yabai_search import db
+    tiers = [db._wildcard_tier([word], "国家?") for word in _words(data)]
+    assert tiers == sorted(tiers)
 
 
 def test_question_matches_one_character_at_the_start():
@@ -86,23 +88,35 @@ def test_star_still_matches_zero_or_more_characters():
 
 def test_question_is_script_insensitive(search):
     """A traditional query gets the same ? results as its simplified form."""
-    simplified = search("国家?")
-    traditional = search("國家?")
+    simplified = search("国家?", dicts="cedict,wiktionary")
+    traditional = search("國家?", dicts="cedict,wiktionary")
     assert traditional["total"] == simplified["total"]
     assert set(_words(traditional)) == set(_words(simplified))
 
 
 def test_question_wildcard_pages(search):
     """? wildcard results use the normal 25-row pager with stable totals."""
-    first = search("?家")
-    second = search("?家", offset=25)
+    first = search("?家", dicts="cedict,wiktionary")
+    second = search("?家", offset=25, dicts="cedict,wiktionary")
     assert first["total"] == second["total"] > 25
     assert first["page_size"] == 25
     # Script-form collapsing can remove a row from a raw 25-row page.
     assert 0 < len(first["results"]) <= 25
     assert second["results"]
     assert set(_words(first)) != set(_words(second))
-    assert all(len(word) == 2 and word.endswith("家") for word in _words(first))
+    from yabai_search import db
+    tiers = [db._wildcard_tier([word], "?家") for word in _words(first)]
+    assert tiers == sorted(tiers)
+
+
+def test_chinese_wildcard_pages_do_not_split_a_simplified_word(search):
+    """Wildcard pages also page whole simplified-headword groups."""
+    first = search("?家")
+    second = search("?家", offset=25)
+    first_words = {entry["simplified"] for entry in first["results"]}
+    second_words = {entry["simplified"] for entry in second["results"]}
+    assert first["total"] == second["total"] > 25
+    assert first_words.isdisjoint(second_words)
 
 
 def test_pinyin_question_matches_one_syllable(search, find_result):

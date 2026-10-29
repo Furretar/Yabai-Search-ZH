@@ -73,6 +73,18 @@ def test_word_page_returns_404_for_unknown_words(client):
     assert client.get("/word/qqzzxxnotaword").status_code == 404
 
 
+WIKTIONARY = DATA / "wiktionary.sqlite"
+
+
+@pytest.mark.skipif(not WIKTIONARY.exists(), reason="Wiktionary database not built")
+def test_word_page_opens_reading_only_source_word(client):
+    """A source reading without a gloss still gets a details page."""
+    word = "嘴馋逼浪，早晚上当"
+    response = client.get("/word/" + word)
+    assert response.status_code == 200
+    assert "window.__exactSearch = true" in response.text
+
+
 def test_exact_api_links_male_voice_audio(client):
     """Readings expose the CC0 male MP3 used by the speaker button."""
     data = _exact(client, "律师")
@@ -109,6 +121,68 @@ def test_conversion_literally_is_displayed(client):
 
 
 GLYPH = DATA / "moe_glyphs" / "8ff0._104_0.gif"
+
+
+def test_exact_cross_reference_shows_the_target_definition(client):
+    """A CEDICT "see X" entry opens X's definition instead of an empty page.
+
+    没sei了 [méi sei le] is stored only as "see 沒誰了|没谁了[mei2 sei2 le5]".
+    The exact view used to keep the cross-reference row, so it showed the
+    CC-CEDICT chip with no definitions.
+    """
+    data = _exact(client, "没sei了")
+    assert data["results"], "the cross-reference should resolve"
+    entry = data["results"][0]
+    assert entry["simplified"] == "没谁了"
+    senses = [
+        sense
+        for definition in entry["definitions"]
+        for sense in definition.get("defs") or []
+    ]
+    assert any("nobody can beat that" in sense for sense in senses)
+
+
+@pytest.mark.skipif(
+    not (DATA / "wiktionary.sqlite").exists(), reason="Wiktionary database not built"
+)
+def test_every_dialect_reading_is_returned(client):
+    """A word with no Mandarin reading keeps every dialect it lists.
+
+    松毛須 has a Xiang and an Eastern Min reading on Wiktionary. The entry used
+    to keep only the first one; the rest are shown on the lines below.
+    """
+    data = _exact(client, "松毛须")
+    entry = next(
+        (row for row in data["results"] if "松毛" in row["simplified"]),
+        None,
+    )
+    assert entry is not None
+    labels = {reading["label"] for reading in entry.get("readings") or []}
+    assert {"Xiang", "Eastern Min"} <= labels
+    # The browser uses this flag to skip the Zhuyin conversion.
+    assert entry["pinyin_no_tone"] is True
+    assert entry["pinyin_label"] == "Xiang"
+
+
+@pytest.mark.skipif(
+    not (DATA / "wiktionary.sqlite").exists(), reason="Wiktionary database not built"
+)
+def test_split_phrase_reading_covers_both_halves(client):
+    """A 歇后语 keeps the reading for the half after the dash, too.
+
+    Wiktionary stores one Mandarin reading per half. Showing only the first
+    left 全不知滋味 without a reading.
+    """
+    data = _exact(client, "猪八戒吃人参果——全不知滋味")
+    entry = next(
+        (row for row in data["results"] if "猪八戒" in row["simplified"]),
+        None,
+    )
+    assert entry is not None
+    assert entry["pinyin"].split() == [
+        "Zhū", "Bā", "jiè", "chī", "rén", "shēn", "guǒ",
+        "quán", "bù", "zhī", "zī", "wèi",
+    ]
 
 
 @pytest.mark.skipif(not GLYPH.exists(), reason="MOE glyph images not extracted")

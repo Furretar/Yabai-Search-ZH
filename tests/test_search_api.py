@@ -45,6 +45,71 @@ def test_star_lists_every_headword_in_pages(search):
     assert set(_words(first)).isdisjoint(set(_words(second)))
 
 
+def _entry_tier(entry):
+    """Mirror entryTier() in app.js for a bare "*" query."""
+    if entry.get("pinyin_label") or entry.get("pinyin_no_tone"):
+        return 4
+    has_def = any(
+        definition.get("defs")
+        or any(group.get("senses") for group in definition.get("groups") or [])
+        for definition in entry.get("definitions") or []
+    )
+    if has_def:
+        return 1
+    return 5 if entry.get("pinyin") else 6
+
+
+def test_star_lists_headwords_by_tier_then_frequency(search):
+    """A bare * leaves tiers 1-3 moot but still demotes tiers 4-6.
+
+    Every ordinary result is tier 1; a word with no definition is tier 5 or 6
+    and must come after every defined word. Inside a tier, frequency ranks
+    never go backwards and unranked words come last.
+    """
+    data = search("*")
+    tiers = [_entry_tier(entry) for entry in data["results"]]
+    assert tiers == sorted(tiers), tiers
+    ranks_by_tier = {}
+    for entry, tier in zip(data["results"], tiers):
+        rank = (entry.get("freq") or {}).get("rank")
+        ranks_by_tier.setdefault(tier, []).append(rank)
+    for tier, ranks in ranks_by_tier.items():
+        ranked = [rank for rank in ranks if rank is not None]
+        assert ranked == sorted(ranked), (tier, ranks)
+        assert ranks[: len(ranked)] == ranked, (tier, ranks)
+
+    # The cached server list must be tier-ordered across the whole list, not
+    # just inside one page. (The browser re-sorts each page; the server has to
+    # put tier 1 first so later pages cannot jump ahead.)
+    from yabai_search import db
+
+    groups = db.all_headword_groups()
+    assert groups == sorted(groups), "server groups are not tier-first"
+    assert set(groups) <= {1, 4, 5, 6}, set(groups)
+
+
+def test_server_merge_returns_one_row_per_simplified_word(search):
+    """With merge=1 the API sends merged rows and both layouts."""
+    data = search("le", merge=1)
+    words = [entry["simplified"] for entry in data["results"]]
+    assert words
+    assert len(words) == len(set(words)), words
+    assert data["script"] == "simplified"
+    assert isinstance(data["alt_same"], bool)
+    if not data["alt_same"]:
+        assert data["alt_results"]
+
+
+def test_grouped_pages_do_not_split_a_simplified_word(search):
+    """A word that has several rows (了/瞭) stays on one page."""
+    first = search("shi", offset=0)
+    second = search("shi", offset=25)
+    first_words = {entry["simplified"] for entry in first["results"]}
+    second_words = {entry["simplified"] for entry in second["results"]}
+    assert first["total"] == second["total"] > 25
+    assert first_words.isdisjoint(second_words)
+
+
 def test_blank_query_lists_all_headwords(search):
     """The API treats a blank query like * (the home page does not call this)."""
     data = search("")
@@ -498,8 +563,8 @@ def test_pinyin_prefix_matches_rank_above_contains(search):
 
 def test_offset_paginates_wildcard_search(search):
     """Wildcard pages use the fixed 25-result page size, with stable totals."""
-    page0 = search("*字", limit=10, offset=0)
-    page1 = search("*字", limit=10, offset=25)
+    page0 = search("*字", limit=10, offset=0, dicts="cedict,wiktionary")
+    page1 = search("*字", limit=10, offset=25, dicts="cedict,wiktionary")
     assert page0["total"] == page1["total"]
     assert len(page0["results"]) == 25
     # A raw page can lose a row when two script forms collapse to one headword,
@@ -568,6 +633,9 @@ def test_response_shape(search):
         "total",
         "offset",
         "page_size",
+        "script",
+        "alt_same",
+        "alt_results",
         "ms",
     }
     entry = data["results"][0]
@@ -731,7 +799,48 @@ def test_concurrent_searches_use_separate_connections():
     assert all(count > 0 for count in counts)
 
 
-def test_gan_picks_the_word_reading_over_the_surname(search):
+def test_taiwan_toggle_searches_prefilled_readings(search):
+    """Taiwan readings come from taiwan_readings.sqlite, not mainland pinyin."""
+    data = search("lese", lang="TW", taiwan=1)
+    assert "垃圾" in [entry["simplified"] for entry in data["results"]]
+
+    # A mainland-only reading is not found with the toggle on.
+    data = search("laji", lang="TW", taiwan=1)
+    assert "垃圾" not in [entry["simplified"] for entry in data["results"]]
+    # ...but it is found with the toggle off.
+    data = search("laji", lang="TW", taiwan=0)
+    assert "垃圾" in [entry["simplified"] for entry in data["results"]]
+
+
+def test_taiwan_toggle_honours_overrides_and_tones(search):
+    """An override (血 -> xiě) wins, and a wrong tone is rejected."""
+    data = search("xie", lang="TW", taiwan=1)
+    assert "血" in [entry["simplified"] for entry in data["results"]]
+    data = search("xue", lang="TW", taiwan=1)
+    assert "血" not in [entry["simplified"] for entry in data["results"]]
+
+
+def test_taiwan_toggle_contains_search(search):
+    """A Taiwan reading is found by a substring, not only a prefix."""
+    data = search("setong", lang="TW", taiwan=1)
+    assert "垃圾桶" in [entry["simplified"] for entry in data["results"]]
+
+
+def test_taiwan_toggle_ranks_by_taiwan_reading(search):
+    """The tonal query ranks 垃圾 ahead of 垃圾桶 on the Taiwan reading."""
+    data = search("le4se4", lang="TW", taiwan=1)
+    words = [entry["simplified"] for entry in data["results"]]
+    assert "垃圾" in words
+    if "垃圾桶" in words:
+        assert words.index("垃圾") < words.index("垃圾桶")
+
+
+def test_taiwan_toggle_finds_wiktionary_only_by_taiwan_reading(search):
+    """A Wiktionary-only word is found by its Taiwan reading, not its own."""
+    data = search("lesedai", lang="TW", taiwan=1)
+    assert "垃圾袋" in [entry["simplified"] for entry in data["results"]]
+    data = search("lajidai", lang="TW", taiwan=1)
+    assert "垃圾袋" not in [entry["simplified"] for entry in data["results"]]
     """gān (12 senses) ranks above Gān (surname, 2 senses) for 干."""
     data = search("干", lang="EN")
     rows = [entry for entry in data["results"] if entry["simplified"] == "干"]
@@ -756,6 +865,45 @@ def test_gan_picks_the_word_reading_over_the_surname(search):
         group["pinyin"] == "Gān" and "surname Gan" in group["senses"]
         for group in groups
     )
+
+
+def test_wildcard_search_honours_taiwan_toggle(search):
+    """A pinyin wildcard can match a Taiwan-only reading."""
+    data = search("le*e", lang="TW", taiwan=1, limit=10)
+    assert "垃圾" in [entry["simplified"] for entry in data["results"]]
+    data = search("le*e", lang="TW", taiwan=0, limit=10)
+    assert "垃圾" not in [entry["simplified"] for entry in data["results"]]
+
+
+def test_chinese_wildcard_ranks_exact_matches_first(search):
+    """`?后` opens with two-character words that end in 后."""
+    from yabai_search import db
+
+    data = search("?后", lang="EN", dicts="cedict,wiktionary", limit=25)
+    assert data["pinyin_match"] is False
+    assert data["results"]
+    for entry in data["results"]:
+        assert (
+            db._wildcard_tier(
+                [entry["simplified"], entry["traditional"]], "?后"
+            )
+            == 1
+        )
+
+
+def test_chinese_wildcard_star_exact_matches_first(search):
+    """`*后` starts with every word that ends in 后."""
+    from yabai_search import db
+
+    data = search("*后", lang="EN", dicts="cedict,wiktionary", limit=25)
+    assert "后" in [entry["simplified"] for entry in data["results"]]
+    for entry in data["results"]:
+        assert (
+            db._wildcard_tier(
+                [entry["simplified"], entry["traditional"]], "*后"
+            )
+            == 1
+        )
 
 
 def test_shared_simplified_headword_does_not_repeat_a_sense(search):

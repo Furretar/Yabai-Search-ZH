@@ -142,24 +142,28 @@ def test_pinyin_wildcard_contains(search, find_result):
 
 def test_chinese_wildcard_suffix(search):
     """*字 matches headwords ending with 字, exact 字 first."""
-    data = search("*字")
+    data = search("*字", dicts="cedict,wiktionary")
     assert data["total"] > 50
     assert data["results"][0]["simplified"] == "字"
-    assert all(entry["simplified"].endswith("字") for entry in data["results"])
+    from yabai_search import db
+    tiers = [db._wildcard_tier([e["simplified"], e["traditional"]], "*字") for e in data["results"]]
+    assert tiers == sorted(tiers)
 
 
 def test_chinese_wildcard_prefix(search):
     """字* matches headwords starting with 字, exact 字 first."""
-    data = search("字*")
+    data = search("字*", dicts="cedict,wiktionary")
     assert data["total"] > 50
     assert data["results"][0]["simplified"] == "字"
-    assert all(entry["simplified"].startswith("字") for entry in data["results"])
+    from yabai_search import db
+    tiers = [db._wildcard_tier([e["simplified"], e["traditional"]], "字*") for e in data["results"]]
+    assert tiers == sorted(tiers)
 
 
 def test_wildcard_handles_traditional_and_simplified_queries(search):
     """A traditional wildcard is converted to simplified before matching."""
-    traditional = search("*檔")
-    simplified = search("*档")
+    traditional = search("*檔", dicts="cedict,wiktionary")
+    simplified = search("*档", dicts="cedict,wiktionary")
     assert traditional["total"] == simplified["total"]
     assert _words(traditional) == _words(simplified)
 

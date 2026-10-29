@@ -22,6 +22,48 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def test_page_groups_keeps_a_simplified_word_on_one_page():
+    """Rows sharing a simplified form page as one group, never split."""
+    rows = [
+        {"simplified": "了"},
+        {"simplified": "瞭"},
+        {"simplified": "了"},
+        {"simplified": "和"},
+    ]
+    groups = db.group_rows(rows)
+    assert [[row["simplified"] for row in group] for group in groups] == [
+        ["了", "了"],
+        ["瞭"],
+        ["和"],
+    ]
+    page, total = db.page_groups(rows, 0, 2)
+    assert total == 3
+    assert [row["simplified"] for row in page] == ["了", "了", "瞭"]
+
+
+def test_dungan_reading_keeps_latin_and_tones():
+    """A Dungan reading drops the Cyrillic and keeps the Latin + tone numerals."""
+    assert (
+        db._clean_dungan_reading("җигуанзыхуар (jiguanzɨhuar, I-I-I-I)")
+        == "jiguanzɨhuar (I-I-I-I)"
+    )
+    assert db._clean_dungan_reading("билүн (bilün, II-III)") == "bilün (II-III)"
+    # No Latin parenthetical: leave the source spelling alone.
+    assert db._clean_dungan_reading("җигуанзыхуар") == "җигуанзыхуар"
+
+
+def test_joined_reading_for_a_split_phrase():
+    """A 歇后语 joins both halves; a polyphonic word keeps its first reading."""
+    assert db._joined_reading(
+        "猪八戒吃人参果——全不知滋味",
+        ["Zhū Bā jiè chī rén shēn guǒ", "quán bù zhī zī wèi"],
+    ) == "Zhū Bā jiè chī rén shēn guǒ quán bù zhī zī wèi"
+    # No separator: this is a polyphonic word, not two halves.
+    assert db._joined_reading("行", ["xíng", "háng"]) is None
+    # A separator whose parts do not match the readings is left alone.
+    assert db._joined_reading("甲——乙——丙", ["jiǎ", "yǐ"]) is None
+
+
 def test_see_target_reads_qualified_variant_notes():
     """"old variant of X" is a form link, not a definition."""
     assert see_target("old variant of 柿[shi4]") == ("柿", "柿", "old")
@@ -55,6 +97,81 @@ def test_numeric_and_marked_pinyin_round_trip():
     """Numeric pinyin and tone-marked pinyin convert in both directions."""
     assert numeric_to_marked("han4 yu3") == "hàn yǔ"
     assert to_numeric("hàn yǔ") == "han4 yu3"
+
+
+def test_pinyin_prefix_entries_reads_one_dictionary():
+    """A pinyin preview can read MOE instead of always CC-CEDICT."""
+    entries = db.pinyin_prefix_entries("xue4", "moe", 5)
+    assert entries
+    assert all(entry.get("pinyin") for entry in entries)
+    assert all(entry.get("traditional") for entry in entries)
+
+
+def test_glob_match():
+    """'*' matches any run, '?' exactly one character, over the whole word."""
+    assert db._glob_match("后", "后")
+    assert not db._glob_match("?后", "后")
+    assert db._glob_match("?后", "以后")
+    assert db._glob_match("*后", "以后")
+    assert db._glob_match("*后*", "售后服务")
+    assert not db._glob_match("*后", "售后服务")
+    assert db._glob_match("后*", "后")
+    assert db._glob_match("?怒??", "喜怒哀乐")
+
+
+def test_wildcard_tier():
+    """Chinese patterns rank exact, then starts-with, then contains."""
+    assert db._wildcard_tier(["以后"], "?后") == 1
+    assert db._wildcard_tier(["售后服务"], "?后") == 2
+    assert db._wildcard_tier(["对以后"], "?后") == 3
+    assert db._wildcard_tier(["后"], "?后") is None
+    assert db._wildcard_tier(["后"], "*后") == 1
+    assert db._wildcard_tier(["对以后"], "*后") == 1
+    assert db._wildcard_tier(["售后服务"], "*后") == 2
+    assert db._wildcard_tier(["对以后再说"], "*后") == 2
+
+
+def test_is_wildcard_query():
+    """Only unquoted '*' / '?' queries count as wildcards."""
+    assert db._is_wildcard_query("?后")
+    assert db._is_wildcard_query("＊后")
+    assert not db._is_wildcard_query('"?后"')
+    assert not db._is_wildcard_query("后")
+
+
+def test_rank_by_category_keeps_selected_dictionary_first():
+    """Category 1 rows stay ahead of category 2 rows across the whole list."""
+    entries, _ = db.search("gan", 100)
+    ranked = db.rank_by_category(entries, {"cedict"})
+    seen_other = False
+    for entry in ranked:
+        is_selected = bool(entry.get("english"))
+        if is_selected and seen_other:
+            pytest.fail("a category 1 row followed a category 2 row")
+        if not is_selected:
+            seen_other = True
+
+
+def test_wiktionary_alias_gloss_counts_as_defined():
+    """Wiktionary can store a gloss under another traditional spelling."""
+    defined = db._anchor_defined_words("wiktionary", ["党群", "㼕"])
+    assert "党群" in defined
+    assert "㼕" not in defined
+
+
+def test_rank_by_category_uses_real_wiktionary_glosses():
+    """A gloss-only word must not sink behind a definition-less exact match."""
+    rows = [
+        {"simplified": "㼕", "traditional": "㼕", "pinyin": "dāng", "english": ""},
+        {
+            "simplified": "党群",
+            "traditional": "黨羣",
+            "pinyin": "dǎng qún",
+            "english": "",
+        },
+    ]
+    ranked = db.rank_by_category(rows, {"wiktionary"}, "dang", False)
+    assert [entry["simplified"] for entry in ranked] == ["党群", "㼕"]
 
 
 def test_reading_key_is_tone_aware():

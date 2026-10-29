@@ -9,8 +9,10 @@ import threading
 import sqlite3
 import sys
 import time
+import unicodedata
 from bisect import bisect_left
 from collections import defaultdict
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 
@@ -24,7 +26,13 @@ from yabai_search.overrides import (
     TAIWAN_READINGS,
     normalize_english,
 )
-from yabai_search.pinyin import numeric_to_marked, split_pinyin, to_numeric, to_toneless
+from yabai_search.pinyin import (
+    _MARK_TO_BASE,
+    numeric_to_marked,
+    split_pinyin,
+    to_numeric,
+    to_toneless,
+)
 
 
 def reading_key(pinyin: str | None) -> str:
@@ -170,6 +178,11 @@ MOE_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "moe.sqlite"
 MOE_REVISED_DB_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "moe_revised.sqlite"
 )
+
+# Path to the prefilled Taiwan readings of every dictionary, built by
+# scripts/build_taiwan_readings.py. Rebuild it whenever a source database, an
+# override in overrides.py or the Taiwan-reading logic below changes (AGENTS.md).
+TAIWAN_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "taiwan_readings.sqlite"
 
 # Path to the Wiktionary headword list (kaikki.org/Wiktextract), built by
 # scripts/import_wiktionary.py.
@@ -536,6 +549,12 @@ _SOURCE_QUERIES = [
                       "AND kind = 'mandarin' AND pinyin <> '' ORDER BY id LIMIT 1",
         "pinyin_batch_sql": "SELECT word, pinyin FROM readings WHERE word IN ({ph}) "
                             "AND kind = 'mandarin' AND pinyin <> '' ORDER BY id",
+        # Every Mandarin reading, already split into syllables. A 歇后语 has one
+        # per half; the display joins them when the headword splits the same way.
+        "pinyin_all_batch_sql": "SELECT word, "
+                                "COALESCE(NULLIF(pinyin_spaced, ''), pinyin) "
+                                "FROM readings WHERE word IN ({ph}) "
+                                "AND kind = 'mandarin' AND pinyin <> '' ORDER BY id",
         "pinyin_fallback_sql": "SELECT pinyin, label FROM readings "
                                "WHERE word = ? AND kind <> 'mandarin' "
                                "AND pinyin <> '' "
@@ -622,6 +641,7 @@ def data_version() -> str:
     paths = [source["database"] for source in _SOURCE_QUERIES]
     paths.extend(
         [
+            TAIWAN_DB_PATH,
             SUBTLEX_DB_PATH,
             FREQ_DB_PATH,
             HSK_DB_PATH,
@@ -874,6 +894,8 @@ def connect() -> sqlite3.Connection:
                 connection.execute("ATTACH DATABASE ? AS moe", (str(MOE_DB_PATH),))
             if "subtlex" not in attached and FREQ_DB_PATH.exists():
                 connection.execute("ATTACH DATABASE ? AS subtlex", (str(FREQ_DB_PATH),))
+            if "tw" not in attached and TAIWAN_DB_PATH.exists():
+                connection.execute("ATTACH DATABASE ? AS tw", (str(TAIWAN_DB_PATH),))
         connection._yabai_attached = True
     return connection
 
@@ -1203,6 +1225,185 @@ def _taiwan_reading(
         if reading is not None:
             return reading
     return _derive_taiwan(word, pinyin, char_map)
+
+
+def _entry_taiwan_reading(
+    traditional: str,
+    simplified: str,
+    pinyin: str,
+    english_normalized: str,
+    options: list[str],
+    counts: dict[str, int],
+    char_map: dict,
+) -> str | None:
+    """The Taiwan reading of one headword row, or None when it has none.
+
+    The single place where the rules are combined, used by the build script (to
+    prefill taiwan_readings.sqlite) and by _decorate (when a row is not in that
+    table): a manual override in overrides.py wins; then the whole-word MOE
+    reading (see _taiwan_reading); then CEDICT's own "Taiwan pr." note; then the
+    per-character derivation.
+    """
+    override = TAIWAN_READINGS.get(traditional) or TAIWAN_READINGS.get(simplified)
+    if override:
+        return override
+    if options:
+        return _taiwan_reading(traditional, pinyin, options, counts, char_map)
+    return _cedict_taiwan_reading(english_normalized or "") or _taiwan_reading(
+        traditional, pinyin, options, counts, char_map
+    )
+
+
+# --- prefilled Taiwan readings (taiwan_readings.sqlite) --------------------
+_taiwan_ready_cache: bool | None = None
+_taiwan_trigram_cache: bool | None = None
+
+
+def _taiwan_ready() -> bool:
+    """True when taiwan_readings.sqlite exists and has its `readings` table."""
+    global _taiwan_ready_cache
+    if _taiwan_ready_cache is None:
+        ready = False
+        if TAIWAN_DB_PATH.exists():
+            connection = _connect(TAIWAN_DB_PATH)
+            try:
+                ready = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type='table' AND name='readings'"
+                    ).fetchone()
+                    is not None
+                )
+            except sqlite3.Error:
+                ready = False
+            finally:
+                connection.close()
+        _taiwan_ready_cache = ready
+    return _taiwan_ready_cache
+
+
+def _taiwan_has_trigram() -> bool:
+    """True when the Taiwan table has its trigram index (for "contains")."""
+    global _taiwan_trigram_cache
+    if _taiwan_trigram_cache is None:
+        found = False
+        if _taiwan_ready():
+            connection = _connect(TAIWAN_DB_PATH)
+            try:
+                found = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='readings_fts'"
+                    ).fetchone()
+                    is not None
+                )
+            finally:
+                connection.close()
+        _taiwan_trigram_cache = found
+    return _taiwan_trigram_cache
+
+
+# FROM clause that gives every CEDICT row its prefilled Taiwan reading. The
+# columns are prefixed tw_ so they never clash with those of `entries`.
+_TW_CEDICT_FROM = (
+    "entries JOIN tw.readings ON tw_source = 'cedict' "
+    "AND tw_word = entries.traditional AND tw_mainland = entries.pinyin"
+)
+
+
+def _taiwan_lookup(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], str | None]:
+    """Prefilled Taiwan readings for (headword, mainland reading) pairs.
+
+    Returns {pair: Taiwan reading}, with None when the Taiwan reading equals the
+    mainland one. A pair that is missing from the result is not in the table.
+    """
+    if not pairs or not _taiwan_ready():
+        return {}
+    wanted = set(pairs)
+    words = sorted({word for word, _reading in wanted})
+    found: dict[tuple[str, str], str | None] = {}
+    connection = _connect(TAIWAN_DB_PATH)
+    try:
+        for start in range(0, len(words), 400):
+            chunk = words[start : start + 400]
+            holes = ",".join("?" * len(chunk))
+            for word, mainland, reading, changed in connection.execute(
+                "SELECT tw_word, tw_mainland, tw_reading, tw_changed "
+                f"FROM readings WHERE tw_word IN ({holes})",
+                chunk,
+            ):
+                key = (word, mainland)
+                if key in wanted and key not in found:
+                    found[key] = reading if changed else None
+    finally:
+        connection.close()
+    return found
+
+
+# Everything the prefilled table is derived from. The build script stores this
+# fingerprint; startup compares it so a stale table is reported, not trusted.
+_TAIWAN_LOGIC = (
+    "_word_taiwan",
+    "_char_taiwan",
+    "_derive_taiwan",
+    "_taiwan_reading",
+    "_entry_taiwan_reading",
+    "_cedict_taiwan_reading",
+    "_reading_counts",
+)
+
+
+def _file_change_stamp(path: Path) -> str:
+    """size + SQLite's file-change counter: survives a copy, changes on a write."""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as handle:
+            header = handle.read(28)
+        counter = int.from_bytes(header[24:28], "big") if len(header) == 28 else 0
+    except OSError:
+        return "missing"
+    return f"{size}:{counter}"
+
+
+def taiwan_signature() -> str:
+    """Fingerprint of the sources, overrides and logic the Taiwan table uses."""
+    import inspect
+    import json as _json
+
+    from yabai_search import pinyin as _pinyin_module
+
+    parts: list[str] = []
+    module = sys.modules[__name__]
+    for name in _TAIWAN_LOGIC:
+        try:
+            parts.append(inspect.getsource(getattr(module, name)))
+        except (OSError, TypeError):
+            parts.append(name)
+    try:
+        parts.append(inspect.getsource(_pinyin_module))
+    except (OSError, TypeError):
+        parts.append("pinyin")
+    parts.append(_TAIWAN_PR_RE.pattern)
+    parts.append(_json.dumps(sorted(_TAIWAN_EXCEPTIONS), ensure_ascii=False))
+    parts.append(_json.dumps(TAIWAN_READINGS, ensure_ascii=False, sort_keys=True))
+    for source in _SOURCE_QUERIES:
+        parts.append(f"{source['anchor']}={_file_change_stamp(source['database'])}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def taiwan_table_status() -> str:
+    """"ok", "missing" or "stale" for taiwan_readings.sqlite."""
+    if not _taiwan_ready():
+        return "missing"
+    connection = _connect(TAIWAN_DB_PATH)
+    try:
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key = 'signature'"
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        connection.close()
+    return "ok" if row and row[0] == taiwan_signature() else "stale"
 
 
 def _attach_sources(entries: list[dict]) -> list[dict]:
@@ -1946,6 +2147,50 @@ def _compose_pinyin(word: str) -> str:
     return " ".join(syllables)
 
 
+# Dungan readings are stored as a Cyrillic spelling plus a Latin romanization
+# and tone numerals: "җигуанзыхуар (jiguanzɨhuar, I-I-I-I)".
+_DUNGAN_READING_RE = re.compile(r"\(([^,()]+),\s*([IVX]+(?:[-\s]+[IVX]+)*)\)")
+
+
+def _clean_dungan_reading(reading: str) -> str:
+    """Keep the Latin romanization and tone numerals from a Dungan reading.
+
+    The Cyrillic spelling and the Latin romanization say the same thing; the
+    app shows the Latin one, with its tones, as a single readable line.
+    """
+    match = _DUNGAN_READING_RE.search(reading or "")
+    if not match:
+        return reading
+    return f"{match.group(1).strip()} ({match.group(2).strip()})"
+
+
+# The dash or colon that splits a 歇后语 (two-part saying) into its two halves.
+_READING_SEPARATOR_RE = re.compile(r"[—\-:：;；]+")
+
+
+def _joined_reading(headword: str, readings: list[str]) -> str | None:
+    """Join part-by-part readings for a split phrase, or return None.
+
+    Wiktionary stores one Mandarin reading per half of a 歇后语, e.g.
+    猪八戒吃人参果——全不知滋味 has "Zhū Bājiè chī rénshēnguǒ" and
+    "quán bù zhī zīwèi". Joining them lets the furigana put one syllable over
+    each character instead of showing only the first half. A normal polyphonic
+    word has no separator, so it keeps its first reading.
+    """
+    if len(readings) < 2 or not _READING_SEPARATOR_RE.search(headword):
+        return None
+    parts = [part for part in _READING_SEPARATOR_RE.split(headword) if part]
+    if len(parts) != len(readings):
+        return None
+    spoken = sum(
+        1
+        for char in headword
+        if not unicodedata.category(char).startswith(("P", "S"))
+    )
+    joined = " ".join(readings)
+    return joined if len(joined.split()) == spoken else None
+
+
 def _attach_source_pinyin(entries: list[dict]) -> list[dict]:
     """Fill an empty pinyin from the sources' own readings, in one batch.
 
@@ -1953,9 +2198,21 @@ def _attach_source_pinyin(entries: list[dict]) -> list[dict]:
     so those start without a reading. Look the readings up in the source
     databases (e.g. Wiktionary's readings table) instead of leaving them blank.
     """
+
+    def needs_lookup(entry: dict) -> bool:
+        # An empty reading, a dialect reading (which may be only the first of
+        # several), or a split phrase (which may have one reading per half).
+        return (
+            not entry.get("pinyin")
+            or entry.get("pinyin_no_tone")
+            or bool(_READING_SEPARATOR_RE.search(entry.get("traditional") or ""))
+        )
+
+    # A dialect reading already on the entry is only the first of several the
+    # sources list, so those entries are looked up too.
     words = sorted(
-        {entry["traditional"] for entry in entries if not entry.get("pinyin")}
-        | {entry["simplified"] for entry in entries if not entry.get("pinyin")}
+        {entry["traditional"] for entry in entries if needs_lookup(entry)}
+        | {entry["simplified"] for entry in entries if needs_lookup(entry)}
     )
     if not words:
         return entries
@@ -1987,27 +2244,75 @@ def _attach_source_pinyin(entries: list[dict]) -> list[dict]:
             ):
                 found[word] = (pinyin, split, False, "")
 
-    # Words with no Mandarin reading get a dialect reading (Wu/Shanghainese,
-    # then Xiang), left uncolored, with the dialect's name as a label.
+    # Words with no Mandarin reading get their dialect readings (Wu,
+    # Shanghainese, Xiang, Eastern Min, ...), left uncolored, each with the
+    # dialect's name as a label. Keep every variety the sources list: the first
+    # one is the main reading, and the rest are shown on the lines below.
+    fallback: dict[str, list[tuple[str, str]]] = {}
     for source in _SOURCE_QUERIES:
         for word, pinyin, label in query(source, "pinyin_fallback_batch_sql"):
-            if pinyin and word not in found:
-                found[word] = (pinyin, False, True, label or "")
+            if pinyin:
+                if (label or "") == "Dungan":
+                    pinyin = _clean_dungan_reading(pinyin)
+                fallback.setdefault(word, []).append((pinyin, label or ""))
+
+    # Every Mandarin reading the sources list, keyed by headword. A 歇后语 has
+    # one reading per half and needs them joined (see _joined_reading).
+    all_mandarin: dict[str, list[str]] = {}
+    for source in _SOURCE_QUERIES:
+        for word, pinyin in query(source, "pinyin_all_batch_sql"):
+            if not pinyin:
+                continue
+            values = all_mandarin.setdefault(word, [])
+            if pinyin not in values:
+                values.append(pinyin)
 
     for entry in entries:
-        if entry.get("pinyin"):
+        # A split phrase may have one Mandarin reading per half. Join them so
+        # the furigana can cover the whole headword instead of just the first
+        # half.
+        for form in (entry["traditional"], entry["simplified"]):
+            readings = all_mandarin.get(form)
+            if readings:
+                joined = _joined_reading(form, readings)
+                if joined:
+                    entry["pinyin"] = joined
+                break
+
+        # A Mandarin reading is final. A dialect reading (pinyin_no_tone) still
+        # needs the source's full list: _source_only_entries kept only the first
+        # one, so a word like 松毛須 would lose its Eastern Min reading.
+        if entry.get("pinyin") and not entry.get("pinyin_no_tone"):
             continue
         word = entry["traditional"]
-        if word not in found:
+        if word not in found and word not in fallback:
             word = entry["simplified"]
-        if word not in found:
+        # A Mandarin reading wins, unless the entry already has a dialect
+        # reading that we are enriching.
+        if not entry.get("pinyin_no_tone") and word in found:
+            pinyin, split, no_tone, label = found[word]
+            entry["pinyin"] = _split_pinyin(pinyin) if split else pinyin
+            if no_tone:
+                entry["pinyin_no_tone"] = True
+                if label:
+                    entry["pinyin_label"] = label
             continue
-        pinyin, split, no_tone, label = found[word]
-        entry["pinyin"] = _split_pinyin(pinyin) if split else pinyin
-        if no_tone:
-            entry["pinyin_no_tone"] = True
-            if label:
-                entry["pinyin_label"] = label
+        readings: list[dict] = []
+        seen_readings: set[tuple[str, str]] = set()
+        for pinyin, label in fallback.get(word, []):
+            key = (pinyin, label)
+            if key in seen_readings:
+                continue
+            seen_readings.add(key)
+            readings.append({"pinyin": pinyin, "label": label})
+        if not readings:
+            continue
+        entry["pinyin"] = readings[0]["pinyin"]
+        entry["pinyin_no_tone"] = True
+        if readings[0]["label"]:
+            entry["pinyin_label"] = readings[0]["label"]
+        if len(readings) > 1:
+            entry["readings"] = readings
     return entries
 
 
@@ -2093,23 +2398,33 @@ def _decorate(entries: list[dict]) -> list[dict]:
     def taiwan_for(word: str, pinyin: str, options: list[str]) -> str | None:
         return _taiwan_reading(word, pinyin, options, counts, char_map)
 
-    # The entry's own word (a manual override in overrides.py takes precedence).
-    by_word = _moe_readings([entry["traditional"] for entry in entries])
+    # The entry's own word. The prefilled table (taiwan_readings.sqlite) is the
+    # source of truth, so the shown reading, the search and the ranking agree. A
+    # row that is not in the table (or no table at all) falls back to computing
+    # the reading live with the same function the build script uses.
+    prefilled = _taiwan_lookup(
+        [(entry["traditional"], entry["pinyin"]) for entry in entries]
+    )
+    missing = [
+        entry
+        for entry in entries
+        if (entry["traditional"], entry["pinyin"]) not in prefilled
+    ]
+    by_word = _moe_readings([entry["traditional"] for entry in missing])
     for entry in entries:
-        override = TAIWAN_READINGS.get(entry["traditional"]) or TAIWAN_READINGS.get(
-            entry["simplified"]
+        key = (entry["traditional"], entry["pinyin"])
+        if key in prefilled:
+            entry["pinyin_taiwan"] = prefilled[key]
+            continue
+        entry["pinyin_taiwan"] = _entry_taiwan_reading(
+            entry["traditional"],
+            entry["simplified"],
+            entry["pinyin"],
+            entry.get("english_normalized", ""),
+            by_word.get(entry["traditional"], []),
+            counts,
+            char_map,
         )
-        options = by_word.get(entry["traditional"], [])
-        if override:
-            taiwan = override
-        elif options:
-            taiwan = taiwan_for(entry["traditional"], entry["pinyin"], options)
-        else:
-            # No MOE entry: CC-CEDICT may carry its own "Taiwan pr." note.
-            taiwan = _cedict_taiwan_reading(
-                entry.get("english_normalized", "")
-            ) or taiwan_for(entry["traditional"], entry["pinyin"], options)
-        entry["pinyin_taiwan"] = taiwan
 
     # Words referenced inside the definitions (they render as furigana too).
     referenced = {}
@@ -2649,6 +2964,8 @@ def _source_only_entries(
                             pinyin = row[0]
                             label = row[1] or ""
                             no_tone = True
+                            if label == "Dungan":
+                                pinyin = _clean_dungan_reading(pinyin)
                             break
                 if add(head, pinyin, no_tone, label):
                     break
@@ -2806,26 +3123,39 @@ def _prefix_rows(keys: list[str], rows: list[tuple], prefix: str) -> list[tuple]
     return rows[start:end]
 
 
-def _source_pinyin_entries(query: str, limit: int = 20) -> list[dict]:
+def _source_pinyin_entries(
+    query: str, limit: int = 20, keep_rank: bool = False, taiwan: bool = False
+) -> list[dict]:
     """Cached wrapper around the source-pinyin scan.
 
     Common English queries such as "the" and "ing" fall through to this scan on
     every request even though its result only changes when a source database is
     rebuilt. The raw rows are cached; each caller gets fresh dicts because
     `_decorate` mutates them. YABAI_SOURCE_PINYIN_CACHE=0 restores the scan.
+    `keep_rank` retains `_search_rank`; `taiwan` matches prefilled Taiwan
+    readings.
     """
-    if os.environ.get("YABAI_SOURCE_PINYIN_CACHE", "1") == "0":
-        return list(_source_pinyin_raw(query, limit))
-    return [dict(entry) for entry in _source_pinyin_raw(query, limit)]
+    entries = [
+        dict(entry)
+        for entry in _source_pinyin_raw(query, limit, taiwan and _taiwan_ready())
+    ]
+    if not keep_rank:
+        for entry in entries:
+            entry.pop("_search_rank", None)
+    return entries
 
 
 @lru_cache(maxsize=1024)
-def _source_pinyin_raw(query: str, limit: int = 20) -> tuple[dict, ...]:
+def _source_pinyin_raw(
+    query: str, limit: int = 20, taiwan: bool = False
+) -> tuple[dict, ...]:
     """Source-only entries whose reading matches a pinyin query.
 
     CEDICT pinyin search only looks at its own entries; this adds Wiktionary's
     readings (and MOE's) so a word like 剾 (Wiktionary-only, kōu) is found too.
-    Returns undecorated rows for the caller to decorate.
+    Returns undecorated rows for the caller to decorate. With `taiwan` the
+    readings are matched against the prefilled Taiwan readings of every
+    non-CEDICT source (taiwan_readings.sqlite) instead of the sources' own.
     """
     text = (query or "").strip()
     if not text:
@@ -2863,7 +3193,10 @@ def _source_pinyin_raw(query: str, limit: int = 20) -> tuple[dict, ...]:
         numeric: str,
         simplified: str,
         rank: int | None = None,
+        shown: str | None = None,
     ) -> None:
+        # `marked`/`numeric` are what the query is matched against; `shown` is
+        # the reading the row carries (the source's own, when matching Taiwan).
         if simplified in known:
             return
         if parsed:
@@ -2891,107 +3224,137 @@ def _source_pinyin_raw(query: str, limit: int = 20) -> tuple[dict, ...]:
                 rank = 2
             else:
                 return
-        found.append(((rank, len(marked), word), word, marked, simplified))
+        found.append(((rank, len(marked), word), word, shown or marked, simplified))
 
-    if WIKTIONARY_DB_PATH.exists():
-        connection = _connect(WIKTIONARY_DB_PATH)
+    if taiwan:
+        # Prefilled Taiwan readings of the non-CEDICT sources (MOE, Wiktionary,
+        # zh/ja Wiktionary). Same ranking as below, on the Taiwan reading.
+        tw_connection = _connect(TAIWAN_DB_PATH)
         try:
-            # readings_extra holds only Mandarin readings CEDICT does not cover,
-            # so the common search never touches the full readings table.
-            extra = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' "
-                "AND name='readings_extra'"
-            ).fetchone()
-            if extra:
-                table = "readings_extra"
-                where = "pinyin_toneless LIKE ? ESCAPE '\\'"
+            columns = "tw_word, tw_simplified, tw_mainland, tw_reading, tw_numeric"
+            if wildcard_re is not None:
+                phases = [
+                    (_like_pattern("*".join(to_toneless(part) for part in text.split("*"))), None)
+                ]
             else:
-                table = "readings"
-                where = ("kind = 'mandarin' AND is_cedict = 0 "
-                         "AND pinyin_toneless LIKE ? ESCAPE '\\'")
-            columns = ("id, word, pinyin, pinyin_toneless, pinyin_spaced, "
-                       "pinyin_numeric, simplified")
-
-            def process(row: tuple) -> None:
-                _id, word, pinyin, toneless, spaced, numeric, simplified = row
-                # Fall back to query-time work for a database built before the
-                # precomputed columns existed.
-                marked = spaced or _split_pinyin(pinyin)
-                numeric = numeric or to_numeric(marked)
-                simplified = simplified or to_simplified(word)
-                consider(word, marked, numeric, simplified)
-
-            if parsed:
-                # Tone/boundary ranking depends on the query, so keep it in
-                # Python (on the precomputed columns). Rank 0/1 rows must start
-                # with the letters: fetch those first, then the "contains" rows
-                # only when the page is not full yet.
-                phases = ((f"{letters}%", None), (pattern, f"{letters}%"))
-                for pat, exclude in phases:
-                    if exclude is None:
-                        q = (f"SELECT {columns} FROM {table} "
-                             "WHERE pinyin_toneless LIKE ? ESCAPE '\\'")
-                        params = (pat,)
-                    else:
-                        q = (f"SELECT {columns} FROM {table} "
-                             "WHERE pinyin_toneless LIKE ? ESCAPE '\\' "
-                             "AND pinyin_toneless NOT LIKE ? ESCAPE '\\'")
-                        params = (pat, exclude)
-                    for row in connection.execute(q, params).fetchall():
-                        process(row)
-                    if len(found) >= limit:
-                        break
-            elif extra:
-                # readings_extra is already deduped at import with the same
-                # winner rule, so rank and limit directly.
-                q = (
-                    f"SELECT {columns} FROM {table} WHERE {where} "
-                    "ORDER BY (pinyin_toneless = ?) DESC, "
-                    "length(pinyin_spaced), word, id LIMIT ?"
+                phases = [(f"{letters}%", None), (pattern, f"{letters}%")]
+            for pat, exclude in phases:
+                sql = (
+                    f"SELECT {columns} FROM readings WHERE tw_source <> 'cedict' "
+                    "AND tw_toneless LIKE ? ESCAPE '\\'"
                 )
-                for row in connection.execute(
-                    q, (pattern, letters, limit)
-                ).fetchall():
-                    process(row)
-            else:
-                # Old database without readings_extra: dedupe in SQL.
-                q = (
-                    f"SELECT {columns} FROM ("
-                    f"  SELECT {columns}, ROW_NUMBER() OVER ("
-                    "     PARTITION BY simplified, pinyin_spaced ORDER BY word, id"
-                    "   ) AS rn "
-                    f"  FROM {table} WHERE {where}"
-                    ") WHERE rn = 1 "
-                    "ORDER BY (pinyin_toneless = ?) DESC, "
-                    "length(pinyin_spaced), word, id LIMIT ?"
-                )
-                for row in connection.execute(
-                    q, (pattern, letters, limit)
-                ).fetchall():
-                    process(row)
+                params: tuple = (pat,)
+                if exclude is not None:
+                    sql += " AND tw_toneless NOT LIKE ? ESCAPE '\\'"
+                    params += (exclude,)
+                for word, simplified, mainland, reading, numeric in tw_connection.execute(
+                    sql, params
+                ):
+                    consider(word, reading, numeric, simplified, shown=mainland)
+                if len(found) >= limit and wildcard_re is None:
+                    break
         finally:
-            connection.close()
+            tw_connection.close()
+    else:
+        if WIKTIONARY_DB_PATH.exists():
+            connection = _connect(WIKTIONARY_DB_PATH)
+            try:
+                # readings_extra holds only Mandarin readings CEDICT does not cover,
+                # so the common search never touches the full readings table.
+                extra = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='readings_extra'"
+                ).fetchone()
+                if extra:
+                    table = "readings_extra"
+                    where = "pinyin_toneless LIKE ? ESCAPE '\\'"
+                else:
+                    table = "readings"
+                    where = ("kind = 'mandarin' AND is_cedict = 0 "
+                             "AND pinyin_toneless LIKE ? ESCAPE '\\'")
+                columns = ("id, word, pinyin, pinyin_toneless, pinyin_spaced, "
+                           "pinyin_numeric, simplified")
 
-    # MOE, zh.wiktionary and ja.wiktionary headword readings. The list is built
-    # once and sorted; a prefix query binary-searches it instead of scanning
-    # every reading.
-    keys, rows = _source_pinyin_sorted()
-    candidates = rows if wildcard_re is not None else _prefix_rows(keys, rows, letters)
-    for word, simplified, marked, toneless, numeric in candidates:
-        if simplified in known:
-            continue
-        consider(word, marked, numeric, simplified)
+                def process(row: tuple) -> None:
+                    _id, word, pinyin, toneless, spaced, numeric, simplified = row
+                    # Fall back to query-time work for a database built before the
+                    # precomputed columns existed.
+                    marked = spaced or _split_pinyin(pinyin)
+                    numeric = numeric or to_numeric(marked)
+                    simplified = simplified or to_simplified(word)
+                    consider(word, marked, numeric, simplified)
 
-    # A tonal query can also match a reading that merely contains the letters
-    # (rank 2). Only look for those when the prefix matches did not fill the
-    # page, and skip the rows already handled above.
-    if parsed and len(found) < limit:
-        for word, simplified, marked, toneless, numeric in rows:
-            if toneless.startswith(letters) or letters not in toneless:
-                continue
+                if parsed:
+                    # Tone/boundary ranking depends on the query, so keep it in
+                    # Python (on the precomputed columns). Rank 0/1 rows must start
+                    # with the letters: fetch those first, then the "contains" rows
+                    # only when the page is not full yet.
+                    phases = ((f"{letters}%", None), (pattern, f"{letters}%"))
+                    for pat, exclude in phases:
+                        if exclude is None:
+                            q = (f"SELECT {columns} FROM {table} "
+                                 "WHERE pinyin_toneless LIKE ? ESCAPE '\\'")
+                            params = (pat,)
+                        else:
+                            q = (f"SELECT {columns} FROM {table} "
+                                 "WHERE pinyin_toneless LIKE ? ESCAPE '\\' "
+                                 "AND pinyin_toneless NOT LIKE ? ESCAPE '\\'")
+                            params = (pat, exclude)
+                        for row in connection.execute(q, params).fetchall():
+                            process(row)
+                        if len(found) >= limit:
+                            break
+                elif extra:
+                    # readings_extra is already deduped at import with the same
+                    # winner rule, so rank and limit directly.
+                    q = (
+                        f"SELECT {columns} FROM {table} WHERE {where} "
+                        "ORDER BY (pinyin_toneless = ?) DESC, "
+                        "length(pinyin_spaced), word, id LIMIT ?"
+                    )
+                    for row in connection.execute(
+                        q, (pattern, letters, limit)
+                    ).fetchall():
+                        process(row)
+                else:
+                    # Old database without readings_extra: dedupe in SQL.
+                    q = (
+                        f"SELECT {columns} FROM ("
+                        f"  SELECT {columns}, ROW_NUMBER() OVER ("
+                        "     PARTITION BY simplified, pinyin_spaced ORDER BY word, id"
+                        "   ) AS rn "
+                        f"  FROM {table} WHERE {where}"
+                        ") WHERE rn = 1 "
+                        "ORDER BY (pinyin_toneless = ?) DESC, "
+                        "length(pinyin_spaced), word, id LIMIT ?"
+                    )
+                    for row in connection.execute(
+                        q, (pattern, letters, limit)
+                    ).fetchall():
+                        process(row)
+            finally:
+                connection.close()
+
+        # MOE, zh.wiktionary and ja.wiktionary headword readings. The list is built
+        # once and sorted; a prefix query binary-searches it instead of scanning
+        # every reading.
+        keys, rows = _source_pinyin_sorted()
+        candidates = rows if wildcard_re is not None else _prefix_rows(keys, rows, letters)
+        for word, simplified, marked, toneless, numeric in candidates:
             if simplified in known:
                 continue
             consider(word, marked, numeric, simplified)
+
+        # A tonal query can also match a reading that merely contains the letters
+        # (rank 2). Only look for those when the prefix matches did not fill the
+        # page, and skip the rows already handled above.
+        if parsed and len(found) < limit:
+            for word, simplified, marked, toneless, numeric in rows:
+                if toneless.startswith(letters) or letters not in toneless:
+                    continue
+                if simplified in known:
+                    continue
+                consider(word, marked, numeric, simplified)
 
     found.sort(key=lambda item: item[0])
     seen: set[tuple[str, str]] = set()
@@ -4130,34 +4493,110 @@ def dialect_entries(query: str, limit: int | None = None) -> list[dict]:
 # How many results a "list everything" (*) page shows.
 ALL_PAGE_SIZE = 25
 
-# Cache of every distinct simplified headword across all sources, sorted.
-_all_headwords_cache: list[str] | None = None
+# Cache of (every distinct simplified headword, its tier group) across all
+# sources. Both lists are built together so they cannot drift apart.
+_all_headwords_cache: tuple[list[str], list[int]] | None = None
+
+
+def _build_fold(pairs) -> Callable[[str], str]:
+    """Return fold(word): a variant spelling -> its canonical simplified form.
+
+    `pairs` is (traditional, simplified) rows from CEDICT. A traditional form
+    that CEDICT maps to exactly one simplified form uses it. This catches
+    variants OpenCC misses (e.g. 寶/寳 -> 宝, 砲 -> 炮). A form with several
+    candidates (乾 -> 干 or 乾) is ambiguous, so OpenCC decides instead.
+    """
+    candidates: dict[str, set[str]] = {}
+    for traditional, simplified in pairs:
+        if traditional and simplified:
+            candidates.setdefault(traditional, set()).add(simplified)
+    unique = {
+        traditional: next(iter(forms))
+        for traditional, forms in candidates.items()
+        if len(forms) == 1
+    }
+
+    def fold(word: str) -> str:
+        key = unique.get(word) or to_simplified(word)
+        # A second hop lets OpenCC's output be refined by the CEDICT map.
+        return unique.get(key, key)
+
+    return fold
+
+
+def _headword_group(
+    head: str, def_words: set[str], has_reading: set[str], dialect_words: set[str]
+) -> int:
+    """The search tier of a folded headword under a bare "*".
+
+    Mirrors entryTier() in static/app.js: a dialect-only reading is tier 4
+    first, then a word with no definition is tier 5 (it has a reading) or
+    tier 6 (it has neither).
+    """
+    if head in dialect_words:
+        return 4
+    if head in def_words or to_traditional(head) in def_words:
+        return 1
+    return 5 if head in has_reading else 6
+
+
+def _order_headwords(
+    heads: list[str],
+    def_words: set[str],
+    has_reading: set[str],
+    dialect_words: set[str],
+    freq_rank: dict[str, int],
+) -> tuple[list[str], list[int]]:
+    """Sort headwords by (tier, frequency); return (heads, parallel groups).
+
+    A bare "*" makes match tiers 1-3 moot, so the tiers left are 1, 4, 5 and
+    6. Inside a tier the most frequent words come first, and words missing from
+    the frequency list come last.
+    """
+
+    def freq_key(head: str) -> tuple[int, int]:
+        rank = freq_rank.get(head)
+        if rank is None:
+            rank = freq_rank.get(to_traditional(head))
+        return (rank is None, rank or 0)
+
+    keyed = sorted(
+        (
+            _headword_group(head, def_words, has_reading, dialect_words),
+            *freq_key(head),
+            head,
+        )
+        for head in heads
+    )
+    return [row[-1] for row in keyed], [row[0] for row in keyed]
 
 
 def _all_headwords_list() -> list[str]:
     """Every distinct simplified headword across all sources, sorted and cached.
 
-    Simplified forms are collected (via OpenCC) so traditional/simplified pairs
-    collapse to one entry - otherwise a page of 50 raw headwords would display
-    fewer rows after the pairs are merged.
+    Simplified forms are collected (via OpenCC and the CEDICT map) so
+    traditional/simplified pairs collapse to one entry - otherwise a page of 50
+    raw headwords would display fewer rows after the pairs are merged.
     """
     global _all_headwords_cache
     if _all_headwords_cache is not None:
-        return _all_headwords_cache
+        return _all_headwords_cache[0]
     connection = connect()
     try:
         parts = [
             "SELECT simplified AS headword FROM entries",
             "SELECT traditional FROM entries",
         ]
-        # Which headwords actually have a reading. Ones that do not are sorted to
-        # the end, so they only appear on the last pages of a "*" search.
+        # Which headwords actually have a Mandarin reading. Dialect-only
+        # readings are collected separately below and become tier 4.
         has_reading: set[str] = {
             row[0]
             for row in connection.execute(
                 "SELECT simplified FROM entries WHERE pinyin <> ''"
             )
         }
+        # Dialect readings that can stand in for a missing Mandarin reading.
+        dialect_raw: set[str] = set()
         # Which headwords actually have a definition (so ones that do not can be
         # listed after every other entry).
         def_words: set[str] = {
@@ -4209,7 +4648,18 @@ def _all_headwords_list() -> list[str]:
             has_reading.update(
                 to_simplified(row[0])
                 for row in connection.execute(
-                    "SELECT word FROM wikt.readings WHERE pinyin <> ''"
+                    "SELECT word FROM wikt.readings "
+                    "WHERE pinyin <> '' AND kind = 'mandarin'"
+                )
+            )
+            # Dialect-only readings (Wu, Xiang, ...) become tier 4. The app
+            # only falls back to one when the word has no Mandarin reading, so
+            # subtract the Mandarin set later.
+            dialect_raw.update(
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT word FROM wikt.readings "
+                    "WHERE pinyin <> '' AND kind <> 'mandarin'"
                 )
             )
             def_words.update(
@@ -4255,37 +4705,64 @@ def _all_headwords_list() -> list[str]:
                     "SELECT DISTINCT word FROM jpwikt.senses WHERE text <> ''"
                 )
             )
+        # Use the CEDICT map so variants OpenCC misses (e.g. 寳 -> 宝,
+        # 砲 -> 炮) still collapse onto their simplified form, and therefore
+        # get the same tier as the word they belong to.
+        fold = _build_fold(
+            connection.execute("SELECT traditional, simplified FROM entries")
+        )
         union = " UNION ".join(parts)
         rows = connection.execute(f"SELECT DISTINCT headword FROM ({union})").fetchall()
+
+        # Fold the three lookup sets with the same function as the headwords.
+        # dialect_words is "has a dialect reading and no Mandarin one", which is
+        # exactly when the app shows a tier-4 reading.
+        has_reading = {fold(word) for word in has_reading}
+        def_words = {fold(word) for word in def_words}
+        dialect_words = {fold(word) for word in dialect_raw} - has_reading
+
+        freq_rank: dict[str, int] = {}
+        if FREQ_DB_PATH.exists():
+            freq_rank = {
+                row[0]: row[1]
+                for row in connection.execute("SELECT word, rank FROM subtlex.freq")
+            }
     finally:
         connection.close()
     seen: set[str] = set()
     heads: list[str] = []
     for (head,) in rows:
-        key = to_simplified(head)
+        key = fold(head)
         if key and key not in seen:
             seen.add(key)
             heads.append(key)
-    # Definition-bearing headwords first (with a reading before without), then
-    # IDS headwords (⿰, which fonts may not render), then definition-less ones.
-    def order(head: str) -> tuple:
-        if "⿰" in head:
-            return (2, head)
-        has_def = head in def_words or to_traditional(head) in def_words
-        has_read = head in has_reading
-        if has_def:
-            return (0 if has_read else 1, head)
-        return (3 if has_read else 4, head)
 
-    heads.sort(key=order)
-    _all_headwords_cache = heads
+    heads, groups = _order_headwords(
+        heads, def_words, has_reading, dialect_words, freq_rank
+    )
+    _all_headwords_cache = (heads, groups)
     return heads
+
+
+def all_headword_groups() -> list[int]:
+    """The tier group of every headword, parallel to _all_headwords_list().
+
+    Exposed for tests: it lets a test assert the cached "*" order is tier-first
+    without decorating 280k entries.
+    """
+    _all_headwords_list()
+    return _all_headwords_cache[1] if _all_headwords_cache else []
 
 
 def all_headwords(offset: int = 0, limit: int = ALL_PAGE_SIZE) -> tuple[list[str], int]:
     """One page of every distinct headword across all sources, plus the total.
 
-    Used by the "*" search. Headwords are ordered by Unicode so paging is stable.
+    Used by the "*" search. A bare "*" fits every headword, so match tiers 1-3 do
+    not apply, but tiers 4-6 do: words with a definition come first, then
+    dialect-only readings (tier 4), then words with a reading but no definition
+    (tier 5), then words with neither (tier 6). Inside each tier the list is
+    ordered by frequency (missing frequencies last). The order is fixed once the
+    list is cached, so paging is stable.
     """
     heads = _all_headwords_list()
     return heads[offset : offset + limit], len(heads)
@@ -4347,7 +4824,9 @@ def source_entries(word: str) -> list[dict]:
     """
     if not has_cjk_or_glyph(word):
         return []
-    return _decorate(_source_only_entries(word, limit=1, exact=True))
+    return _decorate(
+        _source_only_entries(word, limit=1, exact=True, allow_no_gloss=True)
+    )
 
 
 def prefix_entries(query: str, anchor: str, limit: int = 25) -> list[dict]:
@@ -4445,8 +4924,488 @@ def prefix_entries(query: str, anchor: str, limit: int = 25) -> list[dict]:
     return _decorate(entries[:limit])
 
 
+# Per-dictionary reading index for the fast pinyin preview: anchor ->
+# (stamp, toneless keys, rows) with the rows sorted by toneless reading.
+_anchor_pinyin_cache: dict[str, tuple] = {}
+
+
+def _anchor_pinyin_sorted(anchor: str) -> tuple[list[str], list[tuple]]:
+    """Readings of ONE dictionary as sorted (toneless keys, rows).
+
+    Rows are (word, simplified, marked, toneless, numeric), the same shape as
+    _source_pinyin_rows(), but limited to a single source so a search language
+    can preview its own dictionary (TW -> MOE) instead of always CC-CEDICT.
+    Cached until that dictionary's database file changes.
+    """
+    source = next((item for item in _SOURCE_QUERIES if item["anchor"] == anchor), None)
+    if (
+        source is None
+        or not source.get("pinyin_rows_sql")
+        or not source["database"].exists()
+    ):
+        return [], []
+    stamp = source["database"].stat().st_mtime
+    cached = _anchor_pinyin_cache.get(anchor)
+    if cached is not None and cached[0] == stamp:
+        return cached[1], cached[2]
+    rows: list[tuple[str, str, str, str, str]] = []
+    connection = _connect(source["database"])
+    try:
+        for record in connection.execute(source["pinyin_rows_sql"]):
+            word = record[0]
+            simplified = record[1] if len(record) > 2 else to_simplified(word)
+            pinyin = record[-1]
+            if not word or not simplified or not pinyin:
+                continue
+            marked = _split_pinyin(pinyin) if source.get("split_pinyin") else pinyin
+            toneless = to_toneless(marked)
+            if not toneless:
+                continue
+            rows.append((word, simplified, marked, toneless, to_numeric(marked)))
+    finally:
+        connection.close()
+    rows.sort(key=lambda row: row[3])
+    keys = [row[3] for row in rows]
+    _anchor_pinyin_cache[anchor] = (stamp, keys, rows)
+    return keys, rows
+
+def _freq_key(entry: dict) -> tuple:
+    """Sort key for frequency: missing frequency last, then rank ascending."""
+    return (
+        entry.get("freq") is None,
+        entry["freq"]["rank"] if entry.get("freq") else 0,
+    )
+
+
+
+
+def pinyin_prefix_entries(query: str, anchor: str, limit: int = 25) -> list[dict]:
+    """Headwords from one dictionary whose READING starts with a pinyin query.
+
+    The pinyin counterpart of prefix_entries(): the fast tier previews the first
+    dictionary of the selected search language. Whole readings come first, then
+    readings that start with the query, then frequency. A tone digit is honoured
+    exactly as in search(). Returns [] when the query is not pinyin or the
+    dictionary has no such reading, so the caller can fall back to CC-CEDICT.
+    """
+    query = (query or "").strip().lower()
+    if not query:
+        return []
+    if any(0x3100 <= ord(char) <= 0x312F for char in query):
+        converted = _zhuyin_to_numeric(query)
+        if converted:
+            query = converted
+    parsed = _parse_pinyin_query(query)
+    if parsed:
+        letters, tones, boundaries = parsed
+    else:
+        letters = to_toneless(query)
+        tones, boundaries = {}, set()
+    if not letters or re.fullmatch(r"[a-zü]+", letters) is None:
+        return []
+    keys, rows = _anchor_pinyin_sorted(anchor)
+    if not rows:
+        return []
+    found: dict[str, tuple[int, tuple]] = {}
+    for row in _prefix_rows(keys, rows, letters):
+        if parsed:
+            rank = _reading_rank(row[4], letters, tones, boundaries)
+            if rank is None or rank > 1:
+                continue
+        else:
+            rank = 0 if row[3] == letters else 1
+        word = row[0]
+        if word not in found or rank < found[word][0]:
+            found[word] = (rank, row)
+    if not found:
+        return []
+    entries = []
+    for rank, row in found.values():
+        entries.append(
+            {
+                "simplified": row[1],
+                "traditional": row[0],
+                "pinyin": row[2],
+                "english": "",
+                "english_normalized": "",
+                "_search_rank": rank,
+            }
+        )
+    _attach_freq(entries)
+    entries.sort(
+        key=lambda entry: (
+            entry["_search_rank"],
+            *_freq_key(entry),
+            len(entry["simplified"]),
+            entry["simplified"],
+        )
+    )
+    top = _decorate(entries[:limit])
+    for entry in top:
+        entry.pop("_search_rank", None)
+    return top
+
+
+def _anchor_defined_words(anchor: str, words: list[str]) -> set[str]:
+    """The subset of `words` that one dictionary gives a definition.
+
+    Uses the source's `senses` table rather than only its headword list, so a
+    Wiktionary headword with no gloss does not count as defined. Wiktionary also
+    stores some glosses under a different traditional spelling of the same
+    simplified word (黨群 vs 黨羣), so its readings table is checked too.
+    """
+    source = next((item for item in _SOURCE_QUERIES if item["anchor"] == anchor), None)
+    if source is None or not source["database"].exists() or not words:
+        return set()
+    found: set[str] = set()
+    connection = _connect(source["database"])
+    try:
+        for start in range(0, len(words), 400):
+            chunk = words[start : start + 400]
+            holes = ",".join("?" * len(chunk))
+            try:
+                rows = connection.execute(
+                    source["sense_sql"].format(ph=holes), tuple(chunk)
+                ).fetchall()
+                found.update(row[0] for row in rows)
+            except sqlite3.Error:
+                # Older source databases may predate the senses table.
+                pass
+            if anchor == "wiktionary":
+                try:
+                    rows = connection.execute(
+                        "SELECT DISTINCT r.simplified FROM readings r "
+                        "JOIN wiktionary w ON w.word = r.word "
+                        f"WHERE r.simplified IN ({holes}) "
+                        "AND w.gloss IS NOT NULL",
+                        tuple(chunk),
+                    ).fetchall()
+                    found.update(row[0] for row in rows)
+                except sqlite3.Error:
+                    pass
+    finally:
+        connection.close()
+    return found
+
+
+_NON_PINYIN_LETTER_RE = re.compile(r"[^a-zü]")
+
+
+def _client_toneless(text: str) -> str:
+    """Toneless letters of `text`, exactly like toToneless() in static/app.js.
+
+    Lower-case, marked vowels to their base letter, then drop everything that
+    is not a-z or ü. (pinyin.to_toneless also maps v to ü and drops digits, so
+    it is not used here: the server and the page must agree on every tier.)
+    """
+    return _NON_PINYIN_LETTER_RE.sub("", (text or "").lower().translate(_MARK_TO_BASE))
+
+
+def _glob_match(pattern: str, word: str) -> bool:
+    """True when `word` matches the WHOLE of `pattern`.
+
+    A "glob" is a pattern with two special characters: '*' stands for any run
+    of characters (including none) and '?' stands for exactly one character.
+    This is the same rule as the SQL LIKE pattern from _like_pattern(), but it
+    runs in Python so rows from the secondary dictionaries get the same tier as
+    CC-CEDICT rows. It walks both strings once and only ever falls back to the
+    most recent '*', so a pattern full of stars cannot blow up the way a regex
+    can. static/app.js has a copy (globMatch); keep the two in step.
+    """
+    p = w = 0
+    star = -1  # index of the last '*' seen in the pattern
+    mark = 0  # where in the word that '*' currently stops swallowing
+    while w < len(word):
+        if p < len(pattern) and pattern[p] == "*":
+            star, mark = p, w
+            p += 1
+        elif p < len(pattern) and (pattern[p] == "?" or pattern[p] == word[w]):
+            p += 1
+            w += 1
+        elif star >= 0:
+            # Let the last '*' swallow one more character and try again.
+            mark += 1
+            p, w = star + 1, mark
+        else:
+            return False
+    while p < len(pattern) and pattern[p] == "*":
+        p += 1
+    return p == len(pattern)
+
+
+def _is_wildcard_query(query: str) -> bool:
+    """True for an unquoted '*' / '?' query (full-width forms too).
+
+    Mirrors isWildcardQuery() in static/app.js and the wildcard branch of
+    main.py's api_search.
+    """
+    text = (query or "").strip()
+    quoted = len(text) >= 2 and text.startswith('"') and text.endswith('"')
+    return any(c in text for c in "*?＊？") and not quoted
+
+
+def _wildcard_tier(words: list[str], query: str) -> int | None:
+    """Match tier 1-3 of a Chinese wildcard pattern against a row's headwords.
+
+    1 exact: the whole word fits the pattern (`*后` and `?后` fit 以后 and 后,
+       but `?后` needs exactly two characters and fits 以后 only).
+    2 starts with: the pattern fits the beginning of the word (售后服务 starts
+       with 售后, so it is tier 2 for both `?后` and `*后`).
+    3 contains: the pattern fits somewhere later inside the word.
+    None when the pattern does not fit anywhere. The best tier over the
+    simplified and traditional spelling wins.
+    """
+    pattern = _normalize_wildcards(query.strip()).lower()
+    best: int | None = None
+    for word in words:
+        word = word.lower()
+        # A prefix match is the whole-word match of "pattern + any ending";
+        # a contains match is "any start + pattern + any ending".
+        for tier, glob in ((1, pattern), (2, pattern + "*"), (3, "*" + pattern + "*")):
+            if _glob_match(glob, word):
+                best = tier if best is None else min(best, tier)
+                break
+    return best
+
+
+def _match_tier(entry: dict, query: str, taiwan: bool) -> int | None:
+    """Match tier 1-3 of one row (1 exact, 2 starts with, 3 contains).
+
+    Mirrors matchTier() in static/app.js: a Chinese query compares with the
+    headwords, any other query with the reading the row shows (the Taiwan
+    reading when the Taiwan toggle is on). None when nothing matches.
+    """
+    text = (query or "").strip()
+    if not text:
+        return None
+    if has_cjk(text):
+        words = [w for w in (entry.get("simplified"), entry.get("traditional")) if w]
+        if _is_wildcard_query(text):
+            # A Chinese "*" / "?" pattern is matched as a pattern, not as text.
+            return _wildcard_tier(words, text)
+        if any(word == text for word in words):
+            return 1
+        if any(word.startswith(text) for word in words):
+            return 2
+        if any(text in word for word in words):
+            return 3
+        return None
+    key = _client_toneless(text)
+    if not key:
+        return None
+    shown = entry.get("pinyin")
+    if taiwan:
+        shown = entry.get("pinyin_taiwan") or entry.get("pinyin_numeric") or shown
+    reading = _client_toneless(shown or "")
+    if reading == key:
+        return 1
+    if reading.startswith(key):
+        return 2
+    return 3 if key in reading else None
+
+
+def rank_by_category(
+    entries: list[dict],
+    selected: set[str],
+    query: str = "",
+    taiwan: bool = False,
+) -> list[dict]:
+    """Order a whole result list the way the page orders one page, across all pages.
+
+    Category is the primary key, as the README says ("Results within the same
+    category are sorted by tier"):
+
+    1. a definition in a selected dictionary,
+    2. a definition only in a dictionary that is not selected,
+    3. no definition anywhere.
+
+    Tier is the secondary key (entryTier() in static/app.js): 1 exact, 2 starts
+    with, 3 contains, 4 only a dialect reading, 5 a reading but no definition,
+    6 neither. Category always wins, so a category 1 dialect row (tier 4)
+    beats a category 2 exact match (tier 1). Inside one (category, tier) the
+    old section order is kept: reading, no reading, IDS, dialect.
+
+    The server pages before the page sorts, so it has to sort the whole list by
+    that same key first. Otherwise each page is sorted on its own and a green
+    (tier 3) row can sit at the top of page 47 while red and yellow rows are
+    still waiting on later pages. The sort is stable, so inside one
+    (category, tier, section) the search's own order (frequency) is kept.
+
+    "Has a definition" is approximated from each dictionary's own headword
+    table (the `sql` used for source chips): CC-CEDICT rows carry their English
+    text, every other dictionary is looked up in batches.
+    """
+    if not entries:
+        return entries
+    words = sorted(
+        {entry["traditional"] for entry in entries if entry.get("traditional")}
+        | {entry["simplified"] for entry in entries if entry.get("simplified")}
+    )
+
+    def listed(entry: dict, defined: set[str]) -> bool:
+        return entry.get("traditional") in defined or entry.get("simplified") in defined
+
+    has_cedict = [bool(entry.get("english")) for entry in entries]
+    category1 = [
+        "cedict" in selected and has_cedict[i] for i in range(len(entries))
+    ]
+    other_selected = [anchor for anchor in selected if anchor != "cedict"]
+    other_defined = {
+        anchor: _anchor_defined_words(anchor, words) for anchor in other_selected
+    }
+    for i, entry in enumerate(entries):
+        if not category1[i]:
+            category1[i] = any(listed(entry, d) for d in other_defined.values())
+    # Rows outside category 1 with no CEDICT text may still have a definition
+    # in a dictionary that is not selected; that decides tier 5/6 vs. category 2.
+    need_any = [
+        i for i, entry in enumerate(entries) if not category1[i] and not has_cedict[i]
+    ]
+    any_defined: set[str] = set()
+    if need_any:
+        probe = sorted(
+            {
+                word
+                for i in need_any
+                for word in (entries[i].get("traditional"), entries[i].get("simplified"))
+                if word
+            }
+        )
+        for source in _SOURCE_QUERIES:
+            if source["anchor"] in other_defined:
+                any_defined |= other_defined[source["anchor"]] & set(probe)
+            else:
+                any_defined |= _anchor_defined_words(source["anchor"], probe)
+
+    def key(index: int) -> tuple[int, int, int]:
+        entry = entries[index]
+        has_reading = bool(entry.get("pinyin"))
+        dialect = bool(entry.get("pinyin_label") or entry.get("pinyin_no_tone"))
+        defined = (
+            category1[index] or has_cedict[index] or listed(entry, any_defined)
+        )
+        if dialect:
+            tier = 4
+        elif not defined:
+            tier = 5 if has_reading else 6
+        else:
+            tier = _match_tier(entry, query, taiwan) or 3
+        # Category is the primary key, so it always beats the tier.
+        if category1[index]:
+            category = 1
+        elif defined:
+            category = 2
+        else:
+            category = 3
+        # Section order inside one (category, tier), as render() lists it:
+        # reading, no reading, IDS, dialect.
+        ids = "\u2ff0" in (entry.get("simplified") or "") or "\u2ff0" in (
+            entry.get("traditional") or ""
+        )
+        sub = (2 if ids else 0 if has_reading else 1) if not dialect else 3
+        return (category, tier, sub)
+
+    order = sorted(range(len(entries)), key=key)
+    ranked: list[dict] = []
+    for index in order:
+        entry = entries[index]
+        category, tier, _sub = key(index)
+        # Send the same values the page uses, so it does not have to recompute
+        # (and cannot disagree with the server order).
+        entry["category"] = category
+        entry["tier"] = tier
+        ranked.append(entry)
+    return ranked
+
+
+def group_rows(rows: list[dict]) -> list[list[dict]]:
+    """Group rows that share a simplified headword, in first-seen order.
+
+    A raw result list can hold several spellings that display as the same
+    simplified form (了/瞭, 和/咊). Grouping before paging keeps all of them on
+    one page, so the browser's merge cannot produce the same word on two pages
+    and the total counts merged words instead of raw rows.
+    """
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        key = row.get("simplified") or row.get("traditional") or ""
+        groups.setdefault(key, []).append(row)
+    return list(groups.values())
+
+
+def page_groups(
+    rows: list[dict], offset: int, limit: int
+) -> tuple[list[dict], int]:
+    """One page of whole simplified-headword groups, plus the group count.
+
+    The returned rows may be more than `limit` when a group holds several
+    spellings; the browser merges them down to at most `limit` rows.
+    """
+    groups = group_rows(rows)
+    page = groups[offset : offset + limit]
+    for group in page:
+        key = group[0].get("simplified") or group[0].get("traditional") or ""
+        for row in group:
+            row["group"] = key
+    return [row for group in page for row in group], len(groups)
+
+
+def wildcard_candidates(query: str) -> list[dict] | None:
+    """Every row a Chinese "*" / "?" pattern fits, lightly decorated.
+
+    Returns None when the query is not a Chinese pattern (a pinyin pattern
+    still goes through wildcard_search). Unlike wildcard_search this does not
+    page: the caller ranks the whole list with rank_by_category() and then
+    slices the page, so the order is the same on every page.
+
+    The pattern may fit anywhere in the word (`?后` finds 以后, 售后服务 and
+    以后再说), because rank_by_category() sorts exact matches, then words that
+    start with a match, then words that merely contain one. The rows arrive
+    sorted by frequency, which rank_by_category() keeps inside each tier.
+    """
+    text = (query or "").strip()
+    if not any(c in text for c in "*?＊？"):
+        return None
+    chinese = to_simplified(text)
+    literal = chinese
+    for _c in ("*", "?", "＊", "？"):
+        literal = literal.replace(_c, "")
+    if not has_cjk(literal):
+        return None
+    # "*pattern*" lets the pattern fit anywhere in the headword.
+    anywhere = _like_pattern(f"*{chinese}*")
+    connection = connect()
+    try:
+        rows = connection.execute(
+            "SELECT simplified, traditional, pinyin, english, english_normalized "
+            "FROM entries WHERE simplified LIKE ? ESCAPE '\\' "
+            "ORDER BY length(simplified), id",
+            (anywhere,),
+        ).fetchall()
+    finally:
+        connection.close()
+    # Headwords only the secondary dictionaries have are matched the same way
+    # (the pattern is wrapped in stars so it can fit anywhere there too).
+    source_rows = _source_only_entries(f"*{text}*", limit=_cap(500))
+    entries: list[dict] = []
+    seen: set[tuple] = set()
+    for entry in [dict(row) for row in rows] + source_rows:
+        if not has_cjk(entry["simplified"]):
+            continue
+        key = (entry["traditional"], entry.get("pinyin"))
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(entry)
+    # Attach the frequency, then order by it (missing last). The sort is
+    # stable, so equal frequencies keep the shorter-word-first order above.
+    _light_decorate(entries)
+    entries.sort(key=_freq_key)
+    return entries
+
+
 def wildcard_search(
-    query: str, limit: int = 50, offset: int = 0
+    query: str, limit: int = 50, offset: int = 0, taiwan: bool = False
 ) -> tuple[list[dict], int, bool]:
     """Paged results for a "*" or "?" pattern query.
 
@@ -4511,13 +5470,30 @@ def wildcard_search(
                 if regex is None:
                     return [], 0, False
                 pattern = _pinyin_wildcard_pattern(text)
-                candidates = connection.execute(
-                    "SELECT simplified, traditional, pinyin, pinyin_numeric, "
-                    "english, english_normalized, "
-                    f"{FREQ_RANK_COLUMN} AS freq_rank "
-                    "FROM entries WHERE pinyin_toneless LIKE ? ESCAPE '\\'",
-                    (pattern,),
-                ).fetchall()
+                use_tw = taiwan and _taiwan_ready()
+                if use_tw:
+                    candidates = connection.execute(
+                        "SELECT entries.simplified AS simplified, "
+                        "entries.traditional AS traditional, "
+                        "entries.pinyin AS pinyin, "
+                        "COALESCE(tw.readings.tw_numeric, entries.pinyin_numeric) AS pinyin_numeric, "
+                        "entries.english AS english, "
+                        "entries.english_normalized AS english_normalized, "
+                        f"entries.{FREQ_RANK_COLUMN} AS freq_rank "
+                        "FROM entries JOIN tw.readings ON tw_source = 'cedict' "
+                        "AND tw_word = entries.traditional "
+                        "AND tw_mainland = entries.pinyin "
+                        "WHERE tw.readings.tw_toneless LIKE ? ESCAPE '\\'",
+                        (pattern,),
+                    ).fetchall()
+                else:
+                    candidates = connection.execute(
+                        "SELECT simplified, traditional, pinyin, pinyin_numeric, "
+                        "english, english_normalized, "
+                        f"{FREQ_RANK_COLUMN} AS freq_rank "
+                        "FROM entries WHERE pinyin_toneless LIKE ? ESCAPE '\\'",
+                        (pattern,),
+                    ).fetchall()
                 matched = []
                 for candidate in candidates:
                     syllables = (candidate["pinyin_numeric"] or "").split()
@@ -4536,33 +5512,68 @@ def wildcard_search(
                 rows = matched[offset : offset + limit]
                 pinyin_match = True
             else:
+                use_tw = taiwan and _taiwan_ready()
                 pinyin_key = to_toneless(text)
-                if not pinyin_key:
-                    return [], 0, False
                 pattern = _like_pattern(
                     "*".join(to_toneless(part) for part in text.split("*"))
                 )
-                note_pattern = _like_pattern(f"*pr. [{pinyin_key}*")
-                where = f"pinyin_toneless LIKE ? ESCAPE '\\' OR {_note_or()}"
-                count_params = (pattern, note_pattern)
-                order = (
-                    # Direct readings before note-only matches, then the whole
-                    # reading, then frequency (a "Taiwan pr." note must not
-                    # outrank a more common word with its own matching reading).
-                    "(pinyin_toneless LIKE ? ESCAPE '\\') DESC, "
-                    "(pinyin_toneless = ?) DESC"
-                    f"{freq_clause}, length(simplified), id"
-                )
-                order_params = (pattern, pinyin_key)
-                total = connection.execute(
-                    f"SELECT COUNT(*) FROM entries WHERE {where}", count_params
-                ).fetchone()[0]
-                rows = connection.execute(
-                    "SELECT simplified, traditional, pinyin, english, english_normalized "
-                    f"FROM entries WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
-                    (*count_params, *order_params, limit, offset),
-                ).fetchall()
-                pinyin_match = True
+                if use_tw:
+                    where = "tw.readings.tw_toneless LIKE ? ESCAPE '\\'"
+                    count_params = (pattern,)
+                    order = (
+                        "(tw.readings.tw_toneless LIKE ? ESCAPE '\\') DESC, "
+                        "(tw.readings.tw_toneless = ?) DESC"
+                        f"{freq_clause}, length(entries.simplified), entries.id"
+                    )
+                    order_params = (pattern, pinyin_key)
+                    total = connection.execute(
+                        "SELECT COUNT(*) FROM entries JOIN tw.readings ON "
+                        "tw_source = 'cedict' AND tw_word = entries.traditional "
+                        "AND tw_mainland = entries.pinyin "
+                        f"WHERE {where}",
+                        count_params,
+                    ).fetchone()[0]
+                    rows = connection.execute(
+                        "SELECT entries.simplified AS simplified, "
+                        "entries.traditional AS traditional, "
+                        "entries.pinyin AS pinyin, "
+                        "entries.english AS english, "
+                        "entries.english_normalized AS english_normalized "
+                        "FROM entries JOIN tw.readings ON tw_source = 'cedict' "
+                        "AND tw_word = entries.traditional "
+                        "AND tw_mainland = entries.pinyin "
+                        f"WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                        (*count_params, *order_params, limit, offset),
+                    ).fetchall()
+                    pinyin_match = True
+                else:
+                    pinyin_key = to_toneless(text)
+                    if not pinyin_key:
+                        return [], 0, False
+                    pattern = _like_pattern(
+                        "*".join(to_toneless(part) for part in text.split("*"))
+                    )
+                    note_pattern = _like_pattern(f"*pr. [{pinyin_key}*")
+                    where = f"pinyin_toneless LIKE ? ESCAPE '\\' OR {_note_or()}"
+                    count_params = (pattern, note_pattern)
+                    order = (
+                        # Direct readings before note-only matches, then the whole
+                        # reading, then frequency (a "Taiwan pr." note must not
+                        # outrank a more common word with its own matching reading).
+                        "(pinyin_toneless LIKE ? ESCAPE '\\') DESC, "
+                        "(pinyin_toneless = ?) DESC"
+                        f"{freq_clause}, length(simplified), id"
+                    )
+                    order_params = (pattern, pinyin_key)
+                    total = connection.execute(
+                        f"SELECT COUNT(*) FROM entries WHERE {where}", count_params
+                    ).fetchone()[0]
+                    rows = connection.execute(
+                        "SELECT simplified, traditional, pinyin, english, english_normalized "
+                        f"FROM entries WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                        (*count_params, *order_params, limit, offset),
+                    ).fetchall()
+                    pinyin_match = True
     finally:
         connection.close()
 
@@ -4946,6 +5957,45 @@ def _merge_unique(base: list[dict], extra: list[dict]) -> list[dict]:
     return merged
 
 
+def _tw_cedict_rows(
+    connection, letters: str, include: str, exclude: str | None, trigram: bool
+) -> list:
+    """CEDICT rows whose prefilled TAIWAN reading matches `letters`.
+
+    `include` is a LIKE pattern over tw_toneless; `exclude` (optional) removes
+    rows an earlier phase already returned. Rows carry the Taiwan numeric reading
+    as `pinyin_numeric`, so the caller ranks on the reading the user searched.
+    """
+    if trigram:
+        # `letters` is plain a-z/ü, so no LIKE escaping is needed.
+        where = (
+            "tw.readings.rowid IN (SELECT rowid FROM tw.readings_fts "
+            "WHERE tw_toneless LIKE ?)"
+        )
+        params: tuple = (f"%{letters}%" if exclude is not None else f"{letters}%",)
+        if exclude is not None:
+            where += (
+                " AND tw.readings.rowid NOT IN (SELECT rowid FROM tw.readings_fts "
+                "WHERE tw_toneless LIKE ?)"
+            )
+            params += (f"{letters}%",)
+    else:
+        where = "tw_toneless LIKE ? ESCAPE '\\'"
+        params = (include,)
+        if exclude is not None:
+            where += " AND tw_toneless NOT LIKE ? ESCAPE '\\'"
+            params += (exclude,)
+    return _fetchall(
+        connection,
+        "SELECT entries.id AS id, entries.simplified AS simplified, "
+        "entries.traditional AS traditional, entries.pinyin AS pinyin, "
+        "tw_numeric AS pinyin_numeric, 0 AS alt "
+        f"FROM {_TW_CEDICT_FROM} WHERE tw_source = 'cedict' AND {where}",
+        params,
+        "pinyin_lookup_taiwan",
+    )
+
+
 def search(
     query: str,
     limit: int = 50,
@@ -5079,17 +6129,39 @@ def search(
         contains = _like_pattern(f"*{letters}*")
         counts = _reading_counts()
         char_map = _moe_char_map()
+        # With the Taiwan toggle the candidate rows are chosen by their prefilled
+        # TAIWAN reading (taiwan_readings.sqlite), so a word whose Taiwan reading
+        # matches is fetched even if its mainland reading does not, and the other
+        # way round. Without the table it falls back to the live derivation.
+        use_tw = taiwan and _taiwan_ready()
         connection = connect()
         try:
             ranked: list[tuple] = []
             seen_ids: set[int] = set()
             phases = [(prefix, None)]
-            if not taiwan:
+            if part != "primary" and (use_tw or not taiwan):
                 phases.append((contains, prefix))
             # The trigram index answers the same substring test as LIKE, but
             # only once the query has enough characters to form a trigram.
             use_trigram = _has_cedict_trigram() and len(letters) >= 3
+            tw_trigram = _taiwan_has_trigram() and len(letters) >= 3
             for pattern, exclude in phases:
+                if use_tw:
+                    rows = _tw_cedict_rows(
+                        connection, letters, pattern, exclude, tw_trigram
+                    )
+                    for row in rows:
+                        if row["id"] in seen_ids:
+                            continue
+                        seen_ids.add(row["id"])
+                        rank = _reading_rank(
+                            row["pinyin_numeric"], letters, tones, boundaries
+                        )
+                        if rank is not None:
+                            ranked.append((rank, len(row["simplified"]), row["id"]))
+                    if len(ranked) >= limit:
+                        break
+                    continue
                 if use_trigram:
                     # `letters` is plain a-z/ü, so no LIKE escaping is needed.
                     if exclude is None:
@@ -5234,23 +6306,42 @@ def search(
                 pinyin_clause = "pinyin_toneless LIKE ? ESCAPE '\\'"
                 pinyin_params = (pattern,)
                 direct_pattern = pattern
-            rows = _fetchall(
-                connection,
-                "SELECT simplified, traditional, pinyin, english, english_normalized "
-                f"FROM entries WHERE {pinyin_clause} "
-                f"OR {_note_or()} "
-                # Direct readings first, then the whole reading, then frequency.
-                # An alternate-pronunciation note ("Taiwan pr. [wei2]") must not
-                # outrank a more common word whose own reading is the query.
-                "ORDER BY (pinyin_toneless LIKE ? ESCAPE '\\') DESC, "
-                "(pinyin_toneless = ?) DESC"
-                f"{freq_clause}, length(simplified), id LIMIT ?",
-                (*pinyin_params, note_pattern, direct_pattern, pinyin_key, limit),
-                "pinyin_lookup",
-            )
+            use_tw = taiwan and _taiwan_ready()
+            if use_tw:
+                # Taiwan toggle: match the prefilled Taiwan reading of EVERY CEDICT
+                # row (a whole reading first, then readings that start with the
+                # query), so the candidates and the displayed reading agree.
+                rows = _fetchall(
+                    connection,
+                    "SELECT entries.simplified AS simplified, "
+                    "entries.traditional AS traditional, entries.pinyin AS pinyin, "
+                    "entries.english AS english, "
+                    "entries.english_normalized AS english_normalized "
+                    f"FROM {_TW_CEDICT_FROM} "
+                    "WHERE tw_source = 'cedict' AND tw_toneless LIKE ? ESCAPE '\\' "
+                    "ORDER BY (tw_toneless = ?) DESC"
+                    f"{freq_clause}, length(entries.simplified), entries.id LIMIT ?",
+                    (pattern, pinyin_key, limit),
+                    "pinyin_lookup_taiwan",
+                )
+            else:
+                rows = _fetchall(
+                    connection,
+                    "SELECT simplified, traditional, pinyin, english, english_normalized "
+                    f"FROM entries WHERE {pinyin_clause} "
+                    f"OR {_note_or()} "
+                    # Direct readings first, then the whole reading, then frequency.
+                    # An alternate-pronunciation note ("Taiwan pr. [wei2]") must not
+                    # outrank a more common word whose own reading is the query.
+                    "ORDER BY (pinyin_toneless LIKE ? ESCAPE '\\') DESC, "
+                    "(pinyin_toneless = ?) DESC"
+                    f"{freq_clause}, length(simplified), id LIMIT ?",
+                    (*pinyin_params, note_pattern, direct_pattern, pinyin_key, limit),
+                    "pinyin_lookup",
+                )
             # With the Taiwan toggle on, also match MOE (Taiwan) readings, so a
             # query like "lese" finds 垃圾.
-            if taiwan:
+            if taiwan and not use_tw:
                 words = sorted(_moe_toneless_map().get(pinyin_key, ()))
                 if words:
                     holes = ",".join("?" * len(words))
@@ -5266,27 +6357,55 @@ def search(
             # exact and prefix match. The fast tier deliberately skips this.
             if part != "primary" and not wildcard:
                 contains_pattern = _like_pattern(f"*{pinyin_key}*")
-                if use_trigram:
-                    contains_clause = (
-                        "id IN (SELECT rowid FROM entries_fts_trigram "
-                        "WHERE pinyin_toneless LIKE ?)"
+                if use_tw:
+                    tw_order = ", ".join(_freq_order() + ["length(entries.simplified)", "entries.id"])
+                    if _taiwan_has_trigram() and len(pinyin_key) >= 3 and (
+                        re.fullmatch(r"[a-zü]+", pinyin_key) is not None
+                    ):
+                        tw_contains = (
+                            "tw.readings.rowid IN (SELECT rowid FROM tw.readings_fts "
+                            "WHERE tw_toneless LIKE ?)"
+                        )
+                        tw_params = (f"%{pinyin_key}%",)
+                    else:
+                        tw_contains = "tw_toneless LIKE ? ESCAPE '\\'"
+                        tw_params = (contains_pattern,)
+                    rows += _fetchall(
+                        connection,
+                        "SELECT entries.simplified AS simplified, "
+                        "entries.traditional AS traditional, "
+                        "entries.pinyin AS pinyin, entries.english AS english, "
+                        "entries.english_normalized AS english_normalized "
+                        f"FROM {_TW_CEDICT_FROM} "
+                        f"WHERE tw_source = 'cedict' AND {tw_contains} "
+                        "AND tw_toneless NOT LIKE ? ESCAPE '\\' "
+                        f"ORDER BY {tw_order} LIMIT ?",
+                        (*tw_params, pattern, limit),
+                        "pinyin_contains_taiwan",
                     )
-                    contains_params = (f"%{pinyin_key}%",)
                 else:
-                    contains_clause = "pinyin_toneless LIKE ? ESCAPE '\\'"
-                    contains_params = (contains_pattern,)
-                contains_order = ", ".join(
-                    _freq_order() + ["length(simplified)", "id"]
-                )
-                rows += _fetchall(
-                    connection,
-                    "SELECT simplified, traditional, pinyin, english, english_normalized "
-                    f"FROM entries WHERE {contains_clause} "
-                    "AND pinyin_toneless NOT LIKE ? ESCAPE '\\' "
-                    f"ORDER BY {contains_order} LIMIT ?",
-                    (*contains_params, direct_pattern, limit),
-                    "pinyin_contains",
-                )
+                    contains_pattern = _like_pattern(f"*{pinyin_key}*")
+                    if use_trigram:
+                        contains_clause = (
+                            "id IN (SELECT rowid FROM entries_fts_trigram "
+                            "WHERE pinyin_toneless LIKE ?)"
+                        )
+                        contains_params = (f"%{pinyin_key}%",)
+                    else:
+                        contains_clause = "pinyin_toneless LIKE ? ESCAPE '\\'"
+                        contains_params = (contains_pattern,)
+                    contains_order = ", ".join(
+                        _freq_order() + ["length(simplified)", "id"]
+                    )
+                    rows += _fetchall(
+                        connection,
+                        "SELECT simplified, traditional, pinyin, english, english_normalized "
+                        f"FROM entries WHERE {contains_clause} "
+                        "AND pinyin_toneless NOT LIKE ? ESCAPE '\\' "
+                        f"ORDER BY {contains_order} LIMIT ?",
+                        (*contains_params, direct_pattern, limit),
+                        "pinyin_contains",
+                    )
         finally:
             connection.close()
         # Only real (hanzi) words count; skip latin headwords like the slang
@@ -5310,7 +6429,9 @@ def search(
             source_rows = []
         else:
             with pd.stage("source_pinyin"):
-                source_rows = _source_pinyin_entries(query, limit=limit)
+                source_rows = _source_pinyin_entries(
+                    query, limit=limit, taiwan=taiwan
+                )
         if entries or source_rows:
             if part == "primary":
                 return decorate(entries), True

@@ -196,8 +196,13 @@ function tick() {
                     (node) => node.textContent.includes("Flame Emperors")
                 );
                 if (line) {
+                    const count = doc.querySelector(".results-count");
                     win.navigator.clipboard.writeText = async (text) => {
-                        out.textContent = JSON.stringify({ text });
+                        out.textContent = JSON.stringify({
+                            text,
+                            count: count?.textContent || "",
+                            timing: Boolean(count?.querySelector(".results-timing")),
+                        });
                     };
                     line.querySelector(".def-copy").click();
                     return;
@@ -428,3 +433,10 @@ def test_definition_copy_converts_pinyin_to_zhuyin(search_server, tmp_path):
     assert "神農|神农[ㄕㄣˊ ㄋㄨㄥˊ]" in text
     assert "[Yan2 di4]" not in text
     assert "[Shen2 nong2]" not in text
+
+
+def test_details_page_uses_the_results_slot_for_a_details_label(search_server, tmp_path):
+    """The exact-word page shows Details where the search page shows N RESULTS."""
+    report = _dump_report(f"{search_server}/__copy_test__", tmp_path)
+    assert report["count"] == "Details"
+    assert report["timing"] is False

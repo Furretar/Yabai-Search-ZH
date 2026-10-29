@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from yabai_search import db, segment
+from yabai_search import db, merge as merge_results, segment
 from yabai_search import perf_debug as pd
 from yabai_search.default_dictionaries import DEFAULTS
 from yabai_search.overrides import PREFERRED_READINGS
@@ -61,6 +61,31 @@ _START_TS = int(time.time())
 def search_version() -> str:
     """Cache version for /api/search: data fingerprint plus process start time."""
     return f"{db.data_version()}-{_START_TS:x}"
+
+
+# The two merged layouts for a page, cached across identical requests. The key
+# covers everything that changes the ranked rows, plus the data version.
+_page_layout_cache: "collections.OrderedDict[tuple, tuple[list[dict], list[dict], bool]]" = collections.OrderedDict()
+_page_layout_lock = threading.Lock()
+_PAGE_LAYOUT_CACHE_MAX = 128
+
+
+def _page_layouts_cached(
+    key: tuple, rows: list[dict], taiwan: bool
+) -> tuple[list[dict], list[dict], bool]:
+    """Both script layouts for one page, cached across identical requests."""
+    with _page_layout_lock:
+        hit = _page_layout_cache.get(key)
+        if hit is not None:
+            _page_layout_cache.move_to_end(key)
+            return hit
+    simplified, traditional, alt_same = merge_results.page_layouts(rows, taiwan)
+    with _page_layout_lock:
+        _page_layout_cache[key] = (simplified, traditional, alt_same)
+        _page_layout_cache.move_to_end(key)
+        while len(_page_layout_cache) > _PAGE_LAYOUT_CACHE_MAX:
+            _page_layout_cache.popitem(last=False)
+    return simplified, traditional, alt_same
 
 # Cache of the local device's Tailscale IPs, used to decide whether a report
 # request came from this machine.
@@ -420,6 +445,16 @@ def _warm_caches() -> None:
         + json.dumps(db.fast_path_status(), ensure_ascii=False, separators=(",", ":")),
         flush=True,
     )
+    # The Taiwan toggle searches the prefilled table; say so loudly if it is
+    # missing or was built from different sources, overrides or logic.
+    taiwan_status = db.taiwan_table_status()
+    if taiwan_status != "ok":
+        print(
+            f"WARNING: data/taiwan_readings.sqlite is {taiwan_status}; the Taiwan "
+            "toggle falls back to slower, less complete matching. Rebuild it with "
+            "`python scripts/build_taiwan_readings.py` (see AGENTS.md).",
+            flush=True,
+        )
 
 
 @app.on_event("startup")
@@ -819,17 +854,24 @@ def _reading_count(entry: dict) -> int:
     """
     if "_reading_count" in entry:
         return entry["_reading_count"]
-    key = db.reading_key(entry.get("pinyin"))
+    pinyin = entry.get("pinyin") or ""
+    key = db.reading_key(pinyin)
     for definition in entry.get("definitions", []):
         if definition.get("anchor") == "cedict":
-            for group in definition.get("groups", []):
-                if db.reading_key(group.get("pinyin")) == key:
-                    # "variant of X" senses are pointers, not meanings.
-                    return sum(
-                        1
-                        for sense in group.get("senses", [])
-                        if not db.is_xref_sense(sense)
-                    )
+            groups = definition.get("groups", [])
+            # Exact reading first: "Gān" (surname) and "gān" are different groups.
+            group = next((g for g in groups if g.get("pinyin") == pinyin), None)
+            if group is None:
+                group = next(
+                    (g for g in groups if db.reading_key(g.get("pinyin")) == key), None
+                )
+            if group is not None:
+                # "variant of X" senses are pointers, not meanings.
+                return sum(
+                    1
+                    for sense in group.get("senses", [])
+                    if not db.is_xref_sense(sense)
+                )
     return 0
 
 
@@ -989,9 +1031,14 @@ def api_search(
     part: str = Query("all"),
     lang: str = "EN",
     exact: bool = False,
+    dicts: str = "",
+    script: str = Query("simplified"),
+    merge: bool = False,
 ):
     """JSON search endpoint. `q` is the term; `limit` is clamped to 1..25.
 
+    `script` is the display script ("simplified" or "traditional"). It decides
+    which merged layout is returned when the server merge is enabled.
     `taiwan` lets a pinyin search also match Taiwan (MOE) readings.
     `pinyin_match` is true when the query was an exact Chinese reading - in which
     case `results` holds only those readings, no English-definition matches.
@@ -1000,8 +1047,14 @@ def api_search(
     other search returns at most 25 rows per page; tone-insensitive "fuzzy"
     matches are placed after all official results and paginated with them.
 
-    `part="primary"` returns only the fast CEDICT tier, so the page can render
-    results progressively; the plain request returns the complete final list.
+    `part="primary"` returns only the fast tier (the first dictionary of the
+    selected search language), so the page can render results progressively; the
+    plain request returns the complete final list.
+
+    `dicts` is a comma-separated list of the dictionary anchors the user has
+    selected. When given, the complete request orders every match by category
+    (a definition in a selected dictionary first) before it is paged, so the
+    category order holds across pages and not only inside one page.
     """
     pd.mark("handler_start")
     db.start_log()  # capture the SQL this search runs (for data/search.log)
@@ -1013,6 +1066,13 @@ def api_search(
     lang = (lang or "EN").strip().upper()
     if lang not in DEFAULTS:
         lang = "EN"
+    # Only anchors this server knows; local imported dictionaries are ignored.
+    known_anchors = {item["anchor"] for item in db._SOURCE_QUERIES}
+    selected_dicts = {
+        anchor.strip()
+        for anchor in (dicts or "").split(",")
+        if anchor.strip() in known_anchors
+    }
 
     def mark(name: str, at: float) -> None:
         """Add one debug phase duration without changing the search itself."""
@@ -1029,7 +1089,10 @@ def api_search(
             # the same JSON shape as a normal search.
             word = q.strip()
             entries = db.lookup(word) or db.source_entries(word)
-            entries = [dict(entry) for entry in entries]
+            # Follow "see X" / "variant of X" redirects, like a normal search.
+            # Without this, a cross-reference such as 没sei了 -> 沒誰了 showed
+            # its CC-CEDICT chip but none of the target's definitions.
+            entries = _expand_variants([dict(entry) for entry in entries])
             for entry in entries:
                 slug = _audio_slug(
                     entry.get("traditional", ""), entry.get("pinyin", "")
@@ -1076,9 +1139,16 @@ def api_search(
             # the requested page, with its total for the pager.
             at = time.perf_counter()
             with pd.stage("wildcard"):
-                entries, total, pinyin_match = db.wildcard_search(
-                    q, db.ALL_PAGE_SIZE, offset
-                )
+                # A Chinese pattern (`?后`, `*后`) returns every row it fits so
+                # the whole list can be ranked before paging. A pinyin pattern
+                # (None here) is still paged inside the database query.
+                candidates = db.wildcard_candidates(q)
+                if candidates is None:
+                    entries, total, pinyin_match = db.wildcard_search(
+                        q, db.ALL_PAGE_SIZE, offset, taiwan=taiwan
+                    )
+                else:
+                    entries, pinyin_match = candidates, False
             mark("db", at)
             at = time.perf_counter()
             with pd.stage("expand"):
@@ -1086,6 +1156,31 @@ def api_search(
             mark("expand", at)
             counters["raw"] = len(entries)
             counters["expanded"] = len(results)
+            if candidates is not None:
+                # Same ranking as a normal search: exact matches first, then
+                # words that start with a match, then words that contain one
+                # (each by frequency). Sorting the whole list before slicing
+                # keeps the order identical on every page.
+                if selected_dicts:
+                    at = time.perf_counter()
+                    with pd.stage("category_rank"):
+                        results = db.rank_by_category(
+                            results, selected_dicts, q, taiwan
+                        )
+                    mark("category_rank", at)
+                    counters["selected_dicts"] = ",".join(sorted(selected_dicts))
+                # Page whole simplified-headword groups, like a normal search,
+                # so a wildcard search cannot split 了/瞭 across two pages.
+                if os.environ.get("YABAI_SERVER_ORDER", "1") != "0":
+                    results, total = db.page_groups(
+                        results, offset, db.ALL_PAGE_SIZE
+                    )
+                else:
+                    total = len(results)
+                    results = results[offset : offset + db.ALL_PAGE_SIZE]
+                # Only the rows on the requested page need their definitions.
+                with pd.stage("decorate_page"):
+                    results = db.decorate_entries(results)
             fuzzy = []
             english_match = False
         elif part == "primary":
@@ -1094,15 +1189,27 @@ def api_search(
             # search language (EN -> CEDICT, TW -> MOE, ...). Only words that
             # start with the query are fetched; the full tier adds the rest.
             quoted = len(q) >= 2 and q.startswith('"') and q.endswith('"')
+            anchor = DEFAULTS[lang][0]
+            counters["primary_anchor"] = anchor
+            entries = []
+            pinyin_match = False
             if db.has_cjk(q) and not quoted:
-                anchor = DEFAULTS[lang][0]
-                counters["primary_anchor"] = anchor
                 with pd.stage("db_search"):
                     entries = db.prefix_entries(q, anchor, limit)
-                pinyin_match = False
             else:
-                with pd.stage("db_search"):
-                    entries, pinyin_match = db.search(q, limit, taiwan, part="primary")
+                # A pinyin query previews the same dictionary: TW -> MOE
+                # readings, ZH -> Chinese Wiktionary. CC-CEDICT is both the EN
+                # default and the fallback when that dictionary has no reading
+                # for the query (English words, for example).
+                if anchor != "cedict" and not quoted:
+                    with pd.stage("db_search"):
+                        entries = db.pinyin_prefix_entries(q, anchor, limit)
+                    pinyin_match = bool(entries)
+                if not entries:
+                    with pd.stage("db_search"):
+                        entries, pinyin_match = db.search(
+                            q, limit, taiwan, part="primary"
+                        )
             mark("db", at)
             at = time.perf_counter()
             with pd.stage("expand"):
@@ -1110,6 +1217,19 @@ def api_search(
             mark("expand", at)
             counters["raw"] = len(entries)
             counters["expanded"] = len(results)
+            # Rank and page the preview by whole groups too, so its rows are
+            # already in their final order and spelling when they appear.
+            if selected_dicts:
+                results = db.rank_by_category(results, selected_dicts, q, taiwan)
+                counters["selected_dicts"] = ",".join(sorted(selected_dicts))
+            if os.environ.get("YABAI_SERVER_ORDER", "1") != "0":
+                results, _ = db.page_groups(results, 0, limit)
+            # D4 limitation: this preview is not yet a prefix of the full list.
+            # It previews one dictionary (the language default), so an exact
+            # match from another selected dictionary can still sort above a row
+            # shown here when the full response arrives. The exact-primary step
+            # (query every selected dictionary, keep category 1 tier 1) is not
+            # implemented yet.
             fuzzy = []
             if pinyin_match:
                 with pd.stage("english_hint"):
@@ -1214,21 +1334,76 @@ def api_search(
             # every official result, so they only appear on the last pages.
             # The pager total covers both lists, and the requested page is a
             # slice of that combined list.
-            official_total = len(results)
-            counters["official_total"] = official_total
-            counters["fuzzy_total"] = len(fuzzy)
-            total = official_total + len(fuzzy)
-            page_end = offset + limit
-            results = results[offset : min(page_end, official_total)]
-            fuzzy = fuzzy[
-                max(0, offset - official_total) : max(0, page_end - official_total)
-            ]
+            # Order the whole list by the six-level tier (then by section: a
+            # definition in a selected dictionary first) before paging, so the
+            # order the page shows is the same on every page and a green row can
+            # never sit ahead of a red or yellow row that is on a later page.
+            if selected_dicts:
+                at = time.perf_counter()
+                with pd.stage("category_rank"):
+                    results = db.rank_by_category(
+                        results, selected_dicts, q, taiwan
+                    )
+                mark("category_rank", at)
+                counters["selected_dicts"] = ",".join(sorted(selected_dicts))
+            # Page whole simplified-headword groups, so one word (e.g. 了 with
+            # 瞭) cannot appear on two pages and the total counts merged words.
+            # YABAI_SERVER_ORDER=0 restores the old raw-row paging.
+            if os.environ.get("YABAI_SERVER_ORDER", "1") != "0":
+                results, official_total = db.page_groups(results, offset, limit)
+                counters["official_total"] = official_total
+                counters["fuzzy_total"] = len(fuzzy)
+                total = official_total + len(fuzzy)
+                # Fuzzy rows start only after every official group. The first
+                # pages are entirely official, so this slice is empty there.
+                fuzzy_start = max(0, offset - official_total)
+                fuzzy_end = max(0, offset + limit - official_total)
+                fuzzy = fuzzy[fuzzy_start:fuzzy_end]
+            else:
+                official_total = len(results)
+                counters["official_total"] = official_total
+                counters["fuzzy_total"] = len(fuzzy)
+                total = official_total + len(fuzzy)
+                page_end = offset + limit
+                results = results[offset : min(page_end, official_total)]
+                fuzzy = fuzzy[
+                    max(0, offset - official_total) : max(0, page_end - official_total)
+                ]
             # Lazy hydration only ranked the official rows; fetch the
             # definitions for the page we are actually returning.
             with pd.stage("decorate_page"):
                 results = db.decorate_entries(results)
     finally:
         statements = db.end_log()
+    script = "traditional" if script == "traditional" else "simplified"
+    alt_results: list[dict] = []
+    alt_same = False
+    if (
+        (merge or os.environ.get("YABAI_SERVER_MERGE") == "1")
+        and not exact
+    ):
+        # Build both display scripts in one pass. The browser reuses the page
+        # when no group splits, and otherwise already has the other layout.
+        # The exact-word view keeps its separate rows (it is not paged).
+        layout_key = (
+            q,
+            offset,
+            limit,
+            lang,
+            tuple(sorted(selected_dicts)),
+            taiwan,
+            part,
+            db.data_version(),
+        )
+        simplified, traditional, alt_same = _page_layouts_cached(
+            layout_key, results, taiwan
+        )
+        if script == "traditional":
+            results, alt_results = traditional, simplified
+        else:
+            results, alt_results = simplified, traditional
+        if alt_same:
+            alt_results = []
     if total is None:
         # The primary tier never returns more than the 25-result cap.
         results = results[:limit]
@@ -1256,6 +1431,9 @@ def api_search(
         "total": total,
         "offset": offset,
         "page_size": db.ALL_PAGE_SIZE,
+        "script": script,
+        "alt_same": alt_same,
+        "alt_results": alt_results,
         "ms": round((time.perf_counter() - started) * 1000),
     }
 

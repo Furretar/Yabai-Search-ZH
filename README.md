@@ -30,6 +30,7 @@ Or add `furretar2` on Discord.
 | Pinyin, some tones | `shi4shi` | Any tone on the second syllable |
 | Single Character Wildcard | `国家?` or `guo2jia1?` | 国家级, 国家队 |
 | Multiple Character Wildcard | `国家*` | 国家, 国家安全部… (All words starting with 国家) |
+| Every entry | `*` | All headwords, by tier then frequency |
 | Zhuyin (Bopomofo) | `ㄉㄢㄍㄢˋ` | 单干 |
 
 
@@ -61,16 +62,16 @@ The language code will still decide which language appears at the top of each en
 
 ### Step 2: Queries
 
-When making a search, two requests are sent. The first request is meant to populate results quickly. The second request takes longer but gets all matching entries.
+When making a search, two requests are sent. The first request is meant to populate results quickly by getting all tier 1 results first. The second request takes longer, but gets all matching entries. When searching with a wildcard (`?`, `*`), only 1 request is sent.
 
-1. Searches containing Chinese characters or valid pinyin will first query the highest priority dictionary for headwords that start with the query string. This is a very fast search and usually only takes a few milliseconds. 
+1. Searches containing Chinese characters or valid pinyin will first query the all selected dictionaries for headwords that start with the query string. This is a very fast search and usually only takes a few milliseconds. 
 2. The second request will find all headwords in all dictionaries that contain the query string anywhere inside.
 
 If a search contains a Chinese character, and is more than 40 characters long, search will be skipped and the text will be parsed instead. If the CJK-containing search has no results, it will fallback to parsing. 
 
 You can also search for English words and phrases in the search bar. A search will match dictionary definitions if it doesn't match any pinyin readings, or if the query was surrounded by quotes `""`. 
 
-Searches have 3 categories and 6 tiers of priority. Results within the same category are sorted by tier, and tiers are sorted by frequency.
+Searches have 3 categories and 6 tiers of priority. Results within the same category are sorted by tier, and tiers are sorted by frequency. Locally imported dictionaries will mess up the sorting because the server cannot see their results.
 
 The 3 categories in order are:
 
@@ -91,7 +92,7 @@ The 6 tiers are:
 5. All words from Wiktionary with a reading but no definition.
 6. All words with no reading and no definition.
 
-The separator line below each entry will glow a certain color according to which tier it is. I implemented this to help debug but I thought it looked nice so I kept it. The colors in order are red, yellow, green, blue, purple, pink.
+The separator line below each entry will glow a certain color when hovered according to which tier it is. I implemented this to help debug but I thought it looked nice so I kept it. The colors in order are red, yellow, green, blue, purple, pink. Wildcard searches with Chinese characters use the same colors (see Wildcard below); pinyin wildcard searches are all red.
 
 By default, searches will attempt to match headwords or readings. Definitions will be searched as a fallback if there are no matching headwords or readings for your search.
 
@@ -121,6 +122,10 @@ Use `?` to match exactly 1 character: `国家?` matches `国家级`, and `?怒??
 It works with pinyin too: `guojia?` matches `国家级`.
 
 Use `*` to match any number of characters: `国家*` matches `国家`, `国家级`, `国家安全部`, etc.
+
+With Chinese characters, wildcard results are ranked like any other search. Tier 1 (exact) is a word that fits the whole pattern: `*后` matches every word that ends in 后, and `?后` matches every 2-character word that ends in 后. Tier 2 is a word that starts with something that fits the pattern, so 售后服务 comes after the exact matches for both `?后` and `*后`. Tier 3 is a word that has a match later inside it. Each tier is sorted by frequency.
+
+A bare `*` fits every headword, so tiers 1-3 do not separate anything: every ordinary result is tier 1. Tiers 4-6 still apply, so a dialect-only reading, a word with no definition, or a word with no reading is demoted below the rest. Results are sorted by tier first, then by frequency. Words missing from the frequency list come last.
 
 ### Step 3: Formatting Results
 

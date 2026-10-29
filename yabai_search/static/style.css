@@ -101,7 +101,7 @@ input {
        inside the search panel on narrow screens instead of overflowing it. */
     min-width: 0;
     padding: .5rem;
-    font-size: 1rem;
+    font-size: 1.15rem;
     border: 1px solid var(--border);
     transition: border-color 0.3s ease;
 }
@@ -121,7 +121,7 @@ input[type="search"]::-webkit-search-cancel-button {
 /* Search button. */
 button {
     padding: .5rem 1rem;
-    font-size: 1rem;
+    font-size: 1.1rem;
     color: var(--accent);
     border: 1px solid var(--accent);
     border-radius: .35rem;
@@ -139,9 +139,9 @@ button {
     align-items: center;
     justify-content: center;
     align-self: center;
-    width: 1.7em;
-    height: 2.1em;
-    margin-left: -.4rem;
+    width: 1.9em;
+    height: 2.3em;
+    margin-left: 0;
     padding: 0;
     color: var(--muted);
     border: none;
@@ -152,10 +152,10 @@ button {
 
 .search-button svg {
     display: block;
-    width: 1.33em;
-    height: 1.33em;
+    width: 1.5em;
+    height: 1.5em;
     /* Nudge the icon slightly left of and above the button's centre. */
-    transform: translate(-0.2em, -1px);
+    transform: translate(-0.35em, -1px);
 }
 
 .search-button:hover {
@@ -166,9 +166,10 @@ button {
 .clear-button {
     flex: none;
     padding: .2rem .6rem;
+    margin-right: .3rem;
     border: none;
     background: none;
-    font-size: 1.1rem;
+    font-size: 1.25rem;
     line-height: 1;
     color: var(--muted);
     cursor: pointer;
@@ -447,7 +448,7 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     background: transparent;
     /* Form controls do not inherit text colour by default. */
     color: inherit;
-    font-size: 1.25rem;
+    font-size: 1.4rem;
     padding: .45rem .6rem;
     transition: font-size 180ms ease, padding 180ms ease, border-color .3s ease;
 }
@@ -455,17 +456,17 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
 /* Larger controls to match the taller search row. The icon button keeps its
    square size and no extra padding. */
 .search-panel .lang-button {
-    font-size: 1.05rem;
+    font-size: 1.2rem;
     padding-top: .45rem;
     padding-bottom: .45rem;
 }
 
 .search-panel .search-button {
-    font-size: 1.05rem;
+    font-size: 1.2rem;
 }
 
 .search-panel .clear-button {
-    font-size: 1.35rem;
+    font-size: 1.5rem;
 }
 
 /* While the popped-out bar is stuck to the top edge, the row returns to the
@@ -475,7 +476,7 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
 }
 
 .search-panel.pulled:not(.docked) input {
-    font-size: 1.3rem;
+    font-size: 1.45rem;
     padding: .3rem .55rem;
 }
 
@@ -487,11 +488,11 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
 }
 
 .search-panel.pulled:not(.docked) .search-button {
-    font-size: 1.3rem;
+    font-size: 1.45rem;
 }
 
 .search-panel.pulled:not(.docked) .clear-button {
-    font-size: 1.43rem;
+    font-size: 1.6rem;
 }
 
 /* Briefly applied when the panel opens so the row switches straight to the
@@ -532,10 +533,13 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
 }
 
 .lang-button {
+    display: inline-flex;
+    align-items: center;
     padding: .2rem .6rem;
     border: none;
     background: none;
     font: inherit;
+    font-size: 1.1rem;
     font-weight: 600;
     color: var(--control);
     cursor: pointer;
@@ -546,7 +550,8 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
 
 .lang-button::after {
     content: " ▾";
-    font-size: .7em;
+    font-size: 1rem;
+    line-height: 1;
 }
 
 .lang-button:hover {
@@ -564,16 +569,22 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     flex: none;
     align-items: center;
     gap: .2rem;
-    padding: .2rem .3rem;
+    margin-top: -.15rem;
+    padding: .15rem .4rem;
     border: none;
     border-radius: .3rem;
     background: none;
     color: var(--control);
     font: inherit;
-    font-size: 1rem;
+    font-size: 1.2rem;
     line-height: 1;
     cursor: pointer;
     white-space: nowrap;
+}
+
+.mobile-options-gear {
+    font-size: 1.25em;
+    line-height: 1;
 }
 
 .mobile-search-options-toggle:hover,
@@ -583,7 +594,8 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
 
 .mobile-options-arrow {
     display: inline-block;
-    font-size: .7em;
+    font-size: 1rem;
+    line-height: 1;
     transition: transform .15s ease;
 }
 
@@ -609,7 +621,7 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
 
 .lang-menu li {
     padding: .35rem .75rem;
-    font-size: .9rem;
+    font-size: 1rem;
     color: var(--control);
     white-space: nowrap;
     cursor: pointer;
@@ -1220,6 +1232,12 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     letter-spacing: .03em;
 }
 
+/* A dialect reading in a note sits above its headword like furigana. It is
+   muted because it is another language's romanization, not Hanyu Pinyin. */
+.def-source-cls .dialect-reading .reading {
+    color: var(--muted);
+}
+
 /* Note under an entry that uses IDS (⿰) descriptions fonts may not render. */
 .ids-note {
     margin-top: .5rem;
@@ -1333,6 +1351,14 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     line-height: 1;
     color: var(--reading);
     white-space: nowrap;
+}
+
+/* A whole-phrase dialect reading (Dungan) can be longer than the headword, so
+   let it wrap and keep it muted like the dialect label. */
+.furigana.raw-reading .reading {
+    white-space: normal;
+    line-height: 1.2;
+    color: var(--muted);
 }
 
 .furigana .char {
@@ -1757,9 +1783,9 @@ html.theme-light .defs {
     color: var(--muted);
 }
 
-/* The exact-word view shows one entry and has no result count or timing. */
+/* The exact-word view reuses the result-count slot for a "Details" label. */
 .exact-mode .results-count {
-    display: none;
+    display: block;
 }
 
 /* The exact-word view keeps the search bar in the page, never popped out. */
@@ -3407,8 +3433,10 @@ html.initial-search-pending .results-timing {
     }
 
     /* Search Tips moves from the header to the bottom right of the menu,
-       under the Custom Dictionaries button. */
-    .search-options-header .search-tips-link {
+       under the Custom Dictionaries button. Hide both the idle and the
+       menu-open header link; the bottom copy is the only one on phones. */
+    .search-options-header .search-tips-link,
+    .options.open .search-options-header .search-tips-link {
         display: none;
     }
 

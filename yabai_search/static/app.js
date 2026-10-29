@@ -119,6 +119,10 @@ let exactMode = window.__exactSearch === true;
 
 // The most recent results, kept so the toggles can re-render without re-fetching.
 let currentEntries = [];
+// Both display layouts when the server merged the page (simplified and
+// traditional). Null when the browser still has to merge, e.g. custom
+// dictionaries are involved or the server merge is off.
+let currentLayouts = null;
 // Server-reported durations: the initial batch and the whole query. Both are
 // shown after the result count when the first batch was rendered on its own.
 let lastSearchMs = null;
@@ -617,6 +621,14 @@ function normalizePinyinScan(text) {
         .join("");
 }
 
+// The split part that carries a chunk's tone. For erhua "dair4" the split is
+// ["dai", "r"], and the tone belongs on "dai", not on the suffix "r".
+function tonePartIndex(parts) {
+    return parts.length > 1 && parts[parts.length - 1] === "r"
+        ? parts.length - 2
+        : parts.length - 1;
+}
+
 // Turn any dictionary reading into display tokens. Pinyin runs are split into
 // syllables; separators are dropped, while CJK/kana annotations are kept so
 // nothing from the source is lost. Run this before converting to zhuyin.
@@ -633,10 +645,25 @@ function pinyinSyllables(text) {
             tokens.push(cleaned);
         }
     };
-    for (const match of source.matchAll(/[\p{Script=Latin}:]+[0-9]?/gu)) {
+    // Superscript tone digits (im¹, dair⁴) are part of the token. Several
+    // dialect romanizations use them, and dropping them would lose the tone.
+    for (const match of source.matchAll(/[\p{Script=Latin}:]+[0-9¹²³⁴⁵]?/gu)) {
         pushAnnotation(source.slice(cursor, match.index));
         cursor = match.index + match[0].length;
         const raw = match[0];
+        const superTone = raw.match(/^(.*?)([¹²³⁴⁵])$/);
+        if (superTone) {
+            const parts = splitPinyinChunk(superTone[1]);
+            if (!parts) {
+                tokens.push(raw);
+                continue;
+            }
+            const at = tonePartIndex(parts);
+            parts.forEach((part, index) => {
+                tokens.push(index === at ? part + superTone[2] : part);
+            });
+            continue;
+        }
         const toneMatch = raw.match(/^(.*?)([1-5])$/);
         const letters = (toneMatch ? toneMatch[1] : raw).replace(/u:/g, "ü");
         const tone = toneMatch ? toneMatch[2] : "";
@@ -645,8 +672,9 @@ function pinyinSyllables(text) {
             tokens.push(raw);
             continue;
         }
+        const at = tonePartIndex(parts);
         parts.forEach((part, index) => {
-            if (tone && index === parts.length - 1) {
+            if (tone && index === at) {
                 tokens.push(markSyllable(part + tone));
             } else {
                 tokens.push(part);
@@ -738,6 +766,20 @@ function toneColoredText(text, pinyin) {
 
 // One punctuation/symbol character: these never take a reading.
 const PUNCT_CHAR_RE = /^[\p{P}\p{S}]$/u;
+
+// Pinyin fields from source dictionaries can contain several alternate readings
+// joined together. Keep the first syllable for each spoken character so the
+// reading lines up with the headword instead of spilling over it.
+function readingSyllablesForWord(pinyin, word) {
+    let syllables = pinyinSyllables(pinyin);
+    const spoken = [...String(word || "")].filter(
+        (char) => !PUNCT_CHAR_RE.test(char)
+    ).length;
+    if (spoken && syllables.length > spoken) {
+        syllables = syllables.slice(0, spoken);
+    }
+    return syllables;
+}
 // A punctuation token in a reading, e.g. the "," in "xīn , Xiāng": not a syllable.
 const PUNCT_TOKEN_RE = /^[\p{P}\p{S}]+$/u;
 
@@ -826,15 +868,26 @@ function trailingTones(chars, syllables) {
     return tones;
 }
 
-function furigana(text, pinyin, allowTones = true) {
+function furigana(text, pinyin, allowTones = true, raw = false) {
     const chars = [...text];
-    const syllables = pinyinSyllables(pinyin).filter(
-        (syllable) => syllable && !PUNCT_TOKEN_RE.test(syllable)
-    );
-    // The readings in the chosen phonetic system.
-    const readings = syllables.map((s) => (state.phonetic === "zhuyin" ? toZhuyin(s) : s));
+    const rawReading = String(pinyin || "").trim();
+    // A Dungan reading is a whole phrase with tone numerals
+    // ("jiguanzɨhuar (I-I-I-I)"); splitting it would scatter the numerals, so
+    // it is shown as one reading line.
+    const syllables = raw
+        ? rawReading
+            ? [rawReading]
+            : []
+        : readingSyllablesForWord(pinyin, text).filter(
+            (syllable) => syllable && !PUNCT_TOKEN_RE.test(syllable)
+        );
+    // The readings in the chosen phonetic system. Only Mandarin pinyin is
+    // converted: a dialect romanization (allowTones is false for it) would be
+    // garbled by a partial zhuyin conversion.
+    const useZhuyin = state.phonetic === "zhuyin" && allowTones;
+    const readings = syllables.map((s) => (useZhuyin ? toZhuyin(s) : s));
     const node = document.createElement("span");
-    node.className = "furigana";
+    node.className = raw ? "furigana raw-reading" : "furigana";
     // Some readings (Wu romanizations) are shown, but not tone-coloured: the
     // colours are Hanyu Pinyin tones, which do not apply to them.
     const colored = state.toneColoring && allowTones;
@@ -1240,11 +1293,15 @@ function updateHint(query, pinyinMatch, englishMatch) {
 // The body of one dictionary's definitions: numbered senses and the classifier
 // line (no heading). Shared by result blocks and match boxes.
 // The copied reading follows the Pinyin/Bopomofo display toggle.
-function copyReading(pinyin) {
+function copyReading(pinyin, word = "") {
     if (!pinyin || state.phonetic !== "zhuyin") return pinyin || "";
-    return pinyinSyllables(pinyin)
-        .map((syllable) => toZhuyin(syllable))
-        .join(" ");
+    const syllables = readingSyllablesForWord(pinyin, word);
+    // Dialect readings are another language's romanization, not Hanyu Pinyin;
+    // converting the pieces that happen to look like pinyin would garble them.
+    if (!syllables.length || !syllables.every((s) => isPinyinSyllable(s))) {
+        return pinyin;
+    }
+    return syllables.map((syllable) => toZhuyin(syllable)).join(" ");
 }
 
 // Convert pinyin inside a definition to bopomofo for the copy button. Only
@@ -1392,7 +1449,12 @@ function definitionBody(source, taiwanRefs, copy) {
             const head = document.createElement("div");
             head.className = "def-reading";
             const syllables = pinyinSyllables(group.pinyin);
-            const readings = syllables.map((s) => (state.phonetic === "zhuyin" ? toZhuyin(s) : s));
+            // Convert only a wholly Mandarin reading; a dialect group stays as
+            // written instead of becoming a mix of bopomofo and Latin.
+            const useZhuyin =
+                state.phonetic === "zhuyin" &&
+                syllables.every((s) => isPinyinSyllable(s));
+            const readings = syllables.map((s) => (useZhuyin ? toZhuyin(s) : s));
             head.append(readingContent(readings, syllables, state.toneColoring));
             // The spelling these senses belong to: zhī (秖).
             if (group.spellings && group.spellings.length) {
@@ -1420,7 +1482,7 @@ function definitionBody(source, taiwanRefs, copy) {
                 // words), falling back to the entry's main reading.
                 line.append(
                     copyDefinitionButton(
-                        copyReading(group.pinyin || copy.reading),
+                        copyReading(group.pinyin || copy.reading, copy.word),
                         copy.word,
                         text,
                         group.pinyin || copy.reading
@@ -1491,6 +1553,9 @@ const CC_CEDICT_SEARCH =
 // Page URL for an English Wiktionary entry.
 const WIKTIONARY_PAGE = "https://en.wiktionary.org/wiki/";
 
+// Page URL for a Chinese Wiktionary entry.
+const ZH_WIKTIONARY_PAGE = "https://zh.wiktionary.org/wiki/";
+
 // A labeled block showing one dictionary's definitions for a result. CC-CEDICT
 // and Wiktionary names open that word in the source; other names link to their
 // section on the About page.
@@ -1516,6 +1581,13 @@ function definitionsBlock(source, taiwanRefs, word, reading, forms = []) {
         name.href =
             "https://ja.wiktionary.org/wiki/" +
             encodeURIComponent(source.headword || word);
+        name.target = "_blank";
+        name.rel = "noopener";
+    } else if (source.anchor === "zhwiktionary") {
+        // Open the exact entry in Chinese Wiktionary, using the headword the
+        // source stored (traditional or simplified as that page spells it).
+        name.href =
+            ZH_WIKTIONARY_PAGE + encodeURIComponent(source.headword || word);
         name.target = "_blank";
         name.rel = "noopener";
     } else if (source.anchor.startsWith("custom-")) {
@@ -1652,7 +1724,8 @@ function idsHeadword(text, reading, images, entry) {
     if (syllables.length) {
         const row = document.createElement("span");
         row.className = "reading";
-        const readings = syllables.map((s) => (state.phonetic === "zhuyin" ? toZhuyin(s) : s));
+        const useZhuyin = state.phonetic === "zhuyin" && !entry.pinyin_no_tone;
+        const readings = syllables.map((s) => (useZhuyin ? toZhuyin(s) : s));
         row.append(
             readingContent(readings, syllables, state.toneColoring && !entry.pinyin_no_tone),
         );
@@ -1944,7 +2017,8 @@ function fillEntryRow(row, entry) {
             furigana(
                 primaryMasked,
                 reading,
-                !entry.pinyin_no_tone
+                !entry.pinyin_no_tone,
+                entry.pinyin_label === "Dungan"
             )
         );
     }
@@ -1986,7 +2060,6 @@ function fillEntryRow(row, entry) {
         label.textContent = entry.pinyin_label;
         head.append(label);
     }
-
     // Frequency and HSK levels: chip-like boxes under the headword, above the
     // dictionary source chips.
     if (entry.freq || entry.hsk) {
@@ -2129,6 +2202,26 @@ function fillEntryRow(row, entry) {
     }
     if (notes.length && !notesPlaced) defsBox.append(...notes);
 
+    // The headword shows one dialect's reading above it. The other dialects are
+    // notes below the definitions, e.g. "Southern Min: im¹ bo⁵鹰婆".
+    if (entry.readings && entry.readings.length > 1) {
+        for (const extra of entry.readings.slice(1)) {
+            const word = document.createElement("span");
+            word.className = "dialect-reading";
+            // Show the reading above the headword like furigana. allowTones is
+            // false: this is a dialect romanization, not Hanyu Pinyin.
+            word.append(
+                furigana(
+                    primaryMasked,
+                    extra.pinyin,
+                    false,
+                    (extra.label || "") === "Dungan"
+                )
+            );
+            defsBox.append(detailRow(`${extra.label || "Reading"}:`, word));
+        }
+    }
+
     // Traditional spellings merged into this row from the same simplified form.
     const mergedForms = entry.mergedForms || [];
     if (mergedForms.length) {
@@ -2181,20 +2274,24 @@ function fillEntryRow(row, entry) {
     if (definitions.length || (entry.sources && entry.sources.length)) {
         const actions = document.createElement("div");
         actions.className = "entry-actions";
-        // Open the word in the same tab, using the normal search page so all of
-        // the entry's definitions and toggles stay available.
-        const details = document.createElement("a");
-        details.className = "report-link details-link";
-        details.href = `/word/${encodeURIComponent(
-            displayWord(entry) || entry.simplified || entry.traditional
-        )}`;
-        details.textContent = "Details";
+        // The details page is already open, so it does not link to itself.
+        if (!exactMode) {
+            // Open the word in the same tab, using the normal search page so all
+            // of the entry's definitions and toggles stay available.
+            const details = document.createElement("a");
+            details.className = "report-link details-link";
+            details.href = `/word/${encodeURIComponent(
+                displayWord(entry) || entry.simplified || entry.traditional
+            )}`;
+            details.textContent = "Details";
+            actions.append(details);
+        }
         const report = document.createElement("button");
         report.type = "button";
         report.className = "report-link";
         report.textContent = "Report entry";
         report.addEventListener("click", () => openReportDialog(entry));
-        actions.append(details, report);
+        actions.append(report);
         defsBox.append(actions);
     }
 
@@ -2399,8 +2496,11 @@ function entryReading(entry) {
 function cloneDefinition(source, entry) {
     return {
         ...source,
-        traditional: entry.traditional,
-        reading: entryReading(entry),
+        // A server-merged row already tags each block with the spelling it came
+        // from (只, 隻, 秖). Keep that tag; a raw row's block has none, so it
+        // takes the row's own spelling.
+        traditional: source.traditional || entry.traditional,
+        reading: source.reading || entryReading(entry),
         groups: (source.groups || []).map((group) => ({
             pinyin: group.pinyin,
             senses: [...(group.senses || [])],
@@ -2588,6 +2688,8 @@ function matchTier(entry, query) {
     if (!text) return null;
     if (CJK_RE.test(text)) {
         const words = [entry.simplified, entry.traditional].filter(Boolean);
+        // A Chinese "*" / "?" pattern is matched as a pattern, not as text.
+        if (isWildcardQuery(text)) return wildcardTier(words, text);
         if (words.some((word) => word === text)) return 1;
         if (words.some((word) => word.startsWith(text))) return 2;
         if (words.some((word) => word.includes(text))) return 3;
@@ -2595,16 +2697,124 @@ function matchTier(entry, query) {
     }
     const key = toToneless(text);
     if (!key) return null;
-    const reading = toToneless(entry.pinyin || "");
+    // Rank on the reading the row SHOWS: with the Taiwan toggle that is the
+    // Taiwan reading (the server matched and ordered by it too), not CEDICT's.
+    const shown = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
+    const reading = toToneless(shown || "");
     if (reading === key) return 1;
     if (reading.startsWith(key)) return 2;
     if (reading.includes(key)) return 3;
     return null;
 }
 
+// True when `word` matches the WHOLE of `pattern`. "*" stands for any run of
+// characters (including none) and "?" for exactly one character. A copy of
+// _glob_match() in db.py; keep the two in step. It walks both strings once and
+// only falls back to the latest "*", so a pattern full of stars stays fast.
+// Array.from splits by code point, so a rare character outside the Basic
+// Multilingual Plane still counts as ONE character for "?".
+function globMatch(pattern, word) {
+    const pat = Array.from(pattern);
+    const chars = Array.from(word);
+    let p = 0;
+    let w = 0;
+    let star = -1; // index of the last "*" seen in the pattern
+    let mark = 0; // where in the word that "*" currently stops swallowing
+    while (w < chars.length) {
+        if (p < pat.length && pat[p] === "*") {
+            star = p;
+            mark = w;
+            p++;
+        } else if (p < pat.length && (pat[p] === "?" || pat[p] === chars[w])) {
+            p++;
+            w++;
+        } else if (star >= 0) {
+            // Let the last "*" swallow one more character and try again.
+            mark++;
+            p = star + 1;
+            w = mark;
+        } else {
+            return false;
+        }
+    }
+    while (p < pat.length && pat[p] === "*") p++;
+    return p === pat.length;
+}
+
+// Match tier 1-3 of a Chinese wildcard pattern (copy of _wildcard_tier in
+// db.py): 1 the whole word fits the pattern, 2 the pattern fits the start of
+// the word, 3 it fits somewhere later. Null when it fits nowhere. The best tier
+// over the simplified and traditional spelling wins.
+function wildcardTier(words, query) {
+    const pattern = query.trim().replace(/＊/g, "*").replace(/？/g, "?").toLowerCase();
+    let best = null;
+    for (const word of words) {
+        const lower = word.toLowerCase();
+        // "start" is the whole-word match of "pattern + any ending"; "contains"
+        // is "any start + pattern + any ending".
+        const tiers = [
+            [1, pattern],
+            [2, pattern + "*"],
+            [3, "*" + pattern + "*"],
+        ];
+        for (const [tier, glob] of tiers) {
+            if (globMatch(glob, lower)) {
+                best = best === null ? tier : Math.min(best, tier);
+                break;
+            }
+        }
+    }
+    return best;
+}
+
+// True when any dictionary gives this entry a definition.
+function hasDefinitionText(entry) {
+    return (entry.definitions || []).some(
+        (definition) =>
+            (definition.defs || []).length ||
+            (definition.groups || []).some((group) => (group.senses || []).length),
+    );
+}
+
+// True for an unquoted "*" / "?" pattern query (full-width forms too). Mirrors
+// completeInOneResponse() and the wildcard branch of main.py's api_search.
+function isWildcardQuery(query) {
+    const text = (query || "").trim();
+    const quoted = text.length >= 2 && text.startsWith('"') && text.endsWith('"');
+    return /[*?＊？]/.test(text) && !quoted;
+}
+
+function isBareWildcardQuery(query) {
+    // "*" (or "**", "?") with no literal characters: the pattern fits every
+    // headword, so match tiers 1-3 have nothing to separate.
+    const text = (query || "").trim();
+    return isWildcardQuery(text) && !text.replace(/[*?＊？]/g, "").trim();
+}
+
 function entryTier(entry, query) {
+    // The server already ranked this row; use its tier so the page cannot
+    // disagree with the order it was sent in.
+    if (Number.isInteger(entry.tier)) return entry.tier;
     // A dialect-only reading is tier 4 even if it happens to match the query.
     if (entry.pinyin_label || entry.pinyin_no_tone) return 4;
+    // A bare "*" fits every headword, so every ordinary result is tier 1.
+    // Tiers 5 and 6 still apply: a word with no definition is demoted below
+    // the words that have one.
+    if (isBareWildcardQuery(query)) {
+        return hasDefinitionText(entry) ? 1 : entry.pinyin ? 5 : 6;
+    }
+    // A pinyin wildcard search lists a pattern's matches in the server's order:
+    // every result is tier 1, so every separator is drawn red (and the match
+    // tiers and the definition / reading demotions below do not reorder
+    // anything). A Chinese pattern (`?后`) is tiered like a normal search:
+    // matchTier() sorts exact, starts-with and contains matches.
+    if (isWildcardQuery(query) && !CJK_RE.test(query)) return 1;
+    // A word with no definition anywhere is tier 5 (it has a reading) or tier 6
+    // (it has neither), however well it matches: it must not outrank a word that
+    // actually has a definition. Otherwise thousands of definition-less exact
+    // readings would sit above real results.
+    if (!hasDefinitionText(entry)) return entry.pinyin ? 5 : 6;
+    // Tiers 1-3 are how well the headword or reading matches the query.
     const match = matchTier(entry, query);
     if (match) return match;
     const hasDefinitions = (entry.definitions || []).some(
@@ -2616,6 +2826,33 @@ function entryTier(entry, query) {
     );
     if (entry.pinyin) return hasDefinitions ? 3 : 5;
     return hasDefinitions ? 3 : 6;
+}
+
+function entryCategory(entry) {
+    // The server already ranked this row; use its category.
+    if (Number.isInteger(entry.category)) return entry.category;
+    // Category is the primary sort key, as the README says ("Results within
+    // the same category are sorted by tier"):
+    //   1. a definition in a selected dictionary,
+    //   2. a definition only in a dictionary that is not selected,
+    //   3. no definition anywhere.
+    // So a category 1 dialect row (tier 4) beats a category 2 exact match
+    // (tier 1).
+    const definitions = entry.definitions || [];
+    const hasText = (definition) =>
+        (definition.defs || []).length ||
+        (definition.groups || []).some(
+            (group) => (group.senses || []).length
+        );
+    if (
+        definitions.some(
+            (definition) => state.dicts.has(definition.anchor) && hasText(definition)
+        )
+    ) {
+        return 1;
+    }
+    if (definitions.some(hasText)) return 2;
+    return 3;
 }
 
 // Highest tier among the main results, used to keep the Fuzzy section's
@@ -2642,7 +2879,13 @@ function updateFooterSeparator(tier) {
 function render(entries, query) {
     currentEntries = entries;
     currentQuery = query;
-    const merged = mergeEntries(entries);
+    // A server-merged page is already one row per headword, in category/tier
+    // order, so the browser must not merge or sort it again.
+    const serverOrdered =
+        currentLayouts !== null &&
+        (entries === currentLayouts.simplified ||
+            entries === currentLayouts.traditional);
+    const merged = serverOrdered ? entries : mergeEntries(entries);
     // IDS headwords (⿰) are set aside and listed near the end, before the
     // definition-less entries.
     const hasIdsWord = (entry) =>
@@ -2688,46 +2931,73 @@ function render(entries, query) {
     const count = document.createElement("p");
     count.className = "results-count";
     mainResultCount = merged.length;
-    count.textContent = `${merged.length} RESULT${merged.length === 1 ? "" : "S"}`;
+    // The exact-word page has no result count; it shows a "Details" label in the
+    // same slot and style as the search page's "N RESULTS" line.
+    count.textContent = exactMode
+        ? "Details"
+        : `${merged.length} RESULT${merged.length === 1 ? "" : "S"}`;
     results.append(count);
     window.__debugRender = { merged: merged.length, withDefs: withDefs.length, otherReading: otherReading.length, headwordsOnly: headwordsOnly.length, withoutReadingWithDefs: withoutReadingWithDefs.length, withoutReadingOnly: withoutReadingOnly.length, otherEntries: otherEntries.length, idsMain: idsMain.length, dialectMain: dialectMain.length, customDicts: state.customDicts, dicts: [...state.dicts], compact: state.compact };
-    updateTiming();
+    if (!exactMode) updateTiming();
 
     let hasEntry = false;
-    let maxTier = 0;
+    let lastTier = 0;
     const appendEntry = (entry) => {
         const tier = entryTier(entry, query);
-        if (hasEntry) addEntrySeparator(maxTier || tier);
+        // The separator below a row shows that row's tier. Using the highest
+        // tier so far breaks at the category boundary, where the tier can go
+        // back down (category 1 tier 3 -> category 2 tier 1).
+        if (hasEntry) addEntrySeparator(lastTier || tier);
         results.append(entryRow(entry));
         hasEntry = true;
-        maxTier = Math.max(maxTier, tier);
+        lastTier = tier;
     };
 
     try {
-        // Priority is the six-level search tier. Within one tier the section
-        // order above is kept (definitions first), because the sort is stable.
-        const ordered = [
-            ...withDefs,
-            ...withoutReadingWithDefs,
-            ...idsMain,
-            ...dialectMain,
-            ...otherEntries,
-            ...headwordsOnly,
-            ...withoutReadingOnly,
-        ];
-        ordered.sort((a, b) => entryTier(a, query) - entryTier(b, query));
-
-        const otherSet = new Set(otherEntries);
-        let otherHeadingShown = false;
-        for (const entry of ordered) {
-            if (!otherHeadingShown && otherSet.has(entry)) {
-                const heading = document.createElement("p");
-                heading.className = "other-heading";
-                heading.textContent = "Other Dictionaries";
-                results.append(heading);
-                otherHeadingShown = true;
+        if (serverOrdered) {
+            // The server already ordered and merged the rows. Walk them in
+            // order and put the heading before the first other-dictionary row.
+            let headingShown = false;
+            for (const entry of merged) {
+                if (!headingShown && entryCategory(entry) === 2) {
+                    const heading = document.createElement("p");
+                    heading.className = "other-heading";
+                    heading.textContent = "Other Dictionaries";
+                    results.append(heading);
+                    headingShown = true;
+                }
+                appendEntry(entry);
             }
-            appendEntry(entry);
+        } else {
+            // Category is the primary key, then the six-level search tier.
+            // Within one (category, tier) the section order above is kept
+            // (definitions first), because the sort is stable.
+            const ordered = [
+                ...withDefs,
+                ...withoutReadingWithDefs,
+                ...idsMain,
+                ...dialectMain,
+                ...otherEntries,
+                ...headwordsOnly,
+                ...withoutReadingOnly,
+            ];
+            ordered.sort((a, b) => {
+                const category = entryCategory(a) - entryCategory(b);
+                return category || entryTier(a, query) - entryTier(b, query);
+            });
+
+            const otherSet = new Set(otherEntries);
+            let otherHeadingShown = false;
+            for (const entry of ordered) {
+                if (!otherHeadingShown && otherSet.has(entry)) {
+                    const heading = document.createElement("p");
+                    heading.className = "other-heading";
+                    heading.textContent = "Other Dictionaries";
+                    results.append(heading);
+                    otherHeadingShown = true;
+                }
+                appendEntry(entry);
+            }
         }
     } catch (err) {
         window.__renderError = String(err);
@@ -2735,8 +3005,8 @@ function render(entries, query) {
         errEl.textContent = "RENDER ERROR: " + String(err);
         results.append(errEl);
     }
-    lastResultTier = maxTier;
-    updateFooterSeparator(maxTier);
+    lastResultTier = lastTier;
+    updateFooterSeparator(lastTier);
 }
 
 // Show the first-paint time in parentheses after the result count, e.g.
@@ -2745,7 +3015,7 @@ function render(entries, query) {
 function updateTiming() {
     const count = results.querySelector(".results-count");
     let timing = count ? count.querySelector(".results-timing") : null;
-    if (!count || lastSearchMs === null) {
+    if (!count || exactMode || lastSearchMs === null) {
         if (timing) timing.remove();
         return;
     }
@@ -2798,7 +3068,7 @@ function renderFuzzy(entries) {
     // The count covers both the main list and these fuzzy rows.
     const total = mainResultCount + currentFuzzy.length;
     const count = results.querySelector(".results-count");
-    if (count) {
+    if (count && !exactMode) {
         count.textContent = `${total} RESULT${total === 1 ? "" : "S"}`;
         // Setting textContent removes the timing span; put it back.
         updateTiming();
@@ -2818,13 +3088,51 @@ function renderFuzzy(entries) {
     updateFooterSeparator(fuzzyTier);
 }
 
+// Re-run the current search from page 1. Used when something the SERVER ranks
+// by changes (search language, selected dictionaries); a plain redraw() cannot
+// reorder rows across pages. The timing line from the last search-bar search is
+// kept, like the Taiwan toggle does.
+function rerunSearch() {
+    if (currentQuery && currentQuery.trim() !== "*") {
+        search(currentQuery, 0, false, false);
+    }
+}
+
 // Re-draw the current results (and any fuzzy section) after a display toggle.
+// Both layouts from one API response, or null when the browser has to merge.
+function serverLayouts(data) {
+    if (!data || (data.script !== "simplified" && data.script !== "traditional")) {
+        return null;
+    }
+    if (data.alt_same) {
+        // No group on the page splits, so both scripts show the same rows.
+        return {
+            simplified: data.results,
+            traditional: data.results,
+        };
+    }
+    if (!Array.isArray(data.alt_results) || !data.alt_results.length) return null;
+    if (data.script === "traditional") {
+        return {
+            simplified: data.alt_results,
+            traditional: data.results,
+        };
+    }
+    return {
+        simplified: data.results,
+        traditional: data.alt_results,
+    };
+}
+
 function redraw() {
     // Re-render the parsed words too, so a phonetic/script/tone change applies to
     // them (they are otherwise only drawn once, in annotate()).
     if (currentTokens.length) renderParsed(currentTokens);
     if (!currentEntries.length && !currentFuzzy.length) return;
-    render(currentEntries, currentQuery);
+    // A server-merged page already has a layout for each script; use it instead
+    // of re-merging the other script's rows.
+    const layout = currentLayouts && currentLayouts[state.script];
+    render(layout || currentEntries, currentQuery);
     renderFuzzy(currentFuzzy);
 }
 
@@ -2840,8 +3148,10 @@ const PREFETCH_RADIUS = 3;
 const pagePrefetches = new Map();
 
 function pageCacheKey(query, offset) {
-    // Taiwan readings change the rows, so they get their own cache entry.
-    return `${query}|${offset}|${state.taiwan ? 1 : 0}`;
+    // Taiwan readings change the rows, so they get their own cache entry. So do
+    // the search language (it picks the preview dictionary) and the selected
+    // dictionaries (they decide each row's category and therefore the order).
+    return `${query}|${offset}|${state.taiwan ? 1 : 0}|${state.lang}|${selectedAnchorsParam()}`;
 }
 
 // Store one page in the bounded cache, evicting the oldest entry if needed.
@@ -2862,9 +3172,28 @@ function completeInOneResponse(query) {
     return /[*?＊？]/.test(query) && !quoted;
 }
 
+// The dictionaries whose definitions put a result in category 1, as a sorted,
+// comma-separated list of server anchors. This mirrors hasSelectedDefs(): with
+// custom dictionaries it is exactly the dictionaries the user ticked; otherwise
+// it is every dictionary of the selected search language (EN also counts
+// Wiktionary, not only CC-CEDICT). Browser-imported dictionaries have no server
+// anchor and are left out; they are merged on the client.
+function selectedAnchorsParam() {
+    let anchors;
+    if (state.customDicts) {
+        anchors = [...state.dicts];
+    } else {
+        const group = selectedLangGroup();
+        anchors = [...anchorLang].filter(([, lang]) => lang === group).map(([anchor]) => anchor);
+    }
+    return anchors.filter((anchor) => anchorLang.has(anchor)).sort().join(",");
+}
+
 // Build an /api/search URL, including the cache version when the page has one.
 function searchUrl(query, offset) {
-    let url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}&lang=${encodeURIComponent(state.lang)}`;
+    let url = `/api/search?q=${encodeURIComponent(query)}&taiwan=${state.taiwan ? 1 : 0}&offset=${offset}&lang=${encodeURIComponent(state.lang)}&script=${state.script}&merge=1`;
+    const dictsParam = selectedAnchorsParam();
+    if (dictsParam) url += `&dicts=${encodeURIComponent(dictsParam)}`;
     if (exactMode) url += "&exact=1";
     if (DATA_VERSION) url += `&dv=${encodeURIComponent(DATA_VERSION)}`;
     return url;
@@ -2987,6 +3316,7 @@ function revealInitialResults() {
 
 async function search(query, offset = 0, scrollMode = false, recordTiming = true) {
     releaseClearScrollGuard();
+    currentLayouts = null;
     const url = searchUrl(query, offset);
     const startedAt = performance.now();
     lagMs = null;
@@ -3087,6 +3417,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
         !cachedFull;
     if (showFirst) {
         currentEntries = first.results;
+        currentLayouts = serverLayouts(first);
         currentQuery = query;
         if (recordTiming) {
             lastSearchMs = firstMs;
@@ -3141,6 +3472,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
 
         // Show official results first; custom matches follow as a third tier.
         currentEntries = full.results;
+        currentLayouts = serverLayouts(full);
         currentQuery = query;
         if (recordTiming) {
             firstSearchMs = first ? firstMs : null;
@@ -3273,6 +3605,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
     // Wildcard results are complete already. Show the official rows, then merge
     // the local dictionary tier when it is ready.
     currentEntries = first.results;
+    currentLayouts = serverLayouts(first);
     currentQuery = query;
     if (typeof first.lag === "number") lagMs = first.lag;
     if (typeof first.ms === "number") {
@@ -3404,6 +3737,7 @@ async function search(query, offset = 0, scrollMode = false, recordTiming = true
             if (seq !== searchSeq) return 0;
             entryDictState.clear();
             currentEntries = first.results;
+            currentLayouts = null;
             currentQuery = query;
             if (recordTiming) {
                 lastSearchMs = Math.round(performance.now() - startedAt);
@@ -3433,6 +3767,9 @@ function customMatchKey(match) {
 
 async function applyCustomMatches(data, matches, maxResults = RESULTS_PAGE_SIZE) {
     if (!window.mergeCustomMatches) return;
+    // The server layouts do not include browser-only rows, so fall back to the
+    // client merge after a custom dictionary edits the page.
+    currentLayouts = null;
     try {
         await window.mergeCustomMatches(data, matches, maxResults);
     } catch (error) {
@@ -3443,6 +3780,7 @@ async function applyCustomMatches(data, matches, maxResults = RESULTS_PAGE_SIZE)
 function repaintMergedRows(data, query, recordTiming, startedAt, scrollMode) {
     entryDictState.clear();
     currentEntries = data.results;
+    currentLayouts = null;
     currentQuery = query;
     if (recordTiming) {
         lastSearchMs = Math.round(performance.now() - startedAt);
@@ -3560,6 +3898,12 @@ function pagerButtons(query, data, page, pages, info, fromTop) {
     const size = data.page_size || RESULTS_PAGE_SIZE;
     const scrollMode = fromTop ? false : "top-pager";
 
+    const first = document.createElement("button");
+    first.type = "button";
+    first.textContent = "First";
+    first.disabled = page <= 1;
+    first.addEventListener("click", () => search(query, 0, scrollMode));
+
     const prev = document.createElement("button");
     prev.type = "button";
     prev.textContent = "Previous";
@@ -3590,6 +3934,12 @@ function pagerButtons(query, data, page, pages, info, fromTop) {
     next.disabled = page >= pages;
     next.addEventListener("click", () => search(query, (data.offset || 0) + size, scrollMode));
 
+    const last = document.createElement("button");
+    last.type = "button";
+    last.textContent = "Last";
+    last.disabled = page >= pages;
+    last.addEventListener("click", () => search(query, (pages - 1) * size, scrollMode));
+
     // Warm the destination page when the pointer, focus or touch signals intent.
     // This makes Next feel instant without prefetching for visitors who never
     // page; the in-flight map dedupes it against the post-render prefetch.
@@ -3602,10 +3952,14 @@ function pagerButtons(query, data, page, pages, info, fromTop) {
         button.addEventListener("focus", warm, { once: true });
         button.addEventListener("touchstart", warm, { once: true, passive: true });
     };
+    prefetchOnIntent(first, 0);
     prefetchOnIntent(prev, (data.offset || 0) - size);
     prefetchOnIntent(next, (data.offset || 0) + size);
+    prefetchOnIntent(last, (pages - 1) * size);
 
-    return customJump ? [prev, label, customJump, next] : [prev, label, next];
+    return customJump
+        ? [first, prev, label, customJump, next, last]
+        : [first, prev, label, next, last];
 }
 
 // Render the segmented input as clickable words (clicking one searches it).
@@ -3849,7 +4203,7 @@ async function annotate(text) {
 
     if (!hasSpace) {
         const found = await search(text);
-        if (!found) {
+        if (!found && CJK_RE.test(text)) {
             // Fall back to annotation in case the word is a multi-token phrase
             // without spaces (e.g. "我是中国人").
             const data = await fetchAnnotate(text);
@@ -4392,7 +4746,9 @@ customDictsToggle.addEventListener("change", () => {
     syncDictPanel();
     // Re-render so the per-entry dictionary chips appear/disappear too.
     redraw();
+    rerunSearch(); // the effective selected dictionaries just changed
 });
+
 // The button flips the hidden switch and reuses its change handler.
 if (customDictsButton) {
     customDictsButton.addEventListener("click", () => {
@@ -4427,6 +4783,7 @@ for (const toggle of dictToggles) {
         entryDictState.clear();
         savePrefs();
         redraw();
+        rerunSearch();
     });
 }
 
@@ -4565,6 +4922,7 @@ langMenu.addEventListener("click", (event) => {
     savePrefs();
     setLangOpen(false);
     redraw(); // the selected language or default dictionaries may have changed
+    rerunSearch(); // the server picks the preview dictionary and the categories
 });
 // Close the menu when clicking elsewhere, or pressing Escape.
 document.addEventListener("click", (event) => {

@@ -12,6 +12,14 @@
       system = "x86_64-linux";
       # Alias for the package set built for that system.
       pkgs = nixpkgs.legacyPackages.${system};
+      # GitHub Spec Kit (`specify`): installed on demand through uv from PyPI.
+      # Pin to a release with `uvx --from "specify-cli==X.Y.Z" specify` if you
+      # need a reproducible build.
+      specifyCli = pkgs.writeShellApplication {
+        name = "specify";
+        runtimeInputs = [ pkgs.uv ];
+        text = ''exec uvx --from specify-cli specify "$@"'';
+      };
     in
     {
       # `nix develop` drops you into this shell with the tools below on PATH.
@@ -21,6 +29,7 @@
           uv # dependency manager and command runner
           git # version control
           sqlite # CLI for inspecting the database by hand
+          specifyCli # GitHub Spec Kit CLI (specify)
         ];
 
         # The opencc Python wheel links against libstdc++, which NixOS keeps off
@@ -33,6 +42,7 @@
           echo "  first run:   uv sync"
           echo "  import data: uv run python -m scripts.import_cedict"
           echo "  run server:  uv run uvicorn yabai_search.main:app --reload"
+          echo "  spec-kit:    specify init --here"
         '';
       };
     };

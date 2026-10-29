@@ -112,6 +112,17 @@ def test_definition_copy_button_does_not_add_line_height():
     assert "width .12s ease" not in css
 
 
+def test_details_page_shows_details_in_the_results_slot():
+    """The exact-word page labels the result count slot as Details."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
+    assert '? "Details"' in js
+    assert "if (!exactMode) updateTiming();" in js
+    assert "if (!count || exactMode || lastSearchMs === null)" in js
+    assert ".exact-mode .results-count {" in css
+    assert "display: block;" in css
+
+
 def test_footer_separator_uses_the_last_result_tier():
     """The line below the results is the same hoverable tier separator."""
     html = (ROOT / "yabai_search/templates/index.html").read_text(encoding="utf-8")
@@ -119,10 +130,39 @@ def test_footer_separator_uses_the_last_result_tier():
     css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
     assert 'class="footer-separator entry-separator"' in html
     assert "function updateFooterSeparator(tier)" in js
-    assert "updateFooterSeparator(maxTier);" in js
+    assert "updateFooterSeparator(lastTier);" in js
     assert "updateFooterSeparator(fuzzyTier);" in js
     assert ".footer-separator + footer {" in css
     assert "border-top: 0;" in css
+
+
+def test_frontend_wildcard_tier_parity_with_backend():
+    """The browser copies _glob_match / _wildcard_tier from db.py."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "function globMatch(pattern, word)" in js
+    assert "function wildcardTier(words, query)" in js
+    assert 'if (isWildcardQuery(text)) return wildcardTier(words, text);' in js
+    assert "globMatch(glob, lower)" in js
+
+
+def test_headword_reading_is_trimmed_to_spoken_characters():
+    """Alternate source readings do not spill past the headword."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "function readingSyllablesForWord(pinyin, word)" in js
+    assert "readingSyllablesForWord(pinyin, text).filter(" in js
+    assert "readingSyllablesForWord(pinyin, word)" in js
+    assert "syllables = syllables.slice(0, spoken);" in js
+
+
+def test_pager_has_first_and_last_buttons():
+    """Paged results can jump to the first and last page in one click."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert 'first.textContent = "First";' in js
+    assert 'last.textContent = "Last";' in js
+    assert 'search(query, 0, scrollMode)' in js
+    assert 'search(query, (pages - 1) * size, scrollMode)' in js
+    assert "prefetchOnIntent(first, 0);" in js
+    assert "prefetchOnIntent(last, (pages - 1) * size);" in js
 
 
 def test_definition_copy_converts_pinyin_to_zhuyin():
@@ -133,13 +173,14 @@ def test_definition_copy_converts_pinyin_to_zhuyin():
     assert 'syllables.map((s) => toZhuyin(s)).join(" ")' in js
 
 
-def test_definition_notes_share_the_same_top_spacing():
-    """Other forms, Traditional forms and the other notes all use one spacing."""
-    css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
-    start = css.index(".def-source-cls {")
-    end = css.index("}", start)
-    assert "margin-top: .4rem;" in css[start:end]
-    assert ".def-source .def-source-cls {" not in css
+def test_search_url_carries_selected_dictionaries():
+    """Changing the dictionary selection re-runs the server-side ranking."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "function selectedAnchorsParam()" in js
+    assert "&dicts=${encodeURIComponent(dictsParam)}" in js
+    assert "function rerunSearch()" in js
+    assert "rerunSearch(); // the effective selected dictionaries just changed" in js
+    assert "rerunSearch(); // the server picks the preview dictionary and the categories" in js
 
 
 def test_clear_button_keeps_scroll_in_pulled_mode():
@@ -271,3 +312,56 @@ def test_frequency_chip_has_rank_tooltip():
     assert text in js
     assert text in html
     assert "chip.title = FREQ_TOOLTIP" in js
+
+
+def test_chinese_wiktionary_links_to_its_exact_entry():
+    """中文维基词典 opens the word's page on zh.wiktionary.org."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert 'const ZH_WIKTIONARY_PAGE = "https://zh.wiktionary.org/wiki/";' in js
+    assert 'source.anchor === "zhwiktionary"' in js
+    assert (
+        "ZH_WIKTIONARY_PAGE + encodeURIComponent(source.headword || word)" in js
+    )
+
+
+def test_dungan_reading_is_one_muted_line():
+    """Dungan's Latin + tone numerals are not split into syllables."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
+    assert 'node.className = raw ? "furigana raw-reading" : "furigana";' in js
+    assert 'entry.pinyin_label === "Dungan"' in js
+    assert ".furigana.raw-reading .reading" in css
+
+
+def test_extra_dialect_readings_are_notes_below_the_definitions():
+    """One dialect reading sits above the headword; the rest become notes."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
+    assert "entry.readings.slice(1)" in js
+    assert 'detailRow(`${extra.label || "Reading"}:`' in js
+    # The note's reading sits above the headword like furigana, muted.
+    assert "extra.pinyin" in js
+    assert '(extra.label || "") === "Dungan"' in js
+    assert ".def-source-cls .dialect-reading .reading" in css
+    # The old per-line block under the headword is gone.
+    assert "word-readings" not in js
+    assert ".word-readings" not in css
+
+
+def test_script_toggle_uses_the_server_layouts():
+    """The page asks for a script and reuses the other layout from the response."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "&script=${state.script}&merge=1" in js
+    assert "function serverLayouts(data)" in js
+    assert "currentLayouts = serverLayouts(full);" in js
+    assert "const layout = currentLayouts && currentLayouts[state.script];" in js
+
+
+def test_zhuyin_conversion_skips_dialect_readings():
+    """Only Mandarin pinyin becomes bopomofo; dialect readings stay as written."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    # furigana() gets allowTones=false for a dialect entry (pinyin_no_tone).
+    assert 'state.phonetic === "zhuyin" && allowTones' in js
+    # The IDS headword and the copy button use the same guard.
+    assert 'state.phonetic === "zhuyin" && !entry.pinyin_no_tone' in js
+    assert "syllables.every((s) => isPinyinSyllable(s))" in js
