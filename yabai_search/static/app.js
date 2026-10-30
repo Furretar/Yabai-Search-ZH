@@ -1520,7 +1520,7 @@ function definitionBody(source, taiwanRefs, copy) {
         label.textContent = "Classifier:";
         line.append(label, document.createTextNode(" "));
         source.classifiers.forEach((classifier, i) => {
-            if (i > 0) line.append(document.createTextNode("; "));
+            if (i > 0) line.append(document.createTextNode(", "));
             // MOE stores a prose note instead of a single classifier word.
             if (classifier.note) {
                 line.append(document.createTextNode(classifier.note));

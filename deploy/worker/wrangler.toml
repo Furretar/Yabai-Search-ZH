@@ -1,0 +1,18 @@
+# Config for `wrangler deploy` (Cloudflare's CLI for Workers).
+name = "yabai-front"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# Custom Domains make the Worker the thing that answers for these hostnames.
+# Delete the old apex and www tunnel DNS records first, or the deploy refuses.
+routes = [
+  { pattern = "yabaisearch.org", custom_domain = true },
+  { pattern = "www.yabaisearch.org", custom_domain = true },
+]
+
+[vars]
+# Milliseconds to wait for the laptop before also asking the tablet.
+HEDGE_MS = "800"
+
+# The shared secret is NOT stored here. Set it once with:
+#   npx wrangler secret put ORIGIN_SECRET

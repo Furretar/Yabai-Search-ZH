@@ -1,0 +1,11 @@
+# Tunnel for the tablet (Termux), port 8000. It must be its own tunnel and
+# must not go through the laptop, or it dies whenever the laptop is off.
+# Create with: cloudflared tunnel create yabai-tablet
+#   cloudflared tunnel route dns --overwrite-dns yabai-tablet tablet.yabaisearch.org
+tunnel: REPLACE_WITH_TABLET_TUNNEL_ID
+credentials-file: /data/data/com.termux/files/home/.cloudflared/REPLACE_WITH_TABLET_TUNNEL_ID.json
+
+ingress:
+  - hostname: tablet.yabaisearch.org
+    service: http://127.0.0.1:8000
+  - service: http_status:404

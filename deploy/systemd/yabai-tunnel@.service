@@ -1,0 +1,15 @@
+# Laptop only. One instance per tunnel:
+#   systemctl --user enable --now yabai-tunnel@laptop yabai-tunnel@dev
+# The unit sets PATH so cloudflared and uv are found; adjust for your system.
+# Run `loginctl enable-linger $USER` once so these start at boot without a login.
+[Unit]
+Description=Cloudflare tunnel (%i)
+After=network-online.target
+
+[Service]
+ExecStart=%h/yabai-%i/deploy/tunnel.sh %i
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -353,6 +353,7 @@ async def _debug_stamp(request, call_next):
         with _inflight_lock:
             _inflight -= 1
     response.headers["X-Yabai-Inflight"] = str(seen)
+    response.headers["X-Served-By"] = os.environ.get("YABAI_SERVED_BY", "unknown")
     if lag_ms is not None:
         response.headers["X-Yabai-Lag"] = str(lag_ms)
     if trace is not None:
