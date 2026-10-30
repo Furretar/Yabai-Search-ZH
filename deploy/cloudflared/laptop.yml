@@ -1,9 +1,6 @@
 # Tunnel for the laptop's serving copy (port 8000).
-# Create with: cloudflared tunnel create yabai-laptop
-# Then put the printed ID below and point DNS at it:
-#   cloudflared tunnel route dns yabai-laptop laptop.yabaisearch.org
-tunnel: REPLACE_WITH_LAPTOP_TUNNEL_ID
-credentials-file: /home/YOUR_USER/.cloudflared/REPLACE_WITH_LAPTOP_TUNNEL_ID.json
+tunnel: d434c15b-de6d-4a92-87bd-5780a85d8dcf
+credentials-file: /home/wyatt/.cloudflared/d434c15b-de6d-4a92-87bd-5780a85d8dcf.json
 
 ingress:
   - hostname: laptop.yabaisearch.org

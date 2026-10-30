@@ -1,8 +1,4 @@
-# Third tunnel: the laptop's dev copy, the one you edit (port 8001).
-# Create with: cloudflared tunnel create yabai-dev
-#   cloudflared tunnel route dns yabai-dev dev.yabaisearch.org
-# It is a separate tunnel so stopping or breaking it never touches the
-# serving tunnels. Protect dev. with Cloudflare Access (see PLAN.md).
+# Tunnel for the laptop's dev copy (port 8001).
 tunnel: 637ddd3b-72de-4843-b2f6-54f4867d6896
 credentials-file: /home/wyatt/.cloudflared/637ddd3b-72de-4843-b2f6-54f4867d6896.json
 
