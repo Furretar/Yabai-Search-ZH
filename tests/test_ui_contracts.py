@@ -56,8 +56,8 @@ def test_home_page_shows_which_machine_is_serving(client, monkeypatch):
     assert "<strong>tablet</strong>" in html
 
 
-def test_origin_guard_redirects_browsers_to_the_public_site(monkeypatch):
-    """A browser on an origin hostname lands on the main site, not a 403."""
+def test_origin_guard_redirects_public_browsers_to_the_public_site(monkeypatch):
+    """A public browser on an origin hostname lands on the main site."""
     from fastapi.testclient import TestClient
 
     import deploy.guard as guard
@@ -74,6 +74,18 @@ def test_origin_guard_redirects_browsers_to_the_public_site(monkeypatch):
 
     api = origin.get("/api/search", headers={"accept": "application/json"})
     assert api.status_code == 403
+
+
+def test_origin_guard_allows_private_clients(monkeypatch):
+    """The LAN and Tailscale may open the origin directly for debugging."""
+    from fastapi.testclient import TestClient
+
+    import deploy.guard as guard
+
+    monkeypatch.setattr(guard, "_SECRET", "test-secret")
+    origin = TestClient(guard.app, client=("100.100.100.100", 12345))
+    response = origin.get("/__ping", follow_redirects=False)
+    assert response.status_code == 200
 
 
 def test_secondary_pages_keep_the_site_title_and_byline(client):
