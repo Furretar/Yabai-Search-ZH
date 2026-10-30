@@ -48,6 +48,34 @@ def test_home_page_has_search_title_and_debug_download(client):
     assert 'title="Clear" hidden' in html
 
 
+def test_home_page_shows_which_machine_is_serving(client, monkeypatch):
+    """The hamburger menu names the host from YABAI_SERVED_BY."""
+    monkeypatch.setenv("YABAI_SERVED_BY", "tablet")
+    html = client.get("/").text
+    assert 'class="menu-host"' in html
+    assert "<strong>tablet</strong>" in html
+
+
+def test_origin_guard_redirects_browsers_to_the_public_site(monkeypatch):
+    """A browser on an origin hostname lands on the main site, not a 403."""
+    from fastapi.testclient import TestClient
+
+    import deploy.guard as guard
+
+    monkeypatch.setattr(guard, "_SECRET", "test-secret")
+    origin = TestClient(guard.app)
+    response = origin.get(
+        "/about",
+        headers={"accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://yabaisearch.org/about"
+
+    api = origin.get("/api/search", headers={"accept": "application/json"})
+    assert api.status_code == 403
+
+
 def test_secondary_pages_keep_the_site_title_and_byline(client):
     """About and word pages show the title, author and version under it."""
     pages = [
