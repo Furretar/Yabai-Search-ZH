@@ -1,12 +1,15 @@
 # Third tunnel: the laptop's dev copy, the one you edit (port 8001).
 # Create with: cloudflared tunnel create yabai-dev
-#   cloudflared tunnel route dns yabai-dev new.yabaisearch.org
+#   cloudflared tunnel route dns yabai-dev dev.yabaisearch.org
 # It is a separate tunnel so stopping or breaking it never touches the
-# serving tunnels. Protect new. with Cloudflare Access (see PLAN.md).
-tunnel: REPLACE_WITH_DEV_TUNNEL_ID
-credentials-file: /home/YOUR_USER/.cloudflared/REPLACE_WITH_DEV_TUNNEL_ID.json
+# serving tunnels. Protect dev. with Cloudflare Access (see PLAN.md).
+tunnel: 637ddd3b-72de-4843-b2f6-54f4867d6896
+credentials-file: /home/wyatt/.cloudflared/637ddd3b-72de-4843-b2f6-54f4867d6896.json
 
 ingress:
+  - hostname: dev.yabaisearch.org
+    service: http://127.0.0.1:8001
+  # Keep the old name working as an alias until it is retired in DNS.
   - hostname: new.yabaisearch.org
     service: http://127.0.0.1:8001
   - service: http_status:404

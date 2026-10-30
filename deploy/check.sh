@@ -37,4 +37,4 @@ probe yabaisearch.org
 probe www.yabaisearch.org
 probe laptop.yabaisearch.org
 probe tablet.yabaisearch.org
-probe new.yabaisearch.org
+probe dev.yabaisearch.org

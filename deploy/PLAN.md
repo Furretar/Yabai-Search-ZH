@@ -16,7 +16,7 @@ Cloudflare Worker  (yabaisearch.org, www.yabaisearch.org)
   +--> tablet.yabaisearch.org --> tunnel "yabai-tablet" --> tablet  ~/yabai-search  :8000
 
 you
-  +--> new.yabaisearch.org    --> tunnel "yabai-dev"    --> laptop  ~/yabai-dev     :8001
+  +--> dev.yabaisearch.org    --> tunnel "yabai-dev"    --> laptop  ~/yabai-dev     :8001
 ```
 
 Three tunnels, each its own cloudflared process, so one failing never takes
@@ -107,7 +107,7 @@ cloudflared tunnel login
 cloudflared tunnel create yabai-laptop
 cloudflared tunnel route dns yabai-laptop laptop.yabaisearch.org
 cloudflared tunnel create yabai-dev
-cloudflared tunnel route dns yabai-dev new.yabaisearch.org
+cloudflared tunnel route dns yabai-dev dev.yabaisearch.org
 ```
 Put each printed tunnel ID and your username into
 `deploy/cloudflared/laptop.yml` and `dev.yml` in the matching clone.
@@ -169,13 +169,13 @@ Brief downtime is possible between deleting the records and deploy finishing,
 so do it at a quiet hour and run the deploy immediately after.
 
 ### 4.7 Protect new.
-`new.yabaisearch.org` runs your unfinished work and has no secret. In
+`dev.yabaisearch.org` runs your unfinished work and has no secret. In
 Cloudflare Zero Trust (free) add an Access application for that hostname,
 allow only your email. Without it anyone can see work in progress.
 
 ## 5. Daily workflow
 
-1. Work in `~/yabai-dev`; preview at `https://new.yabaisearch.org` or
+1. Work in `~/yabai-dev`; preview at `https://dev.yabaisearch.org` or
    `http://127.0.0.1:8001`.
 2. Commit when happy (release.sh does not commit for you).
 3. `deploy/release.sh` (add `--data` if you rebuilt `data/*.sqlite`).
@@ -222,7 +222,7 @@ other should be released together. If you change the schema, release with
 
 ```
 ## Hosting
-- Three copies: ~/yabai-dev (edit here, :8001, new.yabaisearch.org),
+- Three copies: ~/yabai-dev (edit here, :8001, dev.yabaisearch.org),
   ~/yabai-laptop (:8000) and the tablet (:8000). Serving copies are never edited.
 - Publish with deploy/release.sh [--data] after committing. See deploy/PLAN.md.
 ```
