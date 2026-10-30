@@ -16,7 +16,8 @@ cd "$ROOT"
 
 # Where the other copies live. Override in deploy/release.env.
 LAPTOP_DIR="$HOME/yabai-laptop"
-TABLET_SSH="u0_a249@192.168.188.105"
+TABLET_SSH="u0_a249@127.0.0.1"
+TABLET_ADB="192.168.188.105:5555"
 TABLET_PORT=8022
 TABLET_KEY="$HOME/.ssh/termux_key"
 TABLET_DIR="yabai-search"
@@ -51,6 +52,10 @@ fi
 (cd "$LAPTOP_DIR" && deploy/update.sh laptop)
 
 echo "== tablet"
+# The tablet only accepts ADB inbound, so reach SSH through an ADB forward.
+if command -v adb >/dev/null 2>&1; then
+    adb -s "$TABLET_ADB" forward "tcp:$TABLET_PORT" tcp:"$TABLET_PORT" >/dev/null 2>&1 || true
+fi
 if [ "$SYNC_DATA" = 1 ]; then
     rsync -a -e "ssh -p $TABLET_PORT -i $TABLET_KEY" \
         data/*.sqlite "$TABLET_SSH:$TABLET_DIR/data/"
