@@ -91,6 +91,10 @@
                     </div>
                     <span class="theme-label">Theme</span>
                 </div>
+                <div class="menu-host" title="Which machine served this page">
+                    <span>Host</span>
+                    <strong>{{ served_by }}</strong>
+                </div>
                 {% if show_debug %}
                 <!-- Debug log download, available to every client. -->
                 <button type="button" id="download-log-button" class="menu-item"

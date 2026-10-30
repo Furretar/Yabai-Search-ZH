@@ -658,6 +658,8 @@ def _index_page(
             "show_reports": _request_is_local(request),
             # The debug log button is useful for every client, not just local.
             "show_debug": True,
+            # Which machine is serving this page (see deploy/run.sh).
+            "served_by": os.environ.get("YABAI_SERVED_BY", "unknown"),
         },
     )
 

@@ -3157,6 +3157,23 @@ footer {
     color: var(--control);
 }
 
+/* Which machine answered: "Host laptop" or "Host tablet". */
+.menu-host {
+    display: flex;
+    justify-content: space-between;
+    gap: .5rem;
+    margin-top: .45rem;
+    padding: .5rem .25rem 0;
+    border-top: 1px solid var(--options-divider);
+    font-size: .8rem;
+    color: var(--control);
+}
+
+.menu-host strong {
+    color: var(--accent);
+    font-weight: 600;
+}
+
 /* Debug-log download, sitting under the theme control in the menu. */
 .menu-item {
     display: flex;

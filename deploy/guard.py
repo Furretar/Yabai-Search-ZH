@@ -25,6 +25,26 @@ async def app(scope, receive, send):
         sent = dict(scope["headers"]).get(b"x-origin-secret", b"").decode("latin-1")
         # compare_digest takes the same time however many characters match.
         if not hmac.compare_digest(sent, _SECRET):
+            # A person who opens the origin hostname directly should land on
+            # the public site, not a bare 403. The Worker always sends the
+            # secret, so only browsers and stray scripts reach this branch.
+            headers = dict(scope["headers"])
+            accept = headers.get(b"accept", b"").decode("latin-1")
+            if scope["method"] in ("GET", "HEAD") and "text/html" in accept:
+                path = scope.get("path", "/")
+                query = scope.get("query_string", b"").decode("latin-1")
+                location = "https://yabaisearch.org" + path
+                if query:
+                    location += "?" + query
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 302,
+                        "headers": [(b"location", location.encode("latin-1"))],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b""})
+                return
             await send(
                 {
                     "type": "http.response.start",
