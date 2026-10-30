@@ -113,22 +113,29 @@ Put each printed tunnel ID and your username into
 `deploy/cloudflared/laptop.yml` and `dev.yml` in the matching clone.
 
 ### 4.4 Tablet (Termux)
+The Termux main repo has no `cloudflared`, but the Termux User Repository
+(TUR) does. Install TUR first:
 ```
-pkg install rsync python   # NOTE: Termux has no cloudflared package; see the tablet fallback
-cloudflared tunnel login
+pkg install tur-repo
+pkg update
+pkg install cloudflared rsync python
+```
+Then create the tunnel on the laptop (it owns the Cloudflare login):
+```
 cloudflared tunnel create yabai-tablet
 cloudflared tunnel route dns --overwrite-dns yabai-tablet tablet.yabaisearch.org
 ```
-Fill the ID into `deploy/cloudflared/tablet.yml`. First, delete the old
-`tablet.yabaisearch.org` record if the old laptop tunnel still owns it
-(`--overwrite-dns` replaces it, but check the dashboard).
+Copy the printed credentials JSON to the tablet's
+`~/.cloudflared/<id>.json`, fill the ID into `deploy/cloudflared/tablet.yml`,
+and add `CLOUDFLARED_EDGE_IP_VERSION=4` to `deploy/env.local` on the tablet.
+Android on this tablet cannot reach one of Cloudflare's edge regions over
+IPv6, so cloudflared must be told to use IPv4; without that flag its precheck
+fails with `hard_fail=true`. The flag is read by `deploy/tunnel.sh`.
 
-Risk: the Termux cloudflared is untested on this tablet. The earlier proot
-attempt failed because of Android's seccomp filter, and the Termux build
-avoids that, but verify with `cloudflared tunnel info yabai-tablet` (it must
-list a connector). If it still hangs, run with `--loglevel debug` and keep
-that log. Fallback: a small always-on box (Pi or free VPS) forwarding to the
-tablet over Tailscale.
+Verify with `cloudflared tunnel info yabai-tablet`: it must list an
+`android_arm64` connector. If it does not, run
+`cloudflared tunnel --edge-ip-version 4 --loglevel debug ... run` and keep
+the log.
 
 ### 4.5 Start things
 Laptop:
@@ -152,7 +159,7 @@ For boot start, install Termux:Boot and put those two lines in
 `~/.termux/boot/yabai`.
 
 Check: from the laptop, `curl -H "X-Origin-Secret: <s>" https://laptop.yabaisearch.org/__ping`
-and the same for `tablet.` and `new.` (new. needs no secret). Each should
+and the same for `tablet.` and `dev.` (dev. needs no secret). Each should
 return JSON.
 
 ### 4.6 Worker
@@ -168,7 +175,7 @@ cannot be created while they exist). Then `npx wrangler deploy`.
 Brief downtime is possible between deleting the records and deploy finishing,
 so do it at a quiet hour and run the deploy immediately after.
 
-### 4.7 Protect new.
+### 4.7 Protect dev.
 `dev.yabaisearch.org` runs your unfinished work and has no secret. In
 Cloudflare Zero Trust (free) add an Access application for that hostname,
 allow only your email. Without it anyone can see work in progress.
