@@ -1064,70 +1064,6 @@ def _script_forms(word: str) -> tuple[str, ...]:
     return tuple(sorted({word, to_simplified(word), to_traditional(word)}))
 
 
-def dictionary_matches(word: str) -> list[dict]:
-    """Definitions for `word` from every dictionary, in the original language.
-
-    Backs the "Matches in other dictionaries" section. Matching is
-    script-insensitive (see _script_forms); each result carries both the
-    traditional and simplified forms of the matched headword so the UI can show
-    it in the chosen script.
-    """
-    word = (word or "").strip()
-    if not word:
-        return []
-    forms = _script_forms(word)
-    placeholders = ",".join("?" * len(forms))
-    matches = []
-    for source in _SOURCE_QUERIES:
-        if not source["database"].exists():
-            continue
-        connection = _connect(source["database"])
-        try:
-            rows = connection.execute(
-                source["sql"].format(ph=placeholders),
-                tuple(forms) * source["repeat"],
-            ).fetchall()
-            found = [row[0] for row in rows]
-            if not found:
-                continue
-            head = word if word in found else found[0]
-            senses = [
-                text
-                for _w, _p, text in connection.execute(
-                    source["sense_sql"].format(ph="?"), (head,)
-                )
-                if text and text.strip()
-            ]
-            classifiers = [
-                {"traditional": t, "simplified": s, "codes": c or "", "note": n or ""}
-                for _w, t, s, c, n in connection.execute(
-                    source["cls_sql"].format(ph="?"), (head,)
-                )
-            ]
-            # The reading (tone-marked pinyin), so the UI can show furigana.
-            pinyin = ""
-            if source.get("pinyin_sql"):
-                row = connection.execute(source["pinyin_sql"], (head,)).fetchone()
-                pinyin = (row[0] or "") if row else ""
-        finally:
-            connection.close()
-        if not senses and not classifiers:
-            continue  # the word is listed but has nothing to show
-        matches.append(
-            {
-                "key": source["anchor"],
-                "label": source["label"],
-                "anchor": source["anchor"],
-                "lang": source["lang"],
-                "traditional": to_traditional(head),
-                "simplified": to_simplified(head),
-                "pinyin": pinyin,
-                "senses": senses[:_MAX_DEFS],
-                "classifiers": classifiers[:_MAX_DEFS],
-            }
-        )
-    return matches
-
 # Cache of MOE single-character readings: {character: [pinyin, ...]}.
 _moe_char_cache: dict[str, list[str]] | None = None
 
@@ -6318,12 +6254,6 @@ def _strip_language_notes(text: str) -> str:
         return "" if _LANGUAGE_NOTE_HINT_RE.search(note) else note
 
     return _PAREN_NOTE_RE.sub(replace, text or "")
-
-
-def _matches_outside_notes(text: str, query: str) -> bool:
-    """True when `query` matches `text` outside language/dialect notes."""
-    stripped = _strip_language_notes(text)
-    return _query_regex(query).search(stripped.lower()) is not None
 
 
 def _language_match_tier(text: str, query: str) -> int:

@@ -969,46 +969,6 @@ def about(request: Request):
     )
 
 
-# External lookups for the dictionary headers above each definition. These must
-# match definitionsBlock() in static/app.js, so the word page links to the same
-# places the search results do.
-_CC_CEDICT_SEARCH = (
-    "https://cc-cedict.org/editor/editor.php?handler=QueryDictionary"
-    "&querydictionary_search="
-)
-_WIKTIONARY_PAGE = "https://en.wiktionary.org/wiki/"
-_JPWIKTIONARY_PAGE = "https://ja.wiktionary.org/wiki/"
-
-
-def _link_definitions(entries: list[dict], word: str) -> None:
-    """Give every definition block the href of its dictionary header.
-
-    Mirrors definitionsBlock(): CC-CEDICT and the Wiktionaries open the word at
-    the source (a new tab), custom dictionaries have no link, everything else
-    links to its section on the About page. `definition["href"]` is None when
-    the header should render as a plain label.
-    """
-    for entry in entries:
-        for definition in entry.get("definitions", ()):
-            anchor = definition.get("anchor", "")
-            headword = definition.get("headword") or word
-            if anchor == "cedict":
-                definition["href"] = _CC_CEDICT_SEARCH + quote(headword)
-                definition["external"] = True
-            elif anchor == "wiktionary":
-                definition["href"] = _WIKTIONARY_PAGE + quote(headword)
-                definition["external"] = True
-            elif anchor == "jpwiktionary":
-                definition["href"] = _JPWIKTIONARY_PAGE + quote(headword)
-                definition["external"] = True
-            elif anchor.startswith("custom-"):
-                definition["href"] = None
-                definition["external"] = False
-            else:
-                definition["href"] = f"/about#{quote(anchor)}"
-                definition["external"] = False
-
-
 # CC0 male-voice MP3s from github.com/cjhoward/cedict-tts, served by jsDelivr
 # with the right audio content type, CORS, and range requests.
 _AUDIO_BASE = "https://cdn.jsdelivr.net/gh/cjhoward/cedict-tts@master/male/"
