@@ -2795,8 +2795,6 @@ function entryTier(entry, query) {
     // The server already ranked this row; use its tier so the page cannot
     // disagree with the order it was sent in.
     if (Number.isInteger(entry.tier)) return entry.tier;
-    // A definition that exactly equals the query is its own tier.
-    if (entry.definition_exact) return 0;
     // A dialect-only reading is tier 4 even if it happens to match the query.
     if (entry.pinyin_label || entry.pinyin_no_tone) return 4;
     // A bare "*" fits every headword, so every ordinary result is tier 1.

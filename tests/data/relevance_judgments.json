@@ -1,0 +1,942 @@
+[
+ {
+  "query": "word",
+  "expected": [
+   "word姐",
+   "字",
+   "说话",
+   "词",
+   "单词"
+  ],
+  "entries": [
+   {
+    "simplified": "word姐",
+    "traditional": "word姐",
+    "pinyin": "w o r d jiě",
+    "english": "my big sister (Internet slang version of 我的姐[wo3 de5 jie3])",
+    "rank": null
+   },
+   {
+    "simplified": "字",
+    "traditional": "字",
+    "pinyin": "zì",
+    "english": "letter; symbol; character; word; CL:個|个[ge4]; courtesy or style name traditionally given to males aged 20 in dynastic China",
+    "rank": 977
+   },
+   {
+    "simplified": "说话",
+    "traditional": "說話",
+    "pinyin": "shuō huà",
+    "english": "to speak; to say; to talk; to gossip; to tell stories; talk; word",
+    "rank": 1989
+   },
+   {
+    "simplified": "词",
+    "traditional": "詞",
+    "pinyin": "cí",
+    "english": "word; statement; speech; lyrics; a form of lyric poetry, flourishing in the Song dynasty 宋朝[Song4 chao2] (CL:首[shou3])",
+    "rank": 2435
+   },
+   {
+    "simplified": "单词",
+    "traditional": "單詞",
+    "pinyin": "dān cí",
+    "english": "word; CL:個|个[ge4]",
+    "rank": 8541
+   }
+  ]
+ },
+ {
+  "query": "speak",
+  "expected": [
+   "说",
+   "讲",
+   "出口",
+   "谈",
+   "说话"
+  ],
+  "entries": [
+   {
+    "simplified": "说",
+    "traditional": "說",
+    "pinyin": "shuō",
+    "english": "to speak; to talk; to say; to explain; to comment; to scold; to tell off; (bound form) theory; doctrine",
+    "rank": 38
+   },
+   {
+    "simplified": "讲",
+    "traditional": "講",
+    "pinyin": "jiǎng",
+    "english": "to speak; to explain; to negotiate; to emphasize; to be particular about; as far as sth is concerned; speech; lecture",
+    "rank": 915
+   },
+   {
+    "simplified": "出口",
+    "traditional": "出口",
+    "pinyin": "chū kǒu",
+    "english": "an exit; CL:個|个[ge4]; to speak; to export; (of a ship) to leave port",
+    "rank": 1701
+   },
+   {
+    "simplified": "谈",
+    "traditional": "談",
+    "pinyin": "tán",
+    "english": "to speak; to talk; to converse; to chat; to discuss",
+    "rank": 1940
+   },
+   {
+    "simplified": "说话",
+    "traditional": "說話",
+    "pinyin": "shuō huà",
+    "english": "to speak; to say; to talk; to gossip; to tell stories; talk; word",
+    "rank": 1989
+   }
+  ]
+ },
+ {
+  "query": "run",
+  "expected": [
+   "走",
+   "开",
+   "经营",
+   "管",
+   "执行"
+  ],
+  "entries": [
+   {
+    "simplified": "走",
+    "traditional": "走",
+    "pinyin": "zǒu",
+    "english": "to walk; to go; to run; to move (of vehicle); to visit; to leave; to go away; to die (euph.); from; through; away (in compound verbs, such as 撤走[che4 zou3]); to change (shape, form, meaning)",
+    "rank": 232
+   },
+   {
+    "simplified": "开",
+    "traditional": "開",
+    "pinyin": "kāi",
+    "english": "to open (transitive or intransitive); (of ships, vehicles, troops etc) to start; to turn on; to put in operation; to operate; to run; to boil; to write out (a prescription, check, invoice etc); (directional complement) away; off; carat (gold); abbr. for Kelvin, 開爾文|开尔文[Kai1 er3 wen2]; abbr. for 開本|开本[kai1 ben3], book format",
+    "rank": 336
+   },
+   {
+    "simplified": "经营",
+    "traditional": "經營",
+    "pinyin": "jīng yíng",
+    "english": "to engage in (business etc); to run; to operate",
+    "rank": 511
+   },
+   {
+    "simplified": "管",
+    "traditional": "管",
+    "pinyin": "guǎn",
+    "english": "to take care (of); to control; to manage; to be in charge of; to look after; to run; to care about; tube; pipe; woodwind; classifier for tube-shaped objects; particle similar to 把[ba3] in 管...叫 constructions; writing brush; (coll.) to; towards",
+    "rank": 765
+   },
+   {
+    "simplified": "执行",
+    "traditional": "執行",
+    "pinyin": "zhí xíng",
+    "english": "to implement; to carry out; to execute; to run",
+    "rank": 796
+   }
+  ]
+ },
+ {
+  "query": "water",
+  "expected": [
+   "水",
+   "浇",
+   "浇水",
+   "成立",
+   "投"
+  ],
+  "entries": [
+   {
+    "simplified": "水",
+    "traditional": "水",
+    "pinyin": "shuǐ",
+    "english": "water; (after a name) ... River; to swim (used mostly in 會水|会水[hui4 shui3] and 水性[shui3 xing4]); (coll.) lacking in substance; shoddy; (bound form) additional cost; extra income; classifier for washings of a garment",
+    "rank": 373
+   },
+   {
+    "simplified": "浇",
+    "traditional": "澆",
+    "pinyin": "jiāo",
+    "english": "to pour liquid; to irrigate (using waterwheel); to water; to cast (molten metal); to mold",
+    "rank": 10091
+   },
+   {
+    "simplified": "浇水",
+    "traditional": "澆水",
+    "pinyin": "jiāo shuǐ",
+    "english": "to water (plants etc)",
+    "rank": 13835
+   },
+   {
+    "simplified": "成立",
+    "traditional": "成立",
+    "pinyin": "chéng lì",
+    "english": "to establish; to set up; to be tenable; to hold water",
+    "rank": 773
+   },
+   {
+    "simplified": "投",
+    "traditional": "投",
+    "pinyin": "tóu",
+    "english": "to throw (sth in a specific direction: ball, javelin, grenade etc); to cast (a ballot); to cast (a glance, a shadow etc); to put in (money for investment, a coin to operate a slot machine); to send (a letter, a manuscript etc); to throw oneself into (a river, a well etc to commit suicide); to go to; to seek refuge; to place oneself into the hands of; (coll.) to rinse (clothes) in water",
+    "rank": 1362
+   }
+  ]
+ },
+ {
+  "query": "book",
+  "expected": [
+   "著",
+   "书",
+   "定",
+   "卷",
+   "预约"
+  ],
+  "entries": [
+   {
+    "simplified": "著",
+    "traditional": "著",
+    "pinyin": "zhù",
+    "english": "to make known; to show; to prove; to write; book; outstanding",
+    "rank": 34
+   },
+   {
+    "simplified": "书",
+    "traditional": "書",
+    "pinyin": "shū",
+    "english": "book; letter; document; CL:本[ben3],冊|册[ce4],部[bu4]; to write",
+    "rank": 803
+   },
+   {
+    "simplified": "定",
+    "traditional": "定",
+    "pinyin": "dìng",
+    "english": "to fix; to set; to make definite; to subscribe to (a newspaper etc); to book (tickets etc); to order (goods etc); to congeal; to coagulate; (literary) definitely",
+    "rank": 1386
+   },
+   {
+    "simplified": "卷",
+    "traditional": "卷",
+    "pinyin": "juàn",
+    "english": "scroll; book; volume; chapter; examination paper; classifier for books, paintings: volume, scroll",
+    "rank": 2144
+   },
+   {
+    "simplified": "预约",
+    "traditional": "預約",
+    "pinyin": "yù yuē",
+    "english": "booking; reservation; to book; to make an appointment",
+    "rank": 3232
+   }
+  ]
+ },
+ {
+  "query": "time",
+  "expected": [
+   "时",
+   "时间",
+   "时候",
+   "期间",
+   "期"
+  ],
+  "entries": [
+   {
+    "simplified": "时",
+    "traditional": "時",
+    "pinyin": "shí",
+    "english": "o'clock; time; when; hour; season; period",
+    "rank": 53
+   },
+   {
+    "simplified": "时间",
+    "traditional": "時間",
+    "pinyin": "shí jiān",
+    "english": "(concept of) time; (duration of) time; (point in) time",
+    "rank": 86
+   },
+   {
+    "simplified": "时候",
+    "traditional": "時候",
+    "pinyin": "shí hou",
+    "english": "time; length of time; moment; period",
+    "rank": 149
+   },
+   {
+    "simplified": "期间",
+    "traditional": "期間",
+    "pinyin": "qī jiān",
+    "english": "period of time; time; time period; period; CL:個|个[ge4]",
+    "rank": 593
+   },
+   {
+    "simplified": "期",
+    "traditional": "期",
+    "pinyin": "qī",
+    "english": "a period of time; phase; stage; classifier for issues of a periodical, courses of study; time; term; period; to hope; Taiwan pr. [qi2]",
+    "rank": 668
+   }
+  ]
+ },
+ {
+  "query": "country",
+  "expected": [
+   "国家",
+   "国",
+   "邦",
+   "国度",
+   "江山"
+  ],
+  "entries": [
+   {
+    "simplified": "国家",
+    "traditional": "國家",
+    "pinyin": "guó jiā",
+    "english": "country; nation; state",
+    "rank": 134
+   },
+   {
+    "simplified": "国",
+    "traditional": "國",
+    "pinyin": "guó",
+    "english": "country; nation; state; (bound form) national",
+    "rank": 624
+   },
+   {
+    "simplified": "邦",
+    "traditional": "邦",
+    "pinyin": "bāng",
+    "english": "(bound form) country; nation; state",
+    "rank": 2576
+   },
+   {
+    "simplified": "国度",
+    "traditional": "國度",
+    "pinyin": "guó dù",
+    "english": "country; nation",
+    "rank": 5792
+   },
+   {
+    "simplified": "江山",
+    "traditional": "江山",
+    "pinyin": "jiāng shān",
+    "english": "rivers and mountains; landscape; country; state power",
+    "rank": 13122
+   }
+  ]
+ },
+ {
+  "query": "love",
+  "expected": [
+   "爱",
+   "爱情",
+   "春",
+   "喜爱",
+   "爱心"
+  ],
+  "entries": [
+   {
+    "simplified": "爱",
+    "traditional": "愛",
+    "pinyin": "ài",
+    "english": "to love; to be fond of; to like; affection; to be inclined (to do sth); to tend to (happen)",
+    "rank": 306
+   },
+   {
+    "simplified": "爱情",
+    "traditional": "愛情",
+    "pinyin": "ài qíng",
+    "english": "romance; love (romantic); CL:份[fen4]",
+    "rank": 1451
+   },
+   {
+    "simplified": "春",
+    "traditional": "春",
+    "pinyin": "chūn",
+    "english": "spring (season); gay; joyful; youthful; love; lust; life",
+    "rank": 1948
+   },
+   {
+    "simplified": "喜爱",
+    "traditional": "喜愛",
+    "pinyin": "xǐ ài",
+    "english": "to like; to love; to be fond of; favorite",
+    "rank": 2802
+   },
+   {
+    "simplified": "爱心",
+    "traditional": "愛心",
+    "pinyin": "ài xīn",
+    "english": "compassion; kindness; care for others; love; CL:片[pian4]; charity (bazaar, golf day etc); heart (the symbol ♥)",
+    "rank": 4017
+   }
+  ]
+ },
+ {
+  "query": "study",
+  "expected": [
+   "学习",
+   "研究",
+   "学",
+   "修",
+   "读"
+  ],
+  "entries": [
+   {
+    "simplified": "学习",
+    "traditional": "學習",
+    "pinyin": "xué xí",
+    "english": "to learn; to study",
+    "rank": 189
+   },
+   {
+    "simplified": "研究",
+    "traditional": "研究",
+    "pinyin": "yán jiū",
+    "english": "research; a study; CL:項|项[xiang4]; to research; to look into",
+    "rank": 295
+   },
+   {
+    "simplified": "学",
+    "traditional": "學",
+    "pinyin": "xué",
+    "english": "to learn; to study; to imitate; science; -ology",
+    "rank": 532
+   },
+   {
+    "simplified": "修",
+    "traditional": "修",
+    "pinyin": "xiū",
+    "english": "to decorate; to embellish; to repair; to build; to write; to cultivate; to study; to take (a class)",
+    "rank": 1521
+   },
+   {
+    "simplified": "读",
+    "traditional": "讀",
+    "pinyin": "dú",
+    "english": "to read out; to read aloud; to read; to attend (school); to study (a subject in school); to pronounce",
+    "rank": 1633
+   }
+  ]
+ },
+ {
+  "query": "food",
+  "expected": [
+   "食品",
+   "食物",
+   "食",
+   "吃的",
+   "粮"
+  ],
+  "entries": [
+   {
+    "simplified": "食品",
+    "traditional": "食品",
+    "pinyin": "shí pǐn",
+    "english": "foodstuff; food; provisions",
+    "rank": 890
+   },
+   {
+    "simplified": "食物",
+    "traditional": "食物",
+    "pinyin": "shí wù",
+    "english": "food",
+    "rank": 1130
+   },
+   {
+    "simplified": "食",
+    "traditional": "食",
+    "pinyin": "shí",
+    "english": "to eat; food; animal feed; eclipse",
+    "rank": 3039
+   },
+   {
+    "simplified": "吃的",
+    "traditional": "吃的",
+    "pinyin": "chī de",
+    "english": "(coll.) food",
+    "rank": 3281
+   },
+   {
+    "simplified": "粮",
+    "traditional": "糧",
+    "pinyin": "liáng",
+    "english": "grain; food; provisions; agricultural tax paid in grain",
+    "rank": 6496
+   }
+  ]
+ },
+ {
+  "query": "hello",
+  "expected": [
+   "好",
+   "喂",
+   "你好",
+   "哈啰",
+   "哈罗"
+  ],
+  "entries": [
+   {
+    "simplified": "好",
+    "traditional": "好",
+    "pinyin": "hǎo",
+    "english": "good; appropriate; proper; all right!; (before a verb) easy to; (before a verb) good to; (before an adjective for exclamatory effect) so; (verb complement indicating completion); (of two people) close; on intimate terms; (after a form of address) hello",
+    "rank": 47
+   },
+   {
+    "simplified": "喂",
+    "traditional": "喂",
+    "pinyin": "wéi",
+    "english": "hello (when answering the phone)",
+    "rank": 4977
+   },
+   {
+    "simplified": "你好",
+    "traditional": "你好",
+    "pinyin": "nǐ hǎo",
+    "english": "hello; hi",
+    "rank": 5939
+   },
+   {
+    "simplified": "哈啰",
+    "traditional": "哈囉",
+    "pinyin": "hā luō",
+    "english": "hello (loanword)",
+    "rank": 32291
+   },
+   {
+    "simplified": "哈罗",
+    "traditional": "哈羅",
+    "pinyin": "hā luó",
+    "english": "hello (loanword)",
+    "rank": 42318
+   }
+  ]
+ },
+ {
+  "query": "friend",
+  "expected": [
+   "朋友",
+   "友",
+   "故",
+   "好友",
+   "朋"
+  ],
+  "entries": [
+   {
+    "simplified": "朋友",
+    "traditional": "朋友",
+    "pinyin": "péng you",
+    "english": "friend; CL:個|个[ge4],位[wei4]",
+    "rank": 347
+   },
+   {
+    "simplified": "友",
+    "traditional": "友",
+    "pinyin": "yǒu",
+    "english": "friend",
+    "rank": 2190
+   },
+   {
+    "simplified": "故",
+    "traditional": "故",
+    "pinyin": "gù",
+    "english": "happening; instance; reason; cause; intentional; former; old; friend; therefore; hence; (of people) to die, dead",
+    "rank": 3128
+   },
+   {
+    "simplified": "好友",
+    "traditional": "好友",
+    "pinyin": "hǎo yǒu",
+    "english": "close friend; pal; (social networking website) friend; CL:個|个[ge4]",
+    "rank": 3280
+   },
+   {
+    "simplified": "朋",
+    "traditional": "朋",
+    "pinyin": "péng",
+    "english": "friend",
+    "rank": 8727
+   }
+  ]
+ },
+ {
+  "query": "family",
+  "expected": [
+   "家",
+   "门",
+   "家庭",
+   "科",
+   "户"
+  ],
+  "entries": [
+   {
+    "simplified": "家",
+    "traditional": "家",
+    "pinyin": "jiā",
+    "english": "home; family; (polite) my (sister, uncle etc); classifier for families or businesses; refers to the philosophical schools of pre-Han China; noun suffix for a specialist in some activity, such as a musician or revolutionary, corresponding to English -ist, -er, -ary or -ian; CL:個|个[ge4]",
+    "rank": 155
+   },
+   {
+    "simplified": "门",
+    "traditional": "門",
+    "pinyin": "mén",
+    "english": "gate; door; doorway; gateway; opening (CL:扇[shan4]); valve; switch; other door-like or gate-like structure; way to do sth; knack; method; approach; family; household; lineage; (bound form) sect; school; faction (religious or academic); (bound form) class; category; division; phylum; classifier for courses, fields of study, branches of technology, relatives by marriage, guns etc; (suffix) -gate (scandal)",
+    "rank": 686
+   },
+   {
+    "simplified": "家庭",
+    "traditional": "家庭",
+    "pinyin": "jiā tíng",
+    "english": "family; household; CL:戶|户[hu4]",
+    "rank": 705
+   },
+   {
+    "simplified": "科",
+    "traditional": "科",
+    "pinyin": "kē",
+    "english": "branch of study; administrative section; division; field; branch; stage directions; family (taxonomy); rules; laws; to mete out (punishment); to levy (taxes etc); to fine sb; CL:個|个[ge4]",
+    "rank": 1199
+   },
+   {
+    "simplified": "户",
+    "traditional": "戶",
+    "pinyin": "hù",
+    "english": "a household; door; family",
+    "rank": 1517
+   }
+  ]
+ },
+ {
+  "query": "school",
+  "expected": [
+   "学校",
+   "门",
+   "学院",
+   "派",
+   "校"
+  ],
+  "entries": [
+   {
+    "simplified": "学校",
+    "traditional": "學校",
+    "pinyin": "xué xiào",
+    "english": "school; CL:所[suo3]",
+    "rank": 338
+   },
+   {
+    "simplified": "门",
+    "traditional": "門",
+    "pinyin": "mén",
+    "english": "gate; door; doorway; gateway; opening (CL:扇[shan4]); valve; switch; other door-like or gate-like structure; way to do sth; knack; method; approach; family; household; lineage; (bound form) sect; school; faction (religious or academic); (bound form) class; category; division; phylum; classifier for courses, fields of study, branches of technology, relatives by marriage, guns etc; (suffix) -gate (scandal)",
+    "rank": 686
+   },
+   {
+    "simplified": "学院",
+    "traditional": "學院",
+    "pinyin": "xué yuàn",
+    "english": "college; educational institute; school; faculty; CL:所[suo3]",
+    "rank": 787
+   },
+   {
+    "simplified": "派",
+    "traditional": "派",
+    "pinyin": "pài",
+    "english": "(literary) tributary; branch of a river; clique; school; group; faction; (bound form) style; manner; to send (a person or resource); to dispatch; to allocate (a resource or task); to appoint (sb); classifier for factions, groups etc; (preceded by 一[yi1]) classifier used in characterizing a scene, atmosphere, demeanor, sound, remark etc; (loanword) pi (Greek letter Π, π); the circular ratio 𝜋 = 3.14159...; (loanword) pie",
+    "rank": 1790
+   },
+   {
+    "simplified": "校",
+    "traditional": "校",
+    "pinyin": "xiào",
+    "english": "(bound form) school; college; (bound form) (military) field officer",
+    "rank": 1956
+   }
+  ]
+ },
+ {
+  "query": "work",
+  "expected": [
+   "工作",
+   "事",
+   "操作",
+   "作品",
+   "干"
+  ],
+  "entries": [
+   {
+    "simplified": "工作",
+    "traditional": "工作",
+    "pinyin": "gōng zuò",
+    "english": "to work; (of a machine) to operate; job; work; task; CL:個|个[ge4],份[fen4],項|项[xiang4]",
+    "rank": 56
+   },
+   {
+    "simplified": "事",
+    "traditional": "事",
+    "pinyin": "shì",
+    "english": "matter; thing; item; work; affair; CL:件[jian4],樁|桩[zhuang1],回[hui2]",
+    "rank": 362
+   },
+   {
+    "simplified": "操作",
+    "traditional": "操作",
+    "pinyin": "cāo zuò",
+    "english": "to work; to operate; to manipulate",
+    "rank": 570
+   },
+   {
+    "simplified": "作品",
+    "traditional": "作品",
+    "pinyin": "zuò pǐn",
+    "english": "work (of art); opus; CL:部[bu4],篇[pian1]",
+    "rank": 644
+   },
+   {
+    "simplified": "干",
+    "traditional": "幹",
+    "pinyin": "gàn",
+    "english": "tree trunk; main part of sth; to manage; to work; to do; capable; cadre; to kill (slang); to fuck (vulgar); (coll.) pissed off; annoyed",
+    "rank": 798
+   }
+  ]
+ },
+ {
+  "query": "money",
+  "expected": [
+   "金",
+   "钱",
+   "货",
+   "货币",
+   "资"
+  ],
+  "entries": [
+   {
+    "simplified": "金",
+    "traditional": "金",
+    "pinyin": "jīn",
+    "english": "gold; chemical element Au; generic term for lustrous and ductile metals; money; golden; highly respected; one of the eight categories of ancient musical instruments 八音[ba1 yin1]",
+    "rank": 378
+   },
+   {
+    "simplified": "钱",
+    "traditional": "錢",
+    "pinyin": "qián",
+    "english": "coin; money; CL:筆|笔[bi3]; unit of weight, one tenth of a tael 兩|两[liang3]",
+    "rank": 473
+   },
+   {
+    "simplified": "货",
+    "traditional": "貨",
+    "pinyin": "huò",
+    "english": "goods; money; commodity; CL:個|个[ge4]",
+    "rank": 2687
+   },
+   {
+    "simplified": "货币",
+    "traditional": "貨幣",
+    "pinyin": "huò bì",
+    "english": "currency; monetary; money",
+    "rank": 2694
+   },
+   {
+    "simplified": "资",
+    "traditional": "資",
+    "pinyin": "zī",
+    "english": "resources; capital; to provide; to supply; to support; money; expense",
+    "rank": 2767
+   }
+  ]
+ },
+ {
+  "query": "house",
+  "expected": [
+   "房",
+   "房子",
+   "房屋",
+   "屋",
+   "舍"
+  ],
+  "entries": [
+   {
+    "simplified": "房",
+    "traditional": "房",
+    "pinyin": "fáng",
+    "english": "house; room; CL:間|间[jian1]; branch of an extended family; classifier for family members (or concubines)",
+    "rank": 1196
+   },
+   {
+    "simplified": "房子",
+    "traditional": "房子",
+    "pinyin": "fáng zi",
+    "english": "house; building (single- or two-story); apartment; room; CL:棟|栋[dong4],幢[zhuang4],座[zuo4],套[tao4],間|间[jian1]",
+    "rank": 1626
+   },
+   {
+    "simplified": "房屋",
+    "traditional": "房屋",
+    "pinyin": "fáng wū",
+    "english": "house; building; CL:所[suo3],套[tao4]",
+    "rank": 1733
+   },
+   {
+    "simplified": "屋",
+    "traditional": "屋",
+    "pinyin": "wū",
+    "english": "(bound form) house; (bound form) room",
+    "rank": 2893
+   },
+   {
+    "simplified": "舍",
+    "traditional": "舍",
+    "pinyin": "shè",
+    "english": "(bound form) residence; house; (bound form) my (in speaking of relatives younger than oneself, as in 舍妹[she4 mei4]); (archaic) unit of distance equal to 30 li 里[li3]",
+    "rank": 6999
+   }
+  ]
+ },
+ {
+  "query": "car",
+  "expected": [
+   "车",
+   "汽车",
+   "小轿车",
+   "赛车",
+   "开车"
+  ],
+  "entries": [
+   {
+    "simplified": "车",
+    "traditional": "車",
+    "pinyin": "chē",
+    "english": "car; vehicle; CL:輛|辆[liang4]; machine; to shape with a lathe; Kangxi radical 159",
+    "rank": 268
+   },
+   {
+    "simplified": "汽车",
+    "traditional": "汽車",
+    "pinyin": "qì chē",
+    "english": "car; automobile; bus; CL:輛|辆[liang4]",
+    "rank": 319
+   },
+   {
+    "simplified": "小轿车",
+    "traditional": "小轎車",
+    "pinyin": "xiǎo jiào chē",
+    "english": "(automobile) sedan; car",
+    "rank": 33628
+   },
+   {
+    "simplified": "赛车",
+    "traditional": "賽車",
+    "pinyin": "sài chē",
+    "english": "auto race; cycle race; race car",
+    "rank": 3373
+   },
+   {
+    "simplified": "开车",
+    "traditional": "開車",
+    "pinyin": "kāi chē",
+    "english": "to drive a car (or train etc); (slang) to post sexual content online; to make a sexual joke",
+    "rank": 3968
+   }
+  ]
+ },
+ {
+  "query": "music",
+  "expected": [
+   "乐",
+   "音乐",
+   "曲子",
+   "音律",
+   "凯"
+  ],
+  "entries": [
+   {
+    "simplified": "乐",
+    "traditional": "樂",
+    "pinyin": "yuè",
+    "english": "music",
+    "rank": 956
+   },
+   {
+    "simplified": "音乐",
+    "traditional": "音樂",
+    "pinyin": "yīn yuè",
+    "english": "music; CL:張|张[zhang1],曲[qu3],段[duan4]",
+    "rank": 964
+   },
+   {
+    "simplified": "曲子",
+    "traditional": "曲子",
+    "pinyin": "qǔ zi",
+    "english": "poem for singing; tune; music; CL:支[zhi1]",
+    "rank": 24136
+   },
+   {
+    "simplified": "音律",
+    "traditional": "音律",
+    "pinyin": "yīn lǜ",
+    "english": "tuning; temperament; music",
+    "rank": 48921
+   },
+   {
+    "simplified": "凯",
+    "traditional": "凱",
+    "pinyin": "kǎi",
+    "english": "(bound form) triumphal music; (Tw) (coll.) generous with money; lavish in spending; chi (Greek letter Χχ)",
+    "rank": 2415
+   }
+  ]
+ },
+ {
+  "query": "travel",
+  "expected": [
+   "旅游",
+   "行",
+   "游",
+   "旅行",
+   "旅"
+  ],
+  "entries": [
+   {
+    "simplified": "旅游",
+    "traditional": "旅遊",
+    "pinyin": "lǚ yóu",
+    "english": "trip; journey; tourism; travel; tour; to travel",
+    "rank": 431
+   },
+   {
+    "simplified": "行",
+    "traditional": "行",
+    "pinyin": "xíng",
+    "english": "(bound form) to walk; to go; to travel; (literary) trip; journey; visit; (bound form) temporary; makeshift; (bound form) current; in circulation; (bound form) to do; to perform; capable; competent; all right; OK!; will do; behavior; conduct (Taiwan pr. [xing4]); (literary) about to; soon",
+    "rank": 701
+   },
+   {
+    "simplified": "游",
+    "traditional": "遊",
+    "pinyin": "yóu",
+    "english": "to walk; to tour; to roam; to travel",
+    "rank": 1406
+   },
+   {
+    "simplified": "旅行",
+    "traditional": "旅行",
+    "pinyin": "lǚ xíng",
+    "english": "to travel; journey; trip; CL:趟[tang4],次[ci4]",
+    "rank": 2088
+   },
+   {
+    "simplified": "旅",
+    "traditional": "旅",
+    "pinyin": "lǚ",
+    "english": "trip; travel; to travel; brigade (army)",
+    "rank": 2200
+   }
+  ]
+ }
+]

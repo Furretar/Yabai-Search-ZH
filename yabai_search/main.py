@@ -70,6 +70,7 @@ _RESULT_ENV_FLAGS = (
     "YABAI_SERVER_MERGE",
     "YABAI_SEARCH_INDEX",
     "YABAI_GLOSS_LEGACY",
+    "YABAI_RELEVANCE",
 )
 
 
@@ -1417,6 +1418,7 @@ def api_search(
                     db.ALL_PAGE_SIZE,
                     search_version(),
                     tuple(os.environ.get(name, "") for name in _RESULT_ENV_FLAGS),
+                    db.relevance.RELEVANCE_VERSION,
                 )
                 state, rank_cache_status = _rank_cache_get_or_compute(
                     cache_key,
@@ -1529,6 +1531,7 @@ def api_search(
                 limit,
                 search_version(),
                 tuple(os.environ.get(name, "") for name in _RESULT_ENV_FLAGS),
+                db.relevance.RELEVANCE_VERSION,
             )
             state, rank_cache_status = _rank_cache_get_or_compute(
                 cache_key,

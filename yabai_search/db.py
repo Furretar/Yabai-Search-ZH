@@ -19,6 +19,7 @@ from pathlib import Path
 from opencc import OpenCC
 
 from yabai_search import perf_debug as pd
+from yabai_search import relevance
 from yabai_search.overrides import (
     HIDE_FORMS,
     IDS_IMAGES,
@@ -1923,7 +1924,7 @@ def _set_variant_fields(entries: list[dict], form_rows_all: list[tuple]) -> list
     return entries
 
 
-_SENSE_COUNTS_VERSION = 2
+_SENSE_COUNTS_VERSION = 3
 _sense_counts_ok_cache: bool | None = None
 
 
@@ -1984,10 +1985,6 @@ def build_sense_counts(
             f"SUM(CASE WHEN {_XREF_SQL} THEN 1 ELSE 0 END) "
             "FROM senses GROUP BY word, reading"
         ).fetchall()
-        exact_rows = connection.execute(
-            "SELECT DISTINCT word, text FROM senses "
-            "WHERE text IS NOT NULL AND TRIM(text) <> ''"
-        ).fetchall()
     finally:
         connection.close()
 
@@ -1996,11 +1993,7 @@ def build_sense_counts(
         for word, reading, count, raw in rows
         if count or raw
     ]
-    exact = {
-        (normalize_english(text).strip().lower(), word)
-        for word, text in exact_rows
-        if normalize_english(text).strip()
-    }
+
     writer = sqlite3.connect(partial)
     try:
         writer.execute("PRAGMA journal_mode=OFF")
@@ -2014,19 +2007,10 @@ def build_sense_counts(
             "count INTEGER NOT NULL, raw_count INTEGER NOT NULL, "
             "PRIMARY KEY (word, reading))"
         )
-        writer.execute(
-            "CREATE TABLE exact_senses ("
-            "text TEXT NOT NULL, word TEXT NOT NULL, "
-            "PRIMARY KEY (text, word)) WITHOUT ROWID"
-        )
         writer.executemany(
             "INSERT INTO senses (word, reading, count, raw_count) "
             "VALUES (?, ?, ?, ?)",
             stored,
-        )
-        writer.executemany(
-            "INSERT INTO exact_senses (text, word) VALUES (?, ?)",
-            sorted(exact),
         )
         writer.executemany(
             "INSERT INTO meta (key, value) VALUES (?, ?)",
@@ -2034,37 +2018,13 @@ def build_sense_counts(
                 ("version", str(_SENSE_COUNTS_VERSION)),
                 ("signature", _file_change_stamp(source)),
                 ("rows", str(len(stored))),
-                ("exact_senses", str(len(exact))),
             ),
         )
         writer.commit()
     finally:
         writer.close()
     partial.replace(target)
-    return {"rows": len(stored), "exact_senses": len(exact)}
-
-
-@lru_cache(maxsize=512)
-def _exact_sense_words(query: str) -> set[str]:
-    """Words with a CEDICT sense whose normalized text equals `query`."""
-    if not _sense_counts_ok():
-        return set()
-    text = (query or "").strip()
-    if len(text) >= 2 and text[0] == text[-1] == '"':
-        text = text[1:-1].strip()
-    text = normalize_english(text).strip().lower()
-    if not text:
-        return set()
-    connection = _connect(SENSE_COUNTS_DB_PATH)
-    try:
-        rows = connection.execute(
-            "SELECT word FROM exact_senses WHERE text = ?", (text,)
-        ).fetchall()
-    except sqlite3.Error:
-        return set()
-    finally:
-        connection.close()
-    return {row[0] for row in rows}
+    return {"rows": len(stored)}
 
 
 def _raw_sense_counts(words: list[str]) -> dict[tuple[str, str], int]:
@@ -2172,6 +2132,43 @@ def sense_count_for(by_reading: dict[str, int], pinyin: str | None) -> int:
         (n for reading, n in by_reading.items() if reading_key(reading) == key),
         default=0,
     )
+
+
+def _attach_relevance(entries: list[dict], query: str) -> list[dict]:
+    """Attach the English relevance tier for the current query, if enabled."""
+    if os.environ.get("YABAI_RELEVANCE", "1") == "0":
+        return entries
+    for entry in entries:
+        features = relevance.match_entry(entry, query)
+        if features is not None:
+            entry["_relevance"] = True
+            entry["tier"] = features.tier
+    return entries
+
+
+def _latin_headword_rows(query: str, limit: int) -> list[dict]:
+    """Rows whose headword contains a Latin query (the T0 candidates)."""
+    pattern = _like_pattern(f"*{query}*")
+    connection = connect()
+    try:
+        rows = _fetchall(
+            connection,
+            "SELECT simplified, traditional, pinyin, english, english_normalized "
+            "FROM entries WHERE simplified LIKE ? ESCAPE '\\' "
+            "OR traditional LIKE ? ESCAPE '\\' "
+            "ORDER BY length(simplified), id LIMIT ?",
+            (pattern, pattern, limit),
+            "latin_headword",
+        )
+    finally:
+        connection.close()
+    # Tier 0 is for Chinese entries that embed Latin text, not pure Latin or
+    # glyph-only headwords.
+    return [
+        dict(row)
+        for row in rows
+        if has_cjk(row["simplified"]) or has_cjk(row["traditional"])
+    ]
 
 
 def _light_decorate(entries: list[dict]) -> list[dict]:
@@ -5947,16 +5944,20 @@ def rank_by_category(
             else:
                 any_defined |= _anchor_defined_words(source["anchor"], probe)
 
+    # An English definition search arrives already ordered by relevance.py.
+    # Keep that order; only annotate the category the page needs for its
+    # "Other Dictionaries" heading and keep the relevance tier.
+    if definition_search and any(entry.get("_relevance") for entry in entries):
+        for i, entry in enumerate(entries):
+            defined = (
+                category1[i] or has_cedict[i] or listed(entry, any_defined)
+            )
+            entry["category"] = 1 if category1[i] else 2 if defined else 3
+            entry.pop("_relevance", None)
+        return entries
+
     # The query side is the same for every row; compute it once.
     text, is_cjk, wildcard, client_key = _match_context(query)
-    # An English definition search promotes rows whose own sense is exactly the
-    # query. Tier 0 sits below exact/prefix headword matches (tiers 1-2) but
-    # above the other definition matches (tier 3).
-    exact_words = (
-        _exact_sense_words(query)
-        if definition_search and not is_cjk
-        else set()
-    )
 
     def key(index: int) -> tuple[int, int, int]:
         entry = entries[index]
@@ -5976,8 +5977,6 @@ def rank_by_category(
                 )
                 or 3
             )
-        if tier == 3 and entry.get("simplified") in exact_words:
-            tier = 0
         # Category is the primary key, so it always beats the tier.
         if category1[index]:
             category = 1
@@ -6003,7 +6002,6 @@ def rank_by_category(
         # (and cannot disagree with the server order).
         entry["category"] = category
         entry["tier"] = tier
-        entry["definition_exact"] = tier == 0
         ranked.append(entry)
     return ranked
 
@@ -6784,9 +6782,22 @@ def search(
             # definition. Fall back to the normal search so quoting does not
             # hide a word the dictionary knows.
             return search(phrase, limit, taiwan, part=part, hydrate=hydrate)
-        decorated = decorate(fts_unique + source_rows)
+        combined = fts_unique + source_rows
+        if os.environ.get("YABAI_RELEVANCE", "1") != "0":
+            if relevance.is_latin_query(phrase):
+                head_rows = _latin_headword_rows(phrase, min(limit, 200))
+                seen = {entry["simplified"] for entry in combined}
+                combined = [
+                    entry
+                    for entry in head_rows
+                    if entry["simplified"] not in seen
+                ] + combined
+            _attach_freq(combined)
+            _attach_relevance(combined, phrase)
+            combined = relevance.rank_entries(combined, phrase)
+        decorated = decorate(combined)
         if part == "primary":
-            return decorated[: len(fts_unique)], False
+            return decorated[:limit], False
         return decorated, False
 
     # Bopomofo / zhuyin (e.g. "ㄉㄢㄍㄢˋ"): convert to numeric pinyin first so
@@ -7485,6 +7496,21 @@ def search(
         connection.close()  # always close, even if the query raised
 
     entries = [dict(row) for row in rows]
+    if (
+        not language_query
+        and not is_chinese
+        and not is_numeric
+        and os.environ.get("YABAI_RELEVANCE", "1") != "0"
+    ):
+        if relevance.is_latin_query(query):
+            head_rows = _latin_headword_rows(query, min(limit, 200))
+            seen = {entry["simplified"] for entry in entries}
+            entries = [
+                entry for entry in head_rows if entry["simplified"] not in seen
+            ] + entries
+        _attach_freq(entries)
+        _attach_relevance(entries, query)
+        entries = relevance.rank_entries(entries, query)
     if language_query:
         entries = _rank_language_matches(entries, query)[:limit]
     # Also surface headwords that only the secondary sources or the frequency

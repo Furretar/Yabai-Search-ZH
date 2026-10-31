@@ -331,31 +331,6 @@ def test_sense_counts_fall_back_when_the_file_is_missing(monkeypatch, tmp_path):
         db._sense_counts_ok_cache = None
 
 
-def test_exact_definition_matches_rank_first():
-    """An exact sense match (词汇 -> "word") leads the definition results."""
-    entries, pinyin_match = db.search('"word"', limit=100, part="all", hydrate=0)
-    assert not pinyin_match
-    exact = db._exact_sense_words('"word"')
-    assert "词汇" in exact
-    ranked = db.rank_by_category(
-        [dict(entry) for entry in entries],
-        {"cedict"},
-        '"word"',
-        False,
-        definition_search=True,
-    )
-    exact_rows = [entry for entry in ranked if entry["tier"] == 0]
-    assert {entry["simplified"] for entry in exact_rows} == exact
-    # Exact matches come before the ordinary definition matches.
-    assert ranked[len(exact_rows)]["tier"] == 3
-    ranks = [
-        entry["freq"]["rank"]
-        for entry in exact_rows
-        if entry.get("freq")
-    ]
-    assert ranks == sorted(ranks)
-
-
 def test_lookup_many_matches_lookup_for_each_word():
     """The batched path returns the same rows, in the same order."""
     words = ["没", "沒", "檔案", "了", "乾", "干", "只", "隻"]

@@ -37,11 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     started = time.perf_counter()
     counts = db.build_sense_counts(args.path)
     elapsed = time.perf_counter() - started
-    print(
-        f"{args.path}: {counts['rows']} sense counts, "
-        f"{counts.get('exact_senses', 0)} exact definitions in {elapsed:.1f} s",
-        flush=True,
-    )
+    print(f"{args.path}: {counts['rows']} sense counts in {elapsed:.1f} s", flush=True)
     return 0
 
 
