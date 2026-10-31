@@ -2,20 +2,13 @@
  {
   "query": "word",
   "expected": [
-   "word姐",
    "字",
    "说话",
    "词",
-   "单词"
+   "单词",
+   "词汇"
   ],
   "entries": [
-   {
-    "simplified": "word姐",
-    "traditional": "word姐",
-    "pinyin": "w o r d jiě",
-    "english": "my big sister (Internet slang version of 我的姐[wo3 de5 jie3])",
-    "rank": null
-   },
    {
     "simplified": "字",
     "traditional": "字",
@@ -43,6 +36,13 @@
     "pinyin": "dān cí",
     "english": "word; CL:個|个[ge4]",
     "rank": 8541
+   },
+   {
+    "simplified": "词汇",
+    "traditional": "詞彙",
+    "pinyin": "cí huì",
+    "english": "vocabulary; list of words (e.g. for language teaching purposes); word",
+    "rank": 9605
    }
   ]
  },

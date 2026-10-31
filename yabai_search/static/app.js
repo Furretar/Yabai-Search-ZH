@@ -534,6 +534,23 @@ function toToneless(text) {
         .replace(/[^a-zü]/g, "");
 }
 
+// A Latin word can be spelled out as pinyin ("w o r d jiě" for word姐). Three
+// or more one-letter tokens in a row mean the reading is Latin, not Mandarin,
+// so it must not be partly converted to bopomofo.
+function isLatinReading(pinyin) {
+    const tokens = String(pinyin || "").trim().split(/\s+/).filter(Boolean);
+    let run = 0;
+    for (const token of tokens) {
+        if (plainSyllable(token).length === 1) {
+            run += 1;
+            if (run >= 3) return true;
+        } else {
+            run = 0;
+        }
+    }
+    return false;
+}
+
 // Tone-aware reading identity: "zhī" and "zhi1" both become "zhi1". Used to put
 // an "Other forms" note under the reading it actually belongs to.
 function readingKey(text) {
@@ -884,7 +901,8 @@ function furigana(text, pinyin, allowTones = true, raw = false) {
     // The readings in the chosen phonetic system. Only Mandarin pinyin is
     // converted: a dialect romanization (allowTones is false for it) would be
     // garbled by a partial zhuyin conversion.
-    const useZhuyin = state.phonetic === "zhuyin" && allowTones;
+    const useZhuyin =
+        state.phonetic === "zhuyin" && allowTones && !isLatinReading(rawReading);
     const readings = syllables.map((s) => (useZhuyin ? toZhuyin(s) : s));
     const node = document.createElement("span");
     node.className = raw ? "furigana raw-reading" : "furigana";
@@ -1295,6 +1313,7 @@ function updateHint(query, pinyinMatch, englishMatch) {
 // The copied reading follows the Pinyin/Bopomofo display toggle.
 function copyReading(pinyin, word = "") {
     if (!pinyin || state.phonetic !== "zhuyin") return pinyin || "";
+    if (isLatinReading(pinyin)) return pinyin;
     const syllables = readingSyllablesForWord(pinyin, word);
     // Dialect readings are another language's romanization, not Hanyu Pinyin;
     // converting the pieces that happen to look like pinyin would garble them.
@@ -1310,6 +1329,7 @@ function copyReading(pinyin, word = "") {
 // alone.
 function pinyinToZhuyinForCopy(text, reading) {
     if (state.phonetic !== "zhuyin") return text;
+    if (isLatinReading(reading)) return text;
     let out = String(text || "").replace(/\[([^\]]+)\]/g, (whole, inner) => {
         const syllables = pinyinSyllables(inner);
         if (!syllables.length || !syllables.every((s) => isPinyinSyllable(s))) {
@@ -1453,6 +1473,7 @@ function definitionBody(source, taiwanRefs, copy) {
             // written instead of becoming a mix of bopomofo and Latin.
             const useZhuyin =
                 state.phonetic === "zhuyin" &&
+                !isLatinReading(group.pinyin) &&
                 syllables.every((s) => isPinyinSyllable(s));
             const readings = syllables.map((s) => (useZhuyin ? toZhuyin(s) : s));
             head.append(readingContent(readings, syllables, state.toneColoring));
@@ -1724,7 +1745,11 @@ function idsHeadword(text, reading, images, entry) {
     if (syllables.length) {
         const row = document.createElement("span");
         row.className = "reading";
-        const useZhuyin = state.phonetic === "zhuyin" && !entry.pinyin_no_tone;
+        const useZhuyin =
+            state.phonetic === "zhuyin" &&
+            !entry.pinyin_no_tone &&
+            !entry.pinyin_latin &&
+            !isLatinReading(reading);
         const readings = syllables.map((s) => (useZhuyin ? toZhuyin(s) : s));
         row.append(
             readingContent(readings, syllables, state.toneColoring && !entry.pinyin_no_tone),

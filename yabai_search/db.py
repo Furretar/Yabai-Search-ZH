@@ -2147,29 +2147,15 @@ def _attach_relevance(entries: list[dict], query: str) -> list[dict]:
     return entries
 
 
-def _latin_headword_rows(query: str, limit: int) -> list[dict]:
-    """Rows whose headword contains a Latin query (the T0 candidates)."""
-    pattern = _like_pattern(f"*{query}*")
-    connection = connect()
-    try:
-        rows = _fetchall(
-            connection,
-            "SELECT simplified, traditional, pinyin, english, english_normalized "
-            "FROM entries WHERE simplified LIKE ? ESCAPE '\\' "
-            "OR traditional LIKE ? ESCAPE '\\' "
-            "ORDER BY length(simplified), id LIMIT ?",
-            (pattern, pattern, limit),
-            "latin_headword",
-        )
-    finally:
-        connection.close()
-    # Tier 0 is for Chinese entries that embed Latin text, not pure Latin or
-    # glyph-only headwords.
-    return [
-        dict(row)
-        for row in rows
-        if has_cjk(row["simplified"]) or has_cjk(row["traditional"])
-    ]
+def _mark_latin_readings(entries: list[dict]) -> list[dict]:
+    """Flag readings that are a Latin word spelled out, not real pinyin.
+
+    The browser uses `pinyin_latin` to keep such a reading in Latin instead of
+    converting parts of it to bopomofo (word姐 is "w o r d jiě").
+    """
+    for entry in entries:
+        entry["pinyin_latin"] = not is_standard_pinyin(entry.get("pinyin", ""))
+    return entries
 
 
 def _light_decorate(entries: list[dict]) -> list[dict]:
@@ -2192,6 +2178,7 @@ def _light_decorate(entries: list[dict]) -> list[dict]:
     counts = _cedict_reading_counts(words)
     for entry in entries:
         entry["_reading_count"] = _entry_sense_count(counts, entry)
+    _mark_latin_readings(entries)
     return entries
 
 
@@ -2861,6 +2848,7 @@ def _decorate(entries: list[dict]) -> list[dict]:
                     entry["ids_images"] = images
                 break
 
+    _mark_latin_readings(entries)
     return entries
 
 
@@ -6785,14 +6773,6 @@ def search(
             return search(phrase, limit, taiwan, part=part, hydrate=hydrate)
         combined = fts_unique + source_rows
         if os.environ.get("YABAI_RELEVANCE", "1") != "0":
-            if relevance.is_latin_query(phrase):
-                head_rows = _latin_headword_rows(phrase, min(limit, 200))
-                seen = {entry["simplified"] for entry in combined}
-                combined = [
-                    entry
-                    for entry in head_rows
-                    if entry["simplified"] not in seen
-                ] + combined
             _attach_freq(combined)
             _attach_relevance(combined, phrase)
             combined = relevance.rank_entries(combined, phrase)
@@ -7513,12 +7493,6 @@ def search(
         and not is_numeric
         and os.environ.get("YABAI_RELEVANCE", "1") != "0"
     ):
-        if relevance.is_latin_query(query):
-            head_rows = _latin_headword_rows(query, min(limit, 200))
-            seen = {entry["simplified"] for entry in entries}
-            entries = [
-                entry for entry in head_rows if entry["simplified"] not in seen
-            ] + entries
         _attach_freq(entries)
         _attach_relevance(entries, query)
         entries = relevance.rank_entries(entries, query)
