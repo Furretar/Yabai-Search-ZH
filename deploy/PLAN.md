@@ -16,7 +16,7 @@ Cloudflare Worker  (yabaisearch.org, www.yabaisearch.org)
   +--> tablet.yabaisearch.org --> tunnel "yabai-tablet" --> tablet  ~/yabai-search  :8000
 
 you
-  +--> dev.yabaisearch.org    --> tunnel "yabai-dev"    --> laptop  ~/yabai-dev     :8001
+  +--> dev.yabaisearch.org    --> tunnel "yabai-dev"    --> laptop  ~/Documents/Yabai-Search  :8001
 ```
 
 Three tunnels, each its own cloudflared process, so one failing never takes
@@ -27,7 +27,7 @@ Three copies of the code:
 
 | Copy | Machine | Folder | Port | Purpose |
 |---|---|---|---|---|
-| dev | laptop | `~/yabai-dev` | 8001 | where you and Claude make changes |
+| dev | laptop | `~/Documents/Yabai-Search` | 8001 | where you and Claude make changes |
 | laptop | laptop | `~/yabai-laptop` | 8000 | serves the public site |
 | tablet | tablet | `~/yabai-search` | 8000 | serves as backup |
 
@@ -91,15 +91,17 @@ deploy/release.env
 run/
 ```
 
-### 4.2 Laptop: three folders
+### 4.2 Laptop: two folders
+The working copy is the git checkout itself, kept in
+`~/Documents/Yabai-Search`; the dev unit serves it on :8001. Only the public
+site needs a separate clone:
 ```
-git clone <repo> ~/yabai-dev
 git clone <repo> ~/yabai-laptop
 ```
-Then in each: `uv sync`. Copy `data/` into both (it is gitignored), for
-example `cp -r ~/yabai-dev/data ~/yabai-laptop/data`.
-Add the `deploy/` folder from this kit to the repo, commit and push it from
-dev, then `git pull` in `~/yabai-laptop` and on the tablet.
+Then `uv sync` in both. Copy `data/` (it is gitignored), for example
+`cp -r ~/Documents/Yabai-Search/data ~/yabai-laptop/data`.
+Add the `deploy/` folder from this kit to the repo, commit and push it from the
+working copy, then `git pull` in `~/yabai-laptop` and on the tablet.
 
 ### 4.3 Laptop tunnels
 ```
@@ -142,6 +144,10 @@ Laptop:
 ```
 mkdir -p ~/.config/systemd/user
 cp ~/yabai-laptop/deploy/systemd/*.service ~/.config/systemd/user/
+# The dev instance is pointed at the working copy by these drop-ins.
+cp -r ~/yabai-laptop/deploy/systemd/yabai-app@dev.service.d \
+      ~/yabai-laptop/deploy/systemd/yabai-tunnel@dev.service.d \
+      ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now yabai-app@laptop yabai-app@dev yabai-tunnel@laptop yabai-tunnel@dev
 loginctl enable-linger $USER
@@ -182,8 +188,9 @@ allow only your email. Without it anyone can see work in progress.
 
 ## 5. Daily workflow
 
-1. Work in `~/yabai-dev`; preview at `https://dev.yabaisearch.org` or
-   `http://127.0.0.1:8001`.
+1. Work in `~/Documents/Yabai-Search`; preview at `https://dev.yabaisearch.org`
+   or `http://127.0.0.1:8001`. The dev unit serves this folder directly, so a
+   restart (`systemctl --user restart yabai-app@dev`) picks up edits.
 2. Commit when happy (release.sh does not commit for you).
 3. `deploy/release.sh` (add `--data` if you rebuilt `data/*.sqlite`).
 
@@ -229,8 +236,9 @@ other should be released together. If you change the schema, release with
 
 ```
 ## Hosting
-- Three copies: ~/yabai-dev (edit here, :8001, dev.yabaisearch.org),
-  ~/yabai-laptop (:8000) and the tablet (:8000). Serving copies are never edited.
+- Three copies: ~/Documents/Yabai-Search (edit here, :8001, dev.yabaisearch.org),
+  ~/yabai-laptop (:8000) and the tablet (:8000). Only ~/yabai-laptop and the
+  tablet pull from GitHub; the working copy is the checkout itself.
 - Publish with deploy/release.sh [--data] after committing. See deploy/PLAN.md.
 ```
 Note: AGENTS.md says the tablet is reached via the laptop tunnel and that the

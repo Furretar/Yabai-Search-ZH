@@ -176,6 +176,15 @@ def test_footer_separator_uses_the_last_result_tier():
     assert "border-top: 0;" in css
 
 
+def test_custom_dicts_script_loads_only_after_an_import():
+    """First-time visitors skip the 163 KB script; the toggle loads it on demand."""
+    html = (ROOT / "yabai_search/templates/index.html").read_text(encoding="utf-8")
+    assert 'need = on || url || has === "true";' in html
+    # glyphs.js no longer blocks parsing; it still runs before app.js (defer
+    # preserves document order).
+    assert 'src="/static/glyphs.js?v={{ asset_version }}" defer' in html
+
+
 def test_frontend_wildcard_tier_parity_with_backend():
     """The browser copies _glob_match / _wildcard_tier from db.py."""
     js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")

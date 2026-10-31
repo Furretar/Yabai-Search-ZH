@@ -24,3 +24,8 @@ dev = [
 
 [tool.uv]
 package = false                   # this is an app, not an installable library
+
+[tool.pytest.ini_options]
+# `uv run pytest` starts the pytest console script, which does not add the
+# working directory to sys.path; the tests import the yabai_search package.
+pythonpath = ["."]

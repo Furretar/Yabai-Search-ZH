@@ -166,58 +166,54 @@ def to_simplified(text: str) -> str:
     """Convert Chinese text to simplified characters (traditional -> simplified)."""
     return _opencc("t2s").convert(text) if text else text
 
+# Every database lives in <project root>/data. Tests and optimisation runs can
+# point every reader at a small generated set instead with YABAI_DATA_DIR (see
+# scripts/build_test_dbs.py), so they do not need the full ~1.4 GB of sources.
+DATA_DIR = Path(
+    os.environ.get("YABAI_DATA_DIR")
+    or Path(__file__).resolve().parents[1] / "data"
+)
+
 # Path to the generated CEDICT database: <project root>/data/cedict.sqlite.
-DB_PATH = Path(__file__).resolve().parents[1] / "data" / "cedict.sqlite"
+DB_PATH = DATA_DIR / "cedict.sqlite"
 
 # Path to the concise MOE dictionary (Taiwan readings), built by
 # scripts/import_moe.py.
-MOE_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "moe.sqlite"
+MOE_DB_PATH = DATA_DIR / "moe.sqlite"
 
 # Path to the comprehensive MOE dictionary (重編國語辭典修訂本), built by
 # scripts/import_moe.py --kind revised.
-MOE_REVISED_DB_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "moe_revised.sqlite"
-)
+MOE_REVISED_DB_PATH = DATA_DIR / "moe_revised.sqlite"
 
 # Path to the prefilled Taiwan readings of every dictionary, built by
 # scripts/build_taiwan_readings.py. Rebuild it whenever a source database, an
 # override in overrides.py or the Taiwan-reading logic below changes (AGENTS.md).
-TAIWAN_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "taiwan_readings.sqlite"
+TAIWAN_DB_PATH = DATA_DIR / "taiwan_readings.sqlite"
 
 # Path to the Wiktionary headword list (kaikki.org/Wiktextract), built by
 # scripts/import_wiktionary.py.
-WIKTIONARY_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "wiktionary.sqlite"
-SOURCE_GLOSS_DB_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "source_gloss.sqlite"
-)
+WIKTIONARY_DB_PATH = DATA_DIR / "wiktionary.sqlite"
+SOURCE_GLOSS_DB_PATH = DATA_DIR / "source_gloss.sqlite"
 _source_gloss_ok_cache: bool | None = None
-HEAD_GRAMS_DB_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "head_grams.sqlite"
-)
+HEAD_GRAMS_DB_PATH = DATA_DIR / "head_grams.sqlite"
 _head_grams_ok_cache: bool | None = None
 
 # Path to the Chinese Wiktionary (zh.wiktionary.org) database, built by
 # scripts/import_zhwiktionary.py.
-ZHWIKTIONARY_DB_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "zhwiktionary.sqlite"
-)
+ZHWIKTIONARY_DB_PATH = DATA_DIR / "zhwiktionary.sqlite"
 
 # Japanese definitions from the Japanese sections of the same dump, built by
 # scripts/import_jpwiktionary.py.
-JPWIKTIONARY_DB_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "jpwiktionary.sqlite"
-)
+JPWIKTIONARY_DB_PATH = DATA_DIR / "jpwiktionary.sqlite"
 
 # Path to the SUBTLEX-CH word frequencies (Cai & Brysbaert, 2010), built by
 # scripts/import_subtlex.py.
-SUBTLEX_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "subtlex.sqlite"
+SUBTLEX_DB_PATH = DATA_DIR / "subtlex.sqlite"
 
 # Temporary frequency source built from the FineWeb2 combined list. The old
 # SUBTLEX rank column stays in the database, so setting
 # YABAI_FREQ_SOURCE=subtlex restores it without rebuilding anything.
-CORPUS_FREQ_DB_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "corpus_freq.sqlite"
-)
+CORPUS_FREQ_DB_PATH = DATA_DIR / "corpus_freq.sqlite"
 FREQ_SOURCE = os.environ.get("YABAI_FREQ_SOURCE", "corpus").strip().lower()
 if FREQ_SOURCE not in {"corpus", "subtlex"}:
     FREQ_SOURCE = "corpus"
@@ -227,25 +223,28 @@ FREQ_LABEL = "FineWeb2 corpus (temporary)" if FREQ_SOURCE == "corpus" else "SUBT
 FREQ_ANCHOR = "fineweb2-frequency" if FREQ_SOURCE == "corpus" else "subtlex"
 
 # Path to the HSK vocabulary levels, built by scripts/import_hsk.py.
-HSK_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "hsk.sqlite"
+HSK_DB_PATH = DATA_DIR / "hsk.sqlite"
 
 # Path to the definition word list (scripts/import_english_words.py): the whole
 # words that appear in any dictionary's definitions, used for the English-search
 # hint.
-ENGLISH_WORDS_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "english_words.sqlite"
+ENGLISH_WORDS_DB_PATH = DATA_DIR / "english_words.sqlite"
 
 # Path to the definition gram index (scripts/import_definition_grams.py): Han
 # unigrams/bigrams used to skip definition scans that cannot match.
-DEFINITION_GRAMS_DB_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "definition_grams.sqlite"
-)
+DEFINITION_GRAMS_DB_PATH = DATA_DIR / "definition_grams.sqlite"
 
 # Path to the Han unigram/bigram inverted index (scripts/import_gram_words.py):
 # turns 1-2 character CJK queries into one lookup instead of a table scan.
-GRAM_WORDS_DB_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "gram_words.sqlite"
-)
+GRAM_WORDS_DB_PATH = DATA_DIR / "gram_words.sqlite"
 _gram_words_ok_cache: bool | None = None
+
+# Path to the prebuilt search index (scripts/build_search_index.py): the "*"
+# headword list and the source pinyin rows, so a small host does not rebuild
+# them (and does not call OpenCC hundreds of thousands of times) at startup.
+# Set YABAI_SEARCH_INDEX=0 to force the old in-memory path.
+SEARCH_INDEX_DB_PATH = DATA_DIR / "search_index.sqlite"
+_search_index_ok_cache: bool | None = None
 
 # --- exact, uncapped result sets -------------------------------------------
 # The owner requires every result list and total to be exact over ALL matches.
@@ -374,9 +373,19 @@ _connection_local = threading.local()
 _connection_lock = threading.Lock()
 
 
+@lru_cache(maxsize=64)
+def _database_key(database: str) -> str:
+    """Absolute path of a database, cached: resolve() is a realpath() syscall.
+
+    A search opens the same handful of files dozens of times, and on a tablet
+    that path lookup was measurable. Database paths never move during a run.
+    """
+    return str(Path(database).resolve())
+
+
 def _connect(database) -> sqlite3.Connection:
     """Return this thread's read-only connection for a database file."""
-    key = str(Path(database).resolve())
+    key = _database_key(str(database))
     connections = getattr(_connection_local, "connections", None)
     if connections is None:
         connections = {}
@@ -412,11 +421,36 @@ def _connect(database) -> sqlite3.Connection:
     return connection
 
 
+def _attach_database(connection, alias: str, database) -> None:
+    """ATTACH *database* as *alias*, replacing one left on a pooled connection.
+
+    Connections are reused per thread, so a previous build can leave the alias
+    attached; a plain ATTACH then raises "database ... is already in use".
+    """
+    attached = {row[1] for row in connection.execute("PRAGMA database_list")}
+    if alias in attached:
+        connection.execute(f"DETACH DATABASE {alias}")
+    connection.execute(f"ATTACH DATABASE ? AS {alias}", (str(database),))
+
+
 def _fetchall(connection, sql: str, params=(), label: str = ""):
     """fetchall with optional per-query tracing; identical rows either way."""
     if pd.ENABLED:
         return pd.run_sql(connection, sql, params, label)
     return connection.execute(sql, params).fetchall()
+
+
+# SQLite versions disagree about the maximum number of bound variables (999 on
+# older Android builds, 32766 on most desktops). A search can rank thousands of
+# rows, so any IN (...) list built from a result set is split into chunks.
+_IN_CHUNK_SIZE = 500
+
+
+def _chunks(values: list[str], size: int | None = None):
+    """Yield consecutive slices of `values` small enough for one IN (...) list."""
+    size = _IN_CHUNK_SIZE if size is None else size
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
 # Which dictionaries contain a headword - drives the source chips, the
 # per-dictionary definitions and the classifiers shown under a result. Each dict:
@@ -660,6 +694,189 @@ def data_version() -> str:
         parts.append(f"{path.name}:{int(stamp)}")
     digest = hashlib.sha1("|".join(sorted(parts)).encode("utf-8")).hexdigest()
     return digest[:10]
+
+
+# --- prebuilt search index -------------------------------------------------
+# The two expensive startup caches (the "*" headword list and the source pinyin
+# rows) are pure functions of the dictionary files. scripts/build_search_index.py
+# stores them in data/search_index.sqlite, and this module reads them back with
+# plain SQL. On the tablet that replaces ~90 s of pure-Python OpenCC work.
+_SEARCH_INDEX_VERSION = 1
+
+
+def _search_index_enabled() -> bool:
+    """False when YABAI_SEARCH_INDEX=0 asks for the old in-memory path."""
+    return os.environ.get("YABAI_SEARCH_INDEX", "1") != "0"
+
+
+def _search_index_signature() -> str:
+    """Fingerprint the source files the index is built from.
+
+    Uses size + SQLite's change counter (see _file_change_stamp), not mtime, so
+    an index built on the laptop is still accepted after being copied to the
+    tablet. Rebuilding a source changes the counter.
+    """
+    paths = [source["database"] for source in _SOURCE_QUERIES]
+    paths.append(FREQ_DB_PATH)
+    parts = [f"{path.name}={_file_change_stamp(path)}" for path in paths]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _search_index_ok() -> bool:
+    """True when data/search_index.sqlite was built from the current sources."""
+    global _search_index_ok_cache
+    if _search_index_ok_cache is not None:
+        return _search_index_ok_cache
+    if not _search_index_enabled() or not SEARCH_INDEX_DB_PATH.exists():
+        _search_index_ok_cache = False
+        return False
+    connection = _connect(SEARCH_INDEX_DB_PATH)
+    try:
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key = 'signature'"
+        ).fetchone()
+        version = connection.execute(
+            "SELECT value FROM meta WHERE key = 'version'"
+        ).fetchone()
+    except sqlite3.Error:
+        row = version = None
+    finally:
+        connection.close()
+    _search_index_ok_cache = (
+        bool(row)
+        and row[0] == _search_index_signature()
+        and bool(version)
+        and version[0] == str(_SEARCH_INDEX_VERSION)
+    )
+    return _search_index_ok_cache
+
+
+def search_index_status() -> dict:
+    """Report the prebuilt index state for /__debug/status and startup logs."""
+    ready = _search_index_ok()
+    return {
+        "active": ready,
+        "path": str(SEARCH_INDEX_DB_PATH),
+        "reason": "" if ready else "missing or stale",
+    }
+
+
+def _load_headwords_from_index() -> tuple[list[str], list[int]] | None:
+    """Load the sorted "*" headword list, or None when the index is unusable."""
+    if not _search_index_ok():
+        return None
+    connection = _connect(SEARCH_INDEX_DB_PATH)
+    try:
+        rows = connection.execute(
+            "SELECT word, grp FROM headwords ORDER BY position"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    if not rows:
+        return None
+    return [row[0] for row in rows], [row[1] for row in rows]
+
+
+def _source_pinyin_index_rows(
+    prefix: str = "", like: str | None = None
+) -> list[tuple] | None:
+    """Source pinyin rows from the prebuilt index, or None when unavailable.
+
+    Rows are (word, simplified, marked, toneless, numeric), the same tuple shape
+    as _source_pinyin_rows(). `like` is a raw SQL LIKE pattern for a wildcard or
+    "contains" match; otherwise `prefix` selects an index range.
+    """
+    if not _search_index_ok():
+        return None
+    connection = _connect(SEARCH_INDEX_DB_PATH)
+    try:
+        if like is not None:
+            rows = connection.execute(
+                "SELECT word, simplified, marked, toneless, numeric "
+                "FROM pinyin WHERE toneless LIKE ? ESCAPE '\\' "
+                "ORDER BY toneless, id",
+                (like,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT word, simplified, marked, toneless, numeric "
+                "FROM pinyin WHERE toneless >= ? AND toneless < ? "
+                "ORDER BY toneless, id",
+                (prefix, prefix + "\uffff"),
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    return [tuple(row) for row in rows]
+
+
+def build_search_index(path: Path | None = None) -> dict[str, int]:
+    """Write data/search_index.sqlite from the current source databases.
+
+    Called by scripts/build_search_index.py. The live builders are the same
+    functions a request would use, so the file can never disagree with them.
+    The write is atomic: a temporary file is renamed over the old index.
+    """
+    target = Path(path) if path is not None else SEARCH_INDEX_DB_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(target.name + ".part")
+    if partial.exists():
+        partial.unlink()
+
+    # Build from source even when a valid index already exists.
+    global _all_headwords_cache
+    _all_headwords_cache = None
+    heads = _build_all_headwords_list()
+    groups = _all_headwords_cache[1] if _all_headwords_cache else []
+    pinyin_rows = _source_pinyin_rows()
+    signature = _search_index_signature()
+
+    connection = sqlite3.connect(partial)
+    try:
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
+        connection.execute(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE headwords ("
+            "position INTEGER PRIMARY KEY, word TEXT NOT NULL, grp INTEGER NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE pinyin ("
+            "id INTEGER PRIMARY KEY, toneless TEXT NOT NULL, "
+            "word TEXT NOT NULL, simplified TEXT NOT NULL, "
+            "marked TEXT NOT NULL, numeric TEXT NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO headwords (position, word, grp) VALUES (?, ?, ?)",
+            ((position, word, groups[position]) for position, word in enumerate(heads)),
+        )
+        # pinyin_rows is (word, simplified, marked, toneless, numeric); keep the
+        # INSERT columns in that order. Only the SELECT order is rearranged.
+        connection.executemany(
+            "INSERT INTO pinyin "
+            "(word, simplified, marked, toneless, numeric) VALUES (?, ?, ?, ?, ?)",
+            pinyin_rows,
+        )
+        connection.execute("CREATE INDEX pinyin_toneless ON pinyin (toneless, id)")
+        connection.executemany(
+            "INSERT INTO meta (key, value) VALUES (?, ?)",
+            (
+                ("version", str(_SEARCH_INDEX_VERSION)),
+                ("signature", signature),
+                ("headwords", str(len(heads))),
+                ("pinyin", str(len(pinyin_rows))),
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    partial.replace(target)
+    return {"headwords": len(heads), "pinyin": len(pinyin_rows)}
 
 
 # sources() is served on / and /about; its COUNT(DISTINCT ...) queries are the
@@ -1457,19 +1674,24 @@ def _attach_freq(entries: list[dict]) -> list[dict]:
         entry["freq"] = None
     if not words or not FREQ_DB_PATH.exists():
         return entries
-    placeholders = ",".join("?" * len(words))
+    by_word: dict[str, dict] = {}
     connection = _connect(FREQ_DB_PATH)
     try:
-        rows = connection.execute(
-            f"SELECT word, rank, count, per_million FROM freq WHERE word IN ({placeholders})",
-            tuple(words),
-        ).fetchall()
+        for chunk in _chunks(words):
+            placeholders = ",".join("?" * len(chunk))
+            rows = connection.execute(
+                "SELECT word, rank, count, per_million FROM freq "
+                f"WHERE word IN ({placeholders})",
+                tuple(chunk),
+            ).fetchall()
+            for word, rank, count, per_million in rows:
+                by_word[word] = {
+                    "rank": rank,
+                    "count": count,
+                    "per_million": per_million,
+                }
     finally:
         connection.close()
-    by_word = {
-        word: {"rank": rank, "count": count, "per_million": per_million}
-        for word, rank, count, per_million in rows
-    }
     for entry in entries:
         entry["freq"] = by_word.get(entry["simplified"]) or by_word.get(entry["traditional"])
     return entries
@@ -1577,8 +1799,6 @@ def _variant_form_rows(words: list[str]) -> list[tuple]:
     """
     if not words:
         return []
-    placeholders = ",".join("?" * len(words))
-    params = tuple(words)
     rows: list[tuple] = []
     for source in _SOURCE_QUERIES:
         if not source.get("forms_sql") or not source["database"].exists():
@@ -1586,11 +1806,14 @@ def _variant_form_rows(words: list[str]) -> list[tuple]:
         connection = _connect(source["database"])
         try:
             # The forms SQL names the word list twice (variant and main column).
-            rows.extend(
-                connection.execute(
-                    source["forms_sql"].format(ph=placeholders), params * 2
-                ).fetchall()
-            )
+            for chunk in _chunks(words):
+                placeholders = ",".join("?" * len(chunk))
+                rows.extend(
+                    connection.execute(
+                        source["forms_sql"].format(ph=placeholders),
+                        tuple(chunk) * 2,
+                    ).fetchall()
+                )
         finally:
             connection.close()
     return rows
@@ -1698,25 +1921,27 @@ def _cedict_reading_counts(words: list[str]) -> dict[str, dict[str, int]]:
     """
     if not words:
         return {}
-    placeholders = ",".join("?" * len(words))
     connection = connect()
+    counts: dict[str, dict[str, int]] = {}
     try:
-        rows = connection.execute(
-            "SELECT word, reading, COUNT(*) FROM senses "
-            f"WHERE word IN ({placeholders}) "
-            "AND text IS NOT NULL AND TRIM(text) <> '' "
-            f"AND {_XREF_SQL} "
-            "GROUP BY word, reading",
-            tuple(words),
-        ).fetchall()
+        for chunk in _chunks(words):
+            placeholders = ",".join("?" * len(chunk))
+            rows = connection.execute(
+                "SELECT word, reading, COUNT(*) FROM senses "
+                f"WHERE word IN ({placeholders}) "
+                "AND text IS NOT NULL AND TRIM(text) <> '' "
+                f"AND {_XREF_SQL} "
+                "GROUP BY word, reading",
+                tuple(chunk),
+            ).fetchall()
+            for word, reading, count in rows:
+                # Keyed by the reading exactly as stored: capitalisation
+                # separates a surname ("Gān", 1 sense) from the word ("gān",
+                # 12 senses), and the representative reading is chosen by these
+                # counts.
+                counts.setdefault(word, {})[reading or ""] = min(count, _MAX_DEFS)
     finally:
         connection.close()
-    counts: dict[str, dict[str, int]] = {}
-    for word, reading, count in rows:
-        # Keyed by the reading exactly as stored: capitalisation separates a
-        # surname ("Gān", 1 sense) from the word ("gān", 12 senses), and the
-        # representative reading is chosen by these counts.
-        counts.setdefault(word, {})[reading or ""] = min(count, _MAX_DEFS)
     return counts
 
 
@@ -3335,11 +3560,27 @@ def _source_pinyin_raw(
             finally:
                 connection.close()
 
-        # MOE, zh.wiktionary and ja.wiktionary headword readings. The list is built
-        # once and sorted; a prefix query binary-searches it instead of scanning
-        # every reading.
-        keys, rows = _source_pinyin_sorted()
-        candidates = rows if wildcard_re is not None else _prefix_rows(keys, rows, letters)
+        # MOE, zh.wiktionary and ja.wiktionary headword readings. The prebuilt
+        # search index answers the prefix (and wildcard) part with one indexed
+        # query; without it, build the sorted list once and binary-search it.
+        indexed_rows = None
+        if _search_index_enabled():
+            if wildcard_re is not None:
+                wildcard_sql = "%".join(
+                    to_toneless(part) for part in text.split("*")
+                )
+                indexed_rows = _source_pinyin_index_rows(like=wildcard_sql)
+            else:
+                indexed_rows = _source_pinyin_index_rows(prefix=letters)
+        if indexed_rows is not None:
+            candidates = indexed_rows
+            all_rows = None
+        else:
+            keys, rows = _source_pinyin_sorted()
+            candidates = (
+                rows if wildcard_re is not None else _prefix_rows(keys, rows, letters)
+            )
+            all_rows = rows
         for word, simplified, marked, toneless, numeric in candidates:
             if simplified in known:
                 continue
@@ -3349,7 +3590,11 @@ def _source_pinyin_raw(
         # (rank 2). Only look for those when the prefix matches did not fill the
         # page, and skip the rows already handled above.
         if parsed and len(found) < limit:
-            for word, simplified, marked, toneless, numeric in rows:
+            if indexed_rows is not None:
+                extra_rows = _source_pinyin_index_rows(like=f"%{letters}%") or ()
+            else:
+                extra_rows = all_rows or ()
+            for word, simplified, marked, toneless, numeric in extra_rows:
                 if toneless.startswith(letters) or letters not in toneless:
                     continue
                 if simplified in known:
@@ -4574,13 +4819,29 @@ def _order_headwords(
 def _all_headwords_list() -> list[str]:
     """Every distinct simplified headword across all sources, sorted and cached.
 
+    A prebuilt search index (scripts/build_search_index.py) answers this in a
+    second or two. Without it, the list is built from the source databases -
+    that is correct but slow on a phone (tens of seconds of OpenCC work), so
+    warm_caches() no longer does it at startup.
+    """
+    global _all_headwords_cache
+    if _all_headwords_cache is not None:
+        return _all_headwords_cache[0]
+    loaded = _load_headwords_from_index()
+    if loaded is not None:
+        _all_headwords_cache = loaded
+        return loaded[0]
+    return _build_all_headwords_list()
+
+
+def _build_all_headwords_list() -> list[str]:
+    """Build the "*" headword list from the source databases (uncached read).
+
     Simplified forms are collected (via OpenCC and the CEDICT map) so
     traditional/simplified pairs collapse to one entry - otherwise a page of 50
     raw headwords would display fewer rows after the pairs are merged.
     """
     global _all_headwords_cache
-    if _all_headwords_cache is not None:
-        return _all_headwords_cache[0]
     connection = connect()
     try:
         parts = [
@@ -4619,9 +4880,7 @@ def _all_headwords_list() -> list[str]:
             )
         if MOE_REVISED_DB_PATH.exists():
             # The comprehensive dictionary adds headwords the concise one lacks.
-            connection.execute(
-                "ATTACH DATABASE ? AS moe_rev", (str(MOE_REVISED_DB_PATH),)
-            )
+            _attach_database(connection, "moe_rev", MOE_REVISED_DB_PATH)
             parts.append(
                 "SELECT DISTINCT word FROM moe_rev.senses WHERE text <> ''"
             )
@@ -4638,7 +4897,7 @@ def _all_headwords_list() -> list[str]:
                 )
             )
         if WIKTIONARY_DB_PATH.exists():
-            connection.execute("ATTACH DATABASE ? AS wikt", (str(WIKTIONARY_DB_PATH),))
+            _attach_database(connection, "wikt", WIKTIONARY_DB_PATH)
             # A Wiktionary headword with no gloss has nothing to show; leave it
             # out (the frequency list has no definitions either, so it is not a
             # headword source here).
@@ -4670,9 +4929,7 @@ def _all_headwords_list() -> list[str]:
                 )
             )
         if ZHWIKTIONARY_DB_PATH.exists():
-            connection.execute(
-                "ATTACH DATABASE ? AS zhwikt", (str(ZHWIKTIONARY_DB_PATH),)
-            )
+            _attach_database(connection, "zhwikt", ZHWIKTIONARY_DB_PATH)
             # Chinese Wiktionary headwords, plus their readings and definitions.
             parts.append("SELECT DISTINCT word FROM zhwikt.headwords WHERE word <> ''")
             has_reading.update(
@@ -4688,9 +4945,7 @@ def _all_headwords_list() -> list[str]:
                 )
             )
         if JPWIKTIONARY_DB_PATH.exists():
-            connection.execute(
-                "ATTACH DATABASE ? AS jpwikt", (str(JPWIKTIONARY_DB_PATH),)
-            )
+            _attach_database(connection, "jpwikt", JPWIKTIONARY_DB_PATH)
             # Japanese Wiktionary headwords, plus their readings and definitions.
             parts.append("SELECT DISTINCT word FROM jpwikt.headwords WHERE word <> ''")
             has_reading.update(
@@ -5155,7 +5410,13 @@ def _wildcard_tier(words: list[str], query: str) -> int | None:
     None when the pattern does not fit anywhere. The best tier over the
     simplified and traditional spelling wins.
     """
-    pattern = _normalize_wildcards(query.strip()).lower()
+    return _wildcard_tier_normalized(
+        words, _normalize_wildcards(query.strip()).lower()
+    )
+
+
+def _wildcard_tier_normalized(words: list[str], pattern: str) -> int | None:
+    """_wildcard_tier with the pattern already normalized and lowercased."""
     best: int | None = None
     for word in words:
         word = word.lower()
@@ -5168,6 +5429,23 @@ def _wildcard_tier(words: list[str], query: str) -> int | None:
     return best
 
 
+def _match_context(query: str) -> tuple[str, bool, str | None, str]:
+    """The query-side values every _match_tier call for one search needs.
+
+    rank_by_category ranks thousands of rows for one query. Recomputing
+    has_cjk(), the wildcard normalization and the toneless key for every row
+    was a measurable part of a slow search on the tablet.
+    """
+    text = (query or "").strip()
+    if not text:
+        return "", False, None, ""
+    is_cjk = has_cjk(text)
+    wildcard = (
+        _normalize_wildcards(text).lower() if _is_wildcard_query(text) else None
+    )
+    return text, is_cjk, wildcard, "" if is_cjk else _client_toneless(text)
+
+
 def _match_tier(entry: dict, query: str, taiwan: bool) -> int | None:
     """Match tier 1-3 of one row (1 exact, 2 starts with, 3 contains).
 
@@ -5175,14 +5453,25 @@ def _match_tier(entry: dict, query: str, taiwan: bool) -> int | None:
     headwords, any other query with the reading the row shows (the Taiwan
     reading when the Taiwan toggle is on). None when nothing matches.
     """
-    text = (query or "").strip()
+    return _match_tier_context(entry, *_match_context(query), taiwan)
+
+
+def _match_tier_context(
+    entry: dict,
+    text: str,
+    is_cjk: bool,
+    wildcard: str | None,
+    client_key: str,
+    taiwan: bool,
+) -> int | None:
+    """_match_tier with the query side precomputed by _match_context."""
     if not text:
         return None
-    if has_cjk(text):
+    if is_cjk:
         words = [w for w in (entry.get("simplified"), entry.get("traditional")) if w]
-        if _is_wildcard_query(text):
+        if wildcard is not None:
             # A Chinese "*" / "?" pattern is matched as a pattern, not as text.
-            return _wildcard_tier(words, text)
+            return _wildcard_tier_normalized(words, wildcard)
         if any(word == text for word in words):
             return 1
         if any(word.startswith(text) for word in words):
@@ -5190,18 +5479,17 @@ def _match_tier(entry: dict, query: str, taiwan: bool) -> int | None:
         if any(text in word for word in words):
             return 3
         return None
-    key = _client_toneless(text)
-    if not key:
+    if not client_key:
         return None
     shown = entry.get("pinyin")
     if taiwan:
         shown = entry.get("pinyin_taiwan") or entry.get("pinyin_numeric") or shown
     reading = _client_toneless(shown or "")
-    if reading == key:
+    if reading == client_key:
         return 1
-    if reading.startswith(key):
+    if reading.startswith(client_key):
         return 2
-    return 3 if key in reading else None
+    return 3 if client_key in reading else None
 
 
 def rank_by_category(
@@ -5277,6 +5565,9 @@ def rank_by_category(
             else:
                 any_defined |= _anchor_defined_words(source["anchor"], probe)
 
+    # The query side is the same for every row; compute it once.
+    text, is_cjk, wildcard, client_key = _match_context(query)
+
     def key(index: int) -> tuple[int, int, int]:
         entry = entries[index]
         has_reading = bool(entry.get("pinyin"))
@@ -5289,7 +5580,12 @@ def rank_by_category(
         elif not defined:
             tier = 5 if has_reading else 6
         else:
-            tier = _match_tier(entry, query, taiwan) or 3
+            tier = (
+                _match_tier_context(
+                    entry, text, is_cjk, wildcard, client_key, taiwan
+                )
+                or 3
+            )
         # Category is the primary key, so it always beats the tier.
         if category1[index]:
             category = 1
@@ -5305,11 +5601,12 @@ def rank_by_category(
         sub = (2 if ids else 0 if has_reading else 1) if not dialect else 3
         return (category, tier, sub)
 
-    order = sorted(range(len(entries)), key=key)
+    keys = [key(index) for index in range(len(entries))]
+    order = sorted(range(len(entries)), key=keys.__getitem__)
     ranked: list[dict] = []
     for index in order:
         entry = entries[index]
-        category, tier, _sub = key(index)
+        category, tier, _sub = keys[index]
         # Send the same values the page uses, so it does not have to recompute
         # (and cannot disagree with the server order).
         entry["category"] = category
@@ -6889,21 +7186,33 @@ def has_english_match(phrase: str) -> bool:
     return True
 
 
+# Hot files first: the page-cache warm-up stops when it reaches its byte budget,
+# so the dictionaries every search touches are read and the large, rarely used
+# ones (MOE revised, gram words, Taiwan readings) are left to demand paging.
 _PAGE_CACHE_FILES = (
     DB_PATH,
-    MOE_DB_PATH,
-    MOE_REVISED_DB_PATH,
-    WIKTIONARY_DB_PATH,
+    FREQ_DB_PATH,
     SOURCE_GLOSS_DB_PATH,
     HEAD_GRAMS_DB_PATH,
+    DEFINITION_GRAMS_DB_PATH,
+    ENGLISH_WORDS_DB_PATH,
+    HSK_DB_PATH,
+    SEARCH_INDEX_DB_PATH,
+    MOE_DB_PATH,
+    SUBTLEX_DB_PATH,
+    WIKTIONARY_DB_PATH,
+    MOE_REVISED_DB_PATH,
     ZHWIKTIONARY_DB_PATH,
     JPWIKTIONARY_DB_PATH,
-    SUBTLEX_DB_PATH,
-    FREQ_DB_PATH,
-    DEFINITION_GRAMS_DB_PATH,
     GRAM_WORDS_DB_PATH,
-    ENGLISH_WORDS_DB_PATH,
+    TAIWAN_DB_PATH,
 )
+
+# Default page-cache budget. Reading more than this on a phone fills RAM that
+# the search itself needs, so the kernel evicts it again and the warm-up is
+# worse than useless. Override with YABAI_WARM_PAGE_CACHE_BYTES.
+_DEFAULT_PAGE_CACHE_BUDGET = 256 * 1024 * 1024
+_MIN_FREE_BYTES = 512 * 1024 * 1024
 
 # One warm-up per process. The thread is daemonised so a failed read never
 # keeps the server alive at shutdown.
@@ -6913,6 +7222,8 @@ _WARM_STATE = {
     "done": False,
     "elapsed_ms": None,
     "bytes": 0,
+    "budget": None,
+    "skipped": [],
     "error": "",
 }
 
@@ -6938,18 +7249,61 @@ def page_cache_status() -> dict:
         return dict(_WARM_STATE)
 
 
-def _warm_page_cache_files() -> int:
-    """Read every dictionary file once and ask the kernel to read ahead.
+def _available_memory_bytes() -> int | None:
+    """MemAvailable in bytes, or None where /proc/meminfo is not available."""
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _page_cache_budget() -> int | None:
+    """How many bytes the page-cache warm-up may read (None = every file)."""
+    raw = os.environ.get("YABAI_WARM_PAGE_CACHE_BYTES", "").strip().lower()
+    if raw in ("all", "unlimited"):
+        return None
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return _DEFAULT_PAGE_CACHE_BUDGET
+    return _DEFAULT_PAGE_CACHE_BUDGET
+
+
+def _warm_page_cache_files(budget: int | None = None) -> int:
+    """Read the hot dictionary files once and ask the kernel to read ahead.
 
     `posix_fadvise(WILLNEED)` alone is only a hint and can return before the
     pages are resident. Reading the file in 1 MiB chunks makes the warm-up
     deterministic; the data is mapped by SQLite anyway, so this does not keep
     an extra copy in the Python heap.
+
+    `budget` caps the total bytes read; files after the cap are skipped. On a
+    phone the old "read everything" warm-up filled RAM that the search needed,
+    so the kernel evicted it and the next query was cold anyway.
     """
     total = 0
+    skipped: list[str] = []
+    seen: set[str] = set()
+    available = _available_memory_bytes()
+    if available is not None and available < _MIN_FREE_BYTES:
+        with _WARM_LOCK:
+            _WARM_STATE["skipped"] = ["available memory below 512 MiB"]
+        return 0
     for path in _PAGE_CACHE_FILES:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
         try:
             if not path.exists():
+                continue
+            size = path.stat().st_size
+            if budget is not None and total + size > budget:
+                skipped.append(path.name)
                 continue
             with path.open("rb") as handle:
                 try:
@@ -6966,6 +7320,8 @@ def _warm_page_cache_files() -> int:
         except OSError as exc:
             with _WARM_LOCK:
                 _WARM_STATE["error"] = f"{path.name}: {exc}"
+    with _WARM_LOCK:
+        _WARM_STATE["skipped"] = skipped
     return total
 
 
@@ -6973,20 +7329,25 @@ def _warm_page_cache_worker() -> None:
     """Background body: page cache first, then representative searches."""
     start = time.perf_counter()
     try:
-        total = _warm_page_cache_files()
-        # Run the expensive queries only after the files are resident, so the
-        # first real request does not compete with cold reads.
-        warm_search_queries()
+        budget = _page_cache_budget()
+        total = _warm_page_cache_files(budget)
+        available = _available_memory_bytes()
+        # Run the representative searches only when there is memory to spare;
+        # on a phone they compete with the first real visitor.
+        if available is None or available > 2 * 1024 * 1024 * 1024:
+            warm_search_queries()
         with _WARM_LOCK:
             _WARM_STATE.update(
                 done=True,
                 elapsed_ms=round((time.perf_counter() - start) * 1000, 1),
                 bytes=total,
+                budget=budget,
             )
         print(
             "page cache warm: "
             f"{total / (1024 * 1024):.0f} MiB in "
-            f"{_WARM_STATE['elapsed_ms']:.0f} ms",
+            f"{_WARM_STATE['elapsed_ms']:.0f} ms"
+            + (f" (skipped {len(_WARM_STATE['skipped'])} files)" if _WARM_STATE["skipped"] else ""),
             flush=True,
         )
     except Exception as exc:  # pragma: no cover - best-effort warm-up
@@ -7042,15 +7403,24 @@ def warm_caches() -> None:
         _warm_step("moe_chars", _moe_char_map)
     _warm_step("reading_counts", _reading_counts)
     _warm_step("ids_entries", _ids_entries)
-    _warm_step("all_headwords", _all_headwords_list)
     _warm_step("zhuyin", _zhuyin_map)
     _warm_step("definition_grams", _definition_grams)
-    _warm_step("source_pinyin_sorted", _source_pinyin_sorted)
+    # The "*" headword list and the source pinyin rows are not built here: they
+    # cost tens of seconds of OpenCC work on a phone. The prebuilt search index
+    # answers both, and without it they are built on first use.
     # Hash the CEDICT file at start-up, while no visitor is waiting.
     _warm_step("source_gloss_hash", _source_gloss_version_ok)
     _warm_step("head_grams_hash", _head_grams_version_ok)
     _warm_step("gram_words_hash", _gram_words_version_ok)
-    _warm_step("source_pinyin_rows", _source_pinyin_rows)
+    print(
+        "search index: "
+        + (
+            "ok"
+            if _search_index_ok()
+            else "missing or stale (run scripts/build_search_index.py)"
+        ),
+        flush=True,
+    )
     if os.environ.get("YABAI_WARM_LOG") == "1":
         print(
             f"warm total: {(time.perf_counter() - started) * 1000:.0f} ms",
@@ -7058,7 +7428,9 @@ def warm_caches() -> None:
         )
     mode = warm_mode()
     if mode == "legacy":
-        _warm_page_cache_files()
+        _warm_page_cache_files(None)
+        with _WARM_LOCK:
+            _WARM_STATE["budget"] = None
         warm_search_queries()
     elif mode == "background":
         _start_page_cache_warm()

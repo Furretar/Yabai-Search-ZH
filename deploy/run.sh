@@ -47,6 +47,22 @@ else
     LAUNCH=(python -m uvicorn)
 fi
 
+# NixOS has no system libstdc++, so opencc's compiled extension fails to import
+# unless a gcc lib folder is on LD_LIBRARY_PATH. Inside `nix develop` the shell
+# sets that; a systemd unit does not, and the service then dies at startup
+# ("opencc_clib not found in Bazel runfiles"). Pick the first gcc lib folder
+# where the import actually works, so a gcc update that changes the store hash
+# cannot break the unit again. Non-Nix systems skip this block.
+if [ -z "${LD_LIBRARY_PATH:-}" ] && [ -d /nix/store ]; then
+    for lib_dir in /nix/store/*-gcc-*-lib/lib; do
+        [ -e "$lib_dir/libstdc++.so.6" ] || continue
+        if LD_LIBRARY_PATH="$lib_dir" "${LAUNCH[0]}" -c "import opencc" >/dev/null 2>&1; then
+            export LD_LIBRARY_PATH="$lib_dir"
+            break
+        fi
+    done
+fi
+
 mkdir -p run
 CHILD=""
 # On stop, take the app down with us.

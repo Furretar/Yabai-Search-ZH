@@ -41,6 +41,86 @@ def test_fast_paths_active():
     assert all(item["active"] for item in status.values()), status
 
 
+def test_warm_caches_skips_the_expensive_headword_lists(monkeypatch):
+    """Startup must not rebuild the "*" list or the pinyin rows on a phone."""
+    names: list[str] = []
+    monkeypatch.setattr(db, "_warm_step", lambda name, fn, *args: names.append(name))
+    monkeypatch.setattr(db, "_start_page_cache_warm", lambda: None)
+    monkeypatch.setattr(db, "_search_index_ok", lambda: True)
+    monkeypatch.setenv("YABAI_WARM_PAGE_CACHE", "off")
+
+    db.warm_caches()
+
+    assert "all_headwords" not in names
+    assert "source_pinyin_sorted" not in names
+    assert "source_pinyin_rows" not in names
+    # The cheap, always-useful caches are still warmed.
+    assert "cedict_heads" in names
+
+
+def test_page_cache_warm_respects_the_byte_budget(tmp_path, monkeypatch):
+    """Only the hot files that fit in the budget are read."""
+    first = tmp_path / "a.sqlite"
+    second = tmp_path / "b.sqlite"
+    first.write_bytes(b"x" * 200)
+    second.write_bytes(b"x" * 200)
+    monkeypatch.setattr(db, "_PAGE_CACHE_FILES", (first, second))
+    monkeypatch.setattr(db, "_available_memory_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(db, "_WARM_STATE", dict(db._WARM_STATE))
+
+    assert db._warm_page_cache_files(300) == 200
+    assert db._WARM_STATE["skipped"] == ["b.sqlite"]
+
+
+def test_page_cache_warm_skips_when_memory_is_low(tmp_path, monkeypatch):
+    """A phone with little free RAM must not be filled with dictionary pages."""
+    first = tmp_path / "a.sqlite"
+    first.write_bytes(b"x" * 200)
+    monkeypatch.setattr(db, "_PAGE_CACHE_FILES", (first,))
+    monkeypatch.setattr(db, "_available_memory_bytes", lambda: 100 * 1024**2)
+    monkeypatch.setattr(db, "_WARM_STATE", dict(db._WARM_STATE))
+
+    assert db._warm_page_cache_files(None) == 0
+    assert "available memory" in db._WARM_STATE["skipped"][0]
+
+
+def test_batched_in_lists_are_chunked(monkeypatch):
+    """A big result set must not exceed a phone's SQLite variable limit.
+
+    The tablet's SQLite rejects more than ~32k bound variables; one "shi"
+    search ranks over 10k rows, so the batched lookups split their IN lists.
+    Chunking must not change which rows come back.
+    """
+    connection = db.connect()
+    words = [
+        row[0]
+        for row in connection.execute(
+            "SELECT DISTINCT traditional FROM entries LIMIT 1200"
+        )
+    ]
+
+    variant_rows = {}
+    reading_counts = {}
+    for size in (10, 5000):
+        monkeypatch.setattr(db, "_IN_CHUNK_SIZE", size)
+        # A form row can match words in two different chunks and come back
+        # twice; _VariantIndex de-duplicates it, so compare the set of rows.
+        variant_rows[size] = {
+            tuple(row) for row in db._variant_form_rows(words)
+        }
+        reading_counts[size] = db._cedict_reading_counts(words)
+    assert variant_rows[10] == variant_rows[5000]
+    assert reading_counts[10] == reading_counts[5000]
+
+    frequencies = {}
+    for size in (10, 5000):
+        monkeypatch.setattr(db, "_IN_CHUNK_SIZE", size)
+        entries = [{"simplified": word, "traditional": word} for word in words]
+        db._attach_freq(entries)
+        frequencies[size] = {entry["simplified"]: entry["freq"] for entry in entries}
+    assert frequencies[10] == frequencies[5000]
+
+
 def test_gram_words_stale_metadata(monkeypatch, tmp_path):
     import sqlite3
     path = tmp_path / "gram_words.sqlite"

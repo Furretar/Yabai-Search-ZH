@@ -48,7 +48,11 @@
             // not load the large script; only an explicit "on" value does.
             var value = new URLSearchParams(location.search).get("custom");
             var url = value !== null && value !== "0" && value !== "false" && value !== "off";
-            need = on || url || has !== "false";
+            // Load eagerly only for a visitor who has imported dictionaries
+            // before. A first-time visitor gets it on demand when they turn
+            // custom dictionaries on (app.js loadCustomDicts), so they do not
+            // download and parse 163 KB they will not use.
+            need = on || url || has === "true";
         } catch (e) { need = true; }
         if (need) {
             document.write('<script src="' + window.__customDictsSrc + '" defer><\\/script>');
@@ -57,7 +61,7 @@
     </script>
     <!-- MOE glyph pictures: defines renderGlyphs() that app.js calls after
        building each result row. -->
-    <script src="/static/glyphs.js?v={{ asset_version }}"></script>
+    <script src="/static/glyphs.js?v={{ asset_version }}" defer></script>
     <!-- Front-end script served from the /static mount (static/app.js). -->
     <script src="/static/app.js?v={{ asset_version }}" defer></script>
     <!-- Local scanner: moves inline pinyin in definition text into furigana. -->
