@@ -10,9 +10,10 @@ searches with their SQL timings, and data/dummy/, the small stand-in databases
 built by scripts/build_test_dbs.py: both are small and belong in an archive.
 
 The zip is written into archives/ next to the code, which is gitignored; pass
---out to choose another folder. When the source is a git checkout, a short
-GIT_HISTORY.txt (branch, HEAD, recent commits and working-tree state) is added
-at the archive root.
+--out to choose another folder. Only the newest three archives are kept; older
+ones are deleted. When the source is a git checkout, a short GIT_HISTORY.txt
+(branch, HEAD, recent commits and working-tree state) is added at the archive
+root.
 
     python scripts/make_code_zip.py [--out DIR]
 """
@@ -28,6 +29,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = PROJECT_ROOT / "archives"
+
+# Keep the newest few archives; older ones are regenerable.
+KEEP_ARCHIVES = 3
 
 # Folder names that are never source: generated dictionary data, older zips and
 # bytecode. Without "archives" here, every new zip would contain the previous
@@ -136,6 +140,25 @@ def build_zip(root: Path, output: Path) -> list[str]:
     return sorted(stored)
 
 
+def prune_archives(output_dir: Path, keep: int = KEEP_ARCHIVES) -> list[Path]:
+    """Delete older yabai-search archives, keeping the newest `keep`."""
+    if keep <= 0:
+        return []
+    archives = sorted(
+        (path for path in output_dir.glob("yabai-search-*.zip") if path.is_file()),
+        key=lambda path: (path.name, path.stat().st_mtime),
+        reverse=True,
+    )
+    removed: list[Path] = []
+    for path in archives[keep:]:
+        try:
+            path.unlink()
+            removed.append(path)
+        except OSError:
+            pass
+    return removed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Zip the Yabai Search source, skipping dot folders and data/."
@@ -151,9 +174,12 @@ def main(argv: list[str] | None = None) -> int:
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     output = args.out.expanduser() / f"yabai-search-{stamp}.zip"
     stored = build_zip(PROJECT_ROOT, output)
+    removed = prune_archives(args.out.expanduser())
 
     size_mb = output.stat().st_size / (1024 * 1024)
     print(f"{output}: {len(stored)} files, {size_mb:.2f} MB")
+    if removed:
+        print(f"removed {len(removed)} older archive(s)")
     return 0
 
 

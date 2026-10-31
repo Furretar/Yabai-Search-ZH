@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 from scripts import make_code_zip
-from scripts.make_code_zip import build_zip
+from scripts.make_code_zip import build_zip, prune_archives
 
 
 def _make_tree(root: Path) -> None:
@@ -110,6 +110,25 @@ def test_archive_includes_short_git_history(tmp_path: Path, monkeypatch) -> None
         assert archive.read("GIT_HISTORY.txt").decode() == (
             "Branch: master\nHEAD: abc1234\n"
         )
+
+
+def test_only_the_newest_three_archives_are_kept(tmp_path: Path) -> None:
+    """The output folder keeps the newest three yabai-search zips."""
+    output = tmp_path / "archives"
+    output.mkdir()
+    names = [f"yabai-search-2026010{i}-000000.zip" for i in range(1, 6)]
+    for name in names:
+        (output / name).write_bytes(b"archive")
+    unrelated = output / "other.zip"
+    unrelated.write_bytes(b"keep me")
+
+    removed = prune_archives(output, keep=3)
+
+    assert {path.name for path in output.glob("yabai-search-*.zip")} == set(
+        names[-3:]
+    )
+    assert unrelated.exists()
+    assert {path.name for path in removed} == set(names[:2])
 
 
 def test_older_archives_are_not_packed_into_new_ones(tmp_path: Path) -> None:
