@@ -6697,10 +6697,10 @@ def search(
     query = query.strip()
     if not query:
         return [], False  # nothing to search for
-    # Lowercase the query so LIKE comparisons on already-lowercased columns
-    # (english_normalized, pinyin_toneless) stay correct even when
-    # case_sensitive_like is ON. Han characters and pinyin are unaffected.
-    query = query.lower()
+    # Lowercase only pure Latin queries. A mixed headword such as BP机 must keep
+    # its case for the case-sensitive LIKE headword lookup.
+    if not has_cjk(query):
+        query = query.lower()
 
     def decorate(rows: list[dict]) -> list[dict]:
         """Fully decorate the first `hydrate` rows, light-decorate the rest."""
@@ -7272,7 +7272,10 @@ def search(
     headword_rows: list = []
     if headword_clause:
         candidates = None
-        if is_chinese or is_numeric:
+        # The gram index covers CJK/numeric headwords, not mixed Latin ones
+        # such as BP机; skip the prune for those.
+        mixed_latin = any(char.isascii() and char.isalpha() for char in literal)
+        if (is_chinese or is_numeric) and not mixed_latin:
             candidates = _headword_candidate_ids(headword_forms)
         if candidates is not None:
             if candidates:

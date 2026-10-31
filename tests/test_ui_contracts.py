@@ -409,14 +409,14 @@ def test_script_toggle_uses_the_server_layouts():
 def test_zhuyin_conversion_skips_dialect_readings():
     """Only Mandarin pinyin becomes bopomofo; dialect readings stay as written."""
     js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
-    # furigana() gets allowTones=false for a dialect entry (pinyin_no_tone).
-    assert (
-        'state.phonetic === "zhuyin" && allowTones && !isLatinReading(rawReading)'
-        in js
-    )
-    # The IDS headword uses the dialect guard too, and also skips a reading
-    # that spells a Latin word out (word姐's "w o r d jiě").
+    # Conversion is per token: valid pinyin becomes bopomofo, Latin stays Latin.
+    assert "function phoneticTokens(" in js
+    assert "isPinyinSyllable(raw)" in js
+    assert 'kind === "latin"' in js
+    assert '["m", "n", "ng", "hm", "hng"].includes(base)' in js
+    assert "/^[A-Z]$/.test(raw)" in js
+    # Dialect readings still pass allowTones=false.
+    assert "allowTones: !entry.pinyin_no_tone" in js
     assert "!entry.pinyin_no_tone" in js
-    assert "!entry.pinyin_latin" in js
-    assert "!isLatinReading(reading)" in js
-    assert "syllables.every((s) => isPinyinSyllable(s))" in js
+    # The old all-or-nothing guard is gone.
+    assert "syllables.every((s) => isPinyinSyllable(s))" not in js

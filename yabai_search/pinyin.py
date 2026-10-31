@@ -126,27 +126,70 @@ def to_toneless(pinyin: str) -> str:
     return text
 
 
-def is_standard_pinyin(pinyin: str) -> bool:
-    """True unless the reading spells a Latin word out as single letters.
+# The same syllable tables app.js uses. Kept here so the server and browser
+# classify Latin tokens the same way.
+_PINYIN_INITIALS = (
+    "zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l",
+    "g", "k", "h", "j", "q", "x", "r", "z", "c", "s",
+)
+_PINYIN_FINALS = {
+    "a", "o", "e", "ê", "er", "ai", "ei", "ao", "ou", "an", "en", "ang",
+    "eng", "i", "ia", "ie", "iao", "iu", "ian", "in", "iang", "ing",
+    "iong", "u", "ua", "uo", "uai", "ui", "uan", "un", "uang", "ong",
+    "ueng", "ü", "üe", "üan", "ün", "ue",
+}
+_PINYIN_ZERO = {
+    "a", "o", "e", "ai", "ei", "ao", "ou", "an", "en", "ang", "eng",
+    "er", "yo", "ê",
+}
+_PINYIN_EXTRA = {"r", "m", "n", "ng", "hm", "hng", "ê"}
+_PINYIN_Y = {
+    "yi", "ya", "ye", "yao", "you", "yan", "yin", "yang", "ying", "yong",
+    "yu", "yue", "yuan", "yun",
+}
+_PINYIN_W = {
+    "wu", "wa", "wo", "wai", "wei", "wan", "wen", "wang", "weng",
+}
 
-    CEDICT has a few entries that write a Latin word as separate one-letter
-    "syllables" (``word姐`` is ``w o r d jiě``). That must not make a plain
-    English query look like a pinyin search. Legitimate readings can still
-    contain a single-letter token (``R`` in a name, an erhua ``r``), so only a
-    run of three or more one-letter tokens is treated as non-pinyin.
+
+def is_pinyin_token(token: str, allow_uppercase: bool = False) -> bool:
+    """True when one token is a plausible Mandarin pinyin syllable.
+
+    A single uppercase letter is treated as a Latin initial (A股, K歌, T恤)
+    unless `allow_uppercase` is set. The erhua ``r`` and syllabic
+    ``m``/``n``/``ng`` are valid; ``w``/``d`` are not.
     """
-    tokens = (pinyin or "").split()
-    if not tokens:
+    raw = (token or "").strip()
+    if not raw:
         return False
-    run = 0
-    for token in tokens:
-        if len(to_toneless(token)) == 1:
-            run += 1
-            if run >= 3:
-                return False
-        else:
-            run = 0
-    return True
+    if len(raw) == 1 and raw.isupper() and not allow_uppercase:
+        return False
+    base = to_toneless(raw)
+    if not base:
+        return False
+    if base in _PINYIN_EXTRA or base in _PINYIN_ZERO:
+        return True
+    if base in _PINYIN_Y or base in _PINYIN_W:
+        return True
+    for initial in _PINYIN_INITIALS:
+        if base.startswith(initial) and base[len(initial) :] in _PINYIN_FINALS:
+            return True
+    return False
+
+
+def latin_tokens(pinyin: str) -> list[str]:
+    """The tokens of a reading that are not Mandarin pinyin."""
+    return [
+        token
+        for token in (pinyin or "").split()
+        if not is_pinyin_token(token)
+    ]
+
+
+def is_standard_pinyin(pinyin: str) -> bool:
+    """True when every token is Mandarin pinyin (no Latin word spelled out)."""
+    tokens = (pinyin or "").split()
+    return bool(tokens) and not latin_tokens(pinyin)
 
 
 def split_syllables(chunk: str, syllables: set[str]) -> list[str]:
