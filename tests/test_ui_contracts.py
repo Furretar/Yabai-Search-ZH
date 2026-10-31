@@ -430,3 +430,14 @@ def test_ids_headword_keeps_readable_prefix():
     assert "text.search(/[\\u2ff0-\\u2fff]/)" in js
     assert 'prefixNode.className = "ids-prefix"' in js
     assert ".ids-prefix" in css
+
+
+def test_pager_puts_buttons_below_page_text():
+    """The page buttons sit under the "Page X of Y (N results)" line."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
+    assert "[label, first, prev, customJump, next, last]" in js
+    assert "[label, first, prev, next, last]" in js
+    assert "flex-wrap: wrap;" in css
+    assert ".pagination .page-info" in css
+    assert "flex-basis: 100%;" in css

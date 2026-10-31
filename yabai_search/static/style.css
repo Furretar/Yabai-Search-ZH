@@ -3551,6 +3551,7 @@ html.initial-search-pending .results-timing {
 /* Pager for "*" (all-headwords) searches. */
 .pagination {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: center;
     gap: .75rem;
@@ -3563,6 +3564,13 @@ html.initial-search-pending .results-timing {
 
 .pagination[hidden] {
     display: none;
+}
+
+/* The "Page X of Y (N results)" line sits above the buttons. */
+.pagination .page-info {
+    flex-basis: 100%;
+    text-align: center;
+    margin-bottom: .25rem;
 }
 
 .pagination button {

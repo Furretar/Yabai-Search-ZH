@@ -4030,8 +4030,8 @@ function pagerButtons(query, data, page, pages, info, fromTop) {
     prefetchOnIntent(last, (pages - 1) * size);
 
     return customJump
-        ? [first, prev, label, customJump, next, last]
-        : [first, prev, label, next, last];
+        ? [label, first, prev, customJump, next, last]
+        : [label, first, prev, next, last];
 }
 
 // Render the segmented input as clickable words (clicking one searches it).
