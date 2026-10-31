@@ -282,6 +282,23 @@ def end_log() -> list[str]:
     return statements
 
 
+_PLACEHOLDER_RUN = re.compile(r"\?(?:\s*,\s*\?){1,}")
+
+
+@lru_cache(maxsize=512)
+def _compact_sql(sql: str) -> str:
+    """Collapse whitespace and long placeholder runs for the debug log.
+
+    The same few SQL texts repeat for every row of a result set, so memoizing
+    this removes most of the string work from the per-statement logging path.
+    `?*N` keeps a 300-row batch readable as one line.
+    """
+    compact = " ".join(sql.split())
+    return _PLACEHOLDER_RUN.sub(
+        lambda match: f"?*{match.group(0).count('?')}", compact
+    )
+
+
 def _log_sql(sql: str, started: float, rows: int | None) -> None:
     """Append one timed statement to this thread's log (if logging is on)."""
     statements = getattr(_log_state, "statements", None)
@@ -289,7 +306,9 @@ def _log_sql(sql: str, started: float, rows: int | None) -> None:
         return
     duration = (time.perf_counter() - started) * 1000
     count = "?" if rows is None else str(rows)
-    statements.append(f"{duration:8.2f} ms rows={count} | {' '.join(sql.split())}")
+    statements.append(
+        f"{duration:8.2f} ms rows={count} | {_compact_sql(sql)}"
+    )
 
 
 class _TimedCursor(sqlite3.Cursor):
@@ -3476,11 +3495,8 @@ def _source_pinyin_raw(
             try:
                 # readings_extra holds only Mandarin readings CEDICT does not cover,
                 # so the common search never touches the full readings table.
-                extra = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' "
-                    "AND name='readings_extra'"
-                ).fetchone()
-                if extra:
+                has_extra = _has_readings_extra()
+                if has_extra:
                     table = "readings_extra"
                     where = "pinyin_toneless LIKE ? ESCAPE '\\'"
                 else:
@@ -3519,7 +3535,7 @@ def _source_pinyin_raw(
                             process(row)
                         if len(found) >= limit:
                             break
-                elif extra:
+                elif has_extra:
                     # readings_extra is already deduped at import with the same
                     # winner rule, so rank and limit directly.
                     q = (
@@ -4122,6 +4138,33 @@ def _has_jpwiktionary_fts() -> bool:
         finally:
             connection.close()
     return _jpwiktionary_fts_cache
+
+
+_readings_extra_cache: bool | None = None
+
+
+def _has_readings_extra() -> bool:
+    """True when the Wiktionary database has the readings_extra table.
+
+    Cached for the process: connections are immutable=1 and a re-import
+    already requires a restart.
+    """
+    global _readings_extra_cache
+    if _readings_extra_cache is None:
+        _readings_extra_cache = False
+        if WIKTIONARY_DB_PATH.exists():
+            connection = _connect(WIKTIONARY_DB_PATH)
+            try:
+                _readings_extra_cache = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type='table' AND name='readings_extra'"
+                    ).fetchone()
+                    is not None
+                )
+            finally:
+                connection.close()
+    return _readings_extra_cache
 
 
 _freq_fts_cache: bool | None = None

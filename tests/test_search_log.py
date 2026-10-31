@@ -91,6 +91,51 @@ def test_a_real_search_writes_query_and_timing(tmp_path, monkeypatch, search):
     assert "results in" in text
 
 
+def test_readings_extra_check_is_cached(monkeypatch):
+    """The sqlite_master probe runs once, not on every search."""
+
+    class FakeConnection:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, *args):
+            self.calls.append(sql)
+            return self
+
+        def fetchone(self):
+            return (1,)
+
+        def close(self):
+            pass
+
+    connection = FakeConnection()
+    monkeypatch.setattr(db, "_connect", lambda path: connection)
+    db._readings_extra_cache = None
+    try:
+        db._has_readings_extra()
+        db._has_readings_extra()
+    finally:
+        db._readings_extra_cache = None
+    assert sum("readings_extra" in sql for sql in connection.calls) == 1
+
+
+def test_compact_sql_collapses_placeholder_runs():
+    """Long placeholder lists become ?*N, and whitespace stays collapsed."""
+    db._compact_sql.cache_clear()
+    assert db._compact_sql("SELECT ?, ?, ?  FROM t") == "SELECT ?*3 FROM t"
+    many = "SELECT " + ", ".join("?" * 300) + " FROM t"
+    assert db._compact_sql(many) == "SELECT ?*300 FROM t"
+
+
+def test_compact_sql_is_memoized():
+    """Repeated SQL texts are normalized once."""
+    db._compact_sql.cache_clear()
+    first = db._compact_sql("SELECT 1  FROM t")
+    before = db._compact_sql.cache_info().hits
+    assert db._compact_sql("SELECT 1  FROM t") == first
+    assert db._compact_sql.cache_info().hits == before + 1
+
+
 def test_sql_capture_records_statement_text_and_rows(monkeypatch):
     """db.start_log/_log_sql/end_log produce the lines _record_search stores.
 
