@@ -279,8 +279,28 @@ def relevance_key(features: Features, entry: dict) -> tuple:
     )
 
 
+def exact_whole_gloss(english: str, query: str) -> bool:
+    """True when the whole gloss is exactly the query, with no qualifiers.
+
+    Unlike `normalize_gloss`, this does not strip leading articles or
+    parenthetical notes, so "to water" does not count as an exact match for
+    "water". Used to give a direct translation (法国 for "France") a small
+    edge over a polysemous word (法) that only lists the query as one sense.
+    """
+    return " ".join((english or "").split()).lower() == " ".join(
+        (query or "").split()
+    ).lower()
+
+
 def rank_entries(entries: list[dict], query: str) -> list[dict]:
-    """Sort matched rows; rows with no match keep their relative order at the end."""
+    """Sort matched rows; rows with no match keep their relative order at the end.
+
+    A capitalized query (a proper noun such as "France") gives a small edge to
+    entries whose entire gloss is exactly the query, so the canonical
+    translation (法国) sorts above a polysemous word (法) that merely lists it
+    as one sense. Lowercase queries keep the frequency order, which the judged
+    set expects for common words.
+    """
     matched: list[tuple[Features, dict]] = []
     unmatched: list[dict] = []
     for entry in entries:
@@ -289,5 +309,36 @@ def rank_entries(entries: list[dict], query: str) -> list[dict]:
             unmatched.append(entry)
         else:
             matched.append((features, entry))
-    matched.sort(key=lambda item: relevance_key(item[0], item[1]))
+    capitalized = bool(query.strip()) and query.strip()[0].isupper() and query.strip()[0].isalpha()
+    has_exact = capitalized and any(
+        features.tier == 1
+        and exact_whole_gloss(entry.get("english") or "", query)
+        for features, entry in matched
+    )
+
+    def sort_key(item: tuple[Features, dict]) -> tuple:
+        features, entry = item
+        freq = entry.get("freq")
+        whole = (
+            0
+            if (
+                has_exact
+                and features.tier == 1
+                and exact_whole_gloss(entry.get("english") or "", query)
+            )
+            else 1
+        )
+        return (
+            features.tier,
+            features.sense_bucket,
+            features.length_bucket,
+            whole,
+            freq is None,
+            freq["rank"] if freq else 0,
+            len(entry.get("simplified") or ""),
+            entry.get("simplified") or "",
+            entry.get("pinyin") or "",
+        )
+
+    matched.sort(key=sort_key)
     return [entry for _features, entry in matched] + unmatched

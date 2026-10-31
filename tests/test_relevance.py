@@ -93,3 +93,16 @@ def test_tier_dominates_frequency():
     ]
     ranked = relevance.rank_entries(rows, "word")
     assert [row["simplified"] for row in ranked] == ["word姐", "词"]
+
+
+def test_capitalized_query_prefers_exact_whole_gloss():
+    """A proper noun's canonical translation beats a polysemous word."""
+    rows = [
+        entry("法", "France; French; abbr. for 法國|法国", rank=526),
+        entry("法国", "France", rank=1720),
+    ]
+    ranked = relevance.rank_entries(rows, "France")
+    assert [row["simplified"] for row in ranked] == ["法国", "法"]
+    # Lowercase keeps the frequency order.
+    ranked = relevance.rank_entries(rows, "france")
+    assert [row["simplified"] for row in ranked] == ["法", "法国"]

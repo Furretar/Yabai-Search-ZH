@@ -355,6 +355,20 @@ def test_latin_reading_run_counts_as_tier_zero():
     assert entries[0]["tier"] == 0
 
 
+def test_headword_reading_with_more_definitions_comes_first():
+    '''A headword's main reading is the one with the most senses.'''
+    entries, _ = db.search("德", limit=20, part="all", hydrate=0)
+    de_entries = [entry for entry in entries if entry["simplified"] == "德"]
+    assert de_entries and de_entries[0]["pinyin"] == "dé"
+
+    entries, _ = db.search("Dé", limit=20, part="all", hydrate=0)
+    de_entries = [entry for entry in entries if entry["simplified"] == "德"]
+    assert de_entries and de_entries[0]["pinyin"] == "dé"
+
+    assert db.lookup("德")[0]["pinyin"] == "dé"
+    assert db.lookup_reading("德") == [{"pinyin": "dé"}]
+
+
 def test_quoted_latin_query_stays_definition_only():
     """Quoting is an explicit phrase search; no headword/reading T0 rows."""
     entries, pinyin_match = db.search('"word"', limit=100, part="all", hydrate=0)

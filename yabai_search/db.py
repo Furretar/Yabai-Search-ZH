@@ -6925,18 +6925,27 @@ def _search_core(
             with pd.stage("source_pinyin"):
                 source_rows = _source_pinyin_entries(query, limit=limit)
         decorated = decorate(top + source_rows)
+        # Prefer the reading with the most senses when rank and frequency tie
+        # (e.g. 德 should show dé before Dé).
+        _sense_words = sorted({row.get("simplified") for row in top if row.get("simplified")})
+        _sense_counts = _cedict_reading_counts(_sense_words) if _sense_words else {}
+        for entry in decorated:
+            entry["_sense_count"] = _entry_sense_count(_sense_counts, entry)
         result = decorated[: len(top)]
         # Within the relevance group (whole reading, starts with, contains), put
-        # the most frequent words first; words with no frequency go last.
+        # the most frequent words first; words with no frequency go last. A
+        # reading with more senses wins the tie, matching lookup()'s rule.
         result.sort(
             key=lambda entry: (
                 entry.get("_search_rank", 99),
                 entry.get("freq") is None,
                 entry["freq"]["rank"] if entry.get("freq") else 0,
+                -entry.get("_sense_count", 0),
             )
         )
-        for entry in result:
+        for entry in decorated:
             entry.pop("_search_rank", None)
+            entry.pop("_sense_count", None)
         if part == "primary":
             return result, True
         result.extend(decorated[len(top):])
@@ -7118,6 +7127,26 @@ def _search_core(
             for entry in source_rows
             if is_standard_pinyin(entry.get("pinyin", ""))
         ]
+        # Prefer the reading with the most senses when rank and frequency tie.
+        if entries:
+            _distinct = {e.get("simplified") for e in entries if e.get("simplified")}
+            _counts = _cedict_reading_counts(list(_distinct))
+            _group_order = {}
+            for _i, _e in enumerate(entries):
+                _e["_orig"] = _i
+                _e["_sense_count"] = _entry_sense_count(_counts.get(_e.get("simplified"), {}), _e)
+                if _e.get("simplified") not in _group_order:
+                    _group_order[_e.get("simplified")] = _i
+            entries.sort(
+                key=lambda _e: (
+                    _group_order.get(_e.get("simplified"), 0),
+                    -_e.get("_sense_count", 0),
+                    _e.get("_orig", 0),
+                )
+            )
+            for _e in entries:
+                _e.pop("_sense_count", None)
+                _e.pop("_orig", None)
         if entries or source_rows:
             if part == "primary":
                 return decorate(entries), True
@@ -7133,21 +7162,42 @@ def _search_core(
                     return 1
                 return 2
 
-            source_prefix = [e for e in source_rows if pinyin_rank(e) <= 1]
-            source_contains = [e for e in source_rows if pinyin_rank(e) == 2]
+            # Prefer the reading with the most senses when rank and frequency
+            # tie (德 should show dé before Dé), matching lookup()'s rule.
+            _sense_words = sorted({e.get("simplified") for e in entries if e.get("simplified")})
+            _sense_counts = _cedict_reading_counts(_sense_words) if _sense_words else {}
+            for _i, _e in enumerate(entries):
+                _e["_orig"] = _i
+                _e["_sense_count"] = _entry_sense_count(_sense_counts, _e)
+            entries.sort(
+                key=lambda _e: (
+                    pinyin_rank(_e),
+                    -_e.get("_sense_count", 0),
+                    _e.get("_orig", 0),
+                )
+            )
             insert_at = next(
                 (i for i, entry in enumerate(entries) if pinyin_rank(entry) == 2),
                 len(entries),
             )
-            return (
-                decorate(
-                    entries[:insert_at]
-                    + source_prefix
-                    + entries[insert_at:]
-                    + source_contains
-                ),
-                True,
+            for _e in source_rows:
+                _w = _e.get("simplified")
+                _sc = _cedict_reading_counts([_w]) if _w else {}
+                _e["_sense_count"] = _entry_sense_count(_sc, _e)
+            source_prefix = [e for e in source_rows if pinyin_rank(e) <= 1]
+            source_contains = [e for e in source_rows if pinyin_rank(e) == 2]
+            source_prefix.sort(key=lambda e: -e.get("_sense_count", 0))
+            source_contains.sort(key=lambda e: -e.get("_sense_count", 0))
+            decorated = decorate(
+                entries[:insert_at]
+                + source_prefix
+                + entries[insert_at:]
+                + source_contains
             )
+            for _e in decorated:
+                _e.pop("_orig", None)
+                _e.pop("_sense_count", None)
+            return decorated, True
 
     # Chinese: convert to simplified. A plain query matches anywhere in the word,
     # ranked exact first, then words starting with the query, then the rest.
@@ -7317,6 +7367,27 @@ def _search_core(
     if headword_rows or source_headwords:
         entries = [dict(row) for row in headword_rows] + source_headwords
         decorated = decorate(entries)
+        # A headword can have several readings (德: dé, Dé). Show the one with
+        # the most senses first, matching lookup()'s rule. Group by simplified
+        # form so other headwords keep their search order.
+        if decorated:
+            _distinct = {e.get("simplified") for e in decorated if e.get("simplified")}
+            _counts_all = _cedict_reading_counts(list(_distinct))
+            import sys as _dbg_sys
+            for e in decorated:
+                e["_sense_count"] = _entry_sense_count(_counts_all, e)
+            _group_order = {}
+            for _i, _e in enumerate(decorated):
+                if _e.get("simplified") not in _group_order:
+                    _group_order[_e.get("simplified")] = _i
+            decorated.sort(
+                key=lambda e: (
+                    _group_order.get(e.get("simplified"), 0),
+                    -e.get("_sense_count", 0),
+                )
+            )
+            for e in decorated:
+                e.pop("_sense_count", None)
         if part == "primary":
             return decorated[: len(headword_rows)], False
 
