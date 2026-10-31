@@ -275,7 +275,10 @@ def _normal_search_state(
             if (entry.get("traditional"), entry.get("simplified")) not in seen
         ]
         mark("fuzzy_expand", at)
-    if not pinyin_match:
+    # Only a Chinese or numeric headword match should hide definition-only
+    # matches. A Latin headword such as "word姐" must not collapse an English
+    # definition search to that single row.
+    if not pinyin_match and (db.has_cjk(q) or q.isdigit()):
         at = time.perf_counter()
         forms = db.headword_query_forms(q)
         if forms:
