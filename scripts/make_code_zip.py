@@ -10,7 +10,9 @@ searches with their SQL timings, and data/dummy/, the small stand-in databases
 built by scripts/build_test_dbs.py: both are small and belong in an archive.
 
 The zip is written into archives/ next to the code, which is gitignored; pass
---out to choose another folder.
+--out to choose another folder. When the source is a git checkout, a short
+GIT_HISTORY.txt (branch, HEAD, recent commits and working-tree state) is added
+at the archive root.
 
     python scripts/make_code_zip.py [--out DIR]
 """
@@ -20,6 +22,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import os
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -59,6 +62,43 @@ def iter_source_files(root: Path):
             yield (Path(dir_path) / name).relative_to(root)
 
 
+def _git_history(root: Path) -> str | None:
+    """Short git log text for the archive, or None outside a git checkout."""
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    try:
+        branch = run("rev-parse", "--abbrev-ref", "HEAD")
+        if branch.returncode != 0:
+            return None
+        head = run("rev-parse", "--short", "HEAD")
+        log = run("log", "--oneline", "--decorate", "-n", "30")
+        status = run("status", "--short")
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    lines = [
+        "# Yabai Search git history",
+        f"Generated: {dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')}",
+        f"Branch: {branch.stdout.strip()}",
+        f"HEAD: {head.stdout.strip()}",
+        "",
+        "Recent commits:",
+        log.stdout.rstrip() or "(no commits)",
+        "",
+        "Working tree:",
+        status.stdout.rstrip() or "(clean)",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def build_zip(root: Path, output: Path) -> list[str]:
     """Write the archive at *output* and return the stored names, sorted."""
     root = root.resolve()
@@ -88,8 +128,12 @@ def build_zip(root: Path, output: Path) -> list[str]:
                 continue
             archive.write(root / relative, arcname=relative.as_posix())
             stored.append(relative.as_posix())
+        history = _git_history(root)
+        if history is not None:
+            archive.writestr("GIT_HISTORY.txt", history)
+            stored.append("GIT_HISTORY.txt")
     partial.replace(output)
-    return stored
+    return sorted(stored)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+from scripts import make_code_zip
 from scripts.make_code_zip import build_zip
 
 
@@ -90,6 +91,25 @@ def test_rebuild_overwrites_previous_archive(tmp_path: Path) -> None:
     build_zip(tmp_path, zip_path)
 
     assert "removed.py" not in _stored_names(zip_path)
+
+
+def test_archive_includes_short_git_history(tmp_path: Path, monkeypatch) -> None:
+    """A git checkout's archive carries a small GIT_HISTORY.txt at the root."""
+    _make_tree(tmp_path)
+    zip_path = tmp_path.parent / f"{tmp_path.name}-history.zip"
+    monkeypatch.setattr(
+        make_code_zip,
+        "_git_history",
+        lambda root: "Branch: master\nHEAD: abc1234\n",
+    )
+
+    stored = build_zip(tmp_path, zip_path)
+
+    assert "GIT_HISTORY.txt" in stored
+    with zipfile.ZipFile(zip_path) as archive:
+        assert archive.read("GIT_HISTORY.txt").decode() == (
+            "Branch: master\nHEAD: abc1234\n"
+        )
 
 
 def test_older_archives_are_not_packed_into_new_ones(tmp_path: Path) -> None:
