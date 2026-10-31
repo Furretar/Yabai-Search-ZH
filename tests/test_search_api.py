@@ -592,6 +592,16 @@ def test_pinyin_match_flag(search):
     assert search('"country"')["pinyin_match"] is False
 
 
+def test_unquoted_word_includes_word_jie(search):
+    """An unquoted Latin query keeps Latin headword/reading matches."""
+    data = search("word", limit=25)
+    assert data["pinyin_match"] is False
+    words = _words(data)
+    assert words[0] == "word姐"
+    assert data["results"][0]["tier"] == 0
+    assert "词汇" in words
+
+
 def test_english_match_flag_for_pinyin_query(search):
     """A pinyin search also reports when English definitions match."""
     assert search("kou")["english_match"] is True
