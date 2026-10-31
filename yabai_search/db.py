@@ -2076,14 +2076,17 @@ def _cedict_reading_counts(words: list[str]) -> dict[str, dict[str, int]]:
     try:
         for chunk in _chunks(words):
             placeholders = ",".join("?" * len(chunk))
-            rows = connection.execute(
-                "SELECT word, reading, COUNT(*) FROM senses "
-                f"WHERE word IN ({placeholders}) "
-                "AND text IS NOT NULL AND TRIM(text) <> '' "
-                f"AND {_XREF_SQL} "
-                "GROUP BY word, reading",
-                tuple(chunk),
-            ).fetchall()
+            try:
+                rows = connection.execute(
+                    "SELECT word, reading, COUNT(*) FROM senses "
+                    f"WHERE word IN ({placeholders}) "
+                    "AND text IS NOT NULL AND TRIM(text) <> '' "
+                    f"AND {_XREF_SQL} "
+                    "GROUP BY word, reading",
+                    tuple(chunk),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return counts
             for word, reading, count in rows:
                 # Keyed by the reading exactly as stored: capitalisation
                 # separates a surname ("Gān", 1 sense) from the word ("gān",
@@ -6697,6 +6700,8 @@ def _search_core(
     query = query.strip()
     if not query:
         return [], False  # nothing to search for
+    # Keep the original casing for the relevance boost (proper nouns).
+    original_query = query
     # Lowercase only pure Latin queries. A mixed headword such as BP机 must keep
     # its case for the case-sensitive LIKE headword lookup.
     if not has_cjk(query):
@@ -6775,7 +6780,11 @@ def _search_core(
         if os.environ.get("YABAI_RELEVANCE", "1") != "0":
             _attach_freq(combined)
             _attach_relevance(combined, phrase)
-            combined = relevance.rank_entries(combined, phrase)
+            combined = relevance.rank_entries(
+                combined,
+                phrase,
+                boost_exact=phrase[:1].isupper() and phrase[:1].isalpha(),
+            )
         decorated = decorate(combined)
         if part == "primary":
             return decorated[:limit], False
@@ -6924,22 +6933,35 @@ def _search_core(
         else:
             with pd.stage("source_pinyin"):
                 source_rows = _source_pinyin_entries(query, limit=limit)
-        decorated = decorate(top + source_rows)
+        # Keep the CEDICT order intact. Source prefixes only move ahead of
+        # the first CEDICT row that merely contains the query; source
+        # contains-only rows stay at the end.
+        source_prefix = [e for e in source_rows if pinyin_rank(e) <= 1]
+        source_contains = [e for e in source_rows if pinyin_rank(e) == 2]
+        insert_at = next(
+            (i for i, entry in enumerate(entries) if pinyin_rank(entry) == 2),
+            len(entries),
+        )
+        combined = (
+            entries[:insert_at]
+            + source_prefix
+            + entries[insert_at:]
+            + source_contains
+        )
+        decorated = decorate(combined)
         # Prefer the reading with the most senses when rank and frequency tie
-        # (e.g. 德 should show dé before Dé).
-        _sense_words = sorted({row.get("simplified") for row in top if row.get("simplified")})
+        # (德 should show dé before Dé), without reordering different words.
+        _sense_words = sorted({e.get("simplified") for e in combined if e.get("simplified")})
         _sense_counts = _cedict_reading_counts(_sense_words) if _sense_words else {}
         for entry in decorated:
             entry["_sense_count"] = _entry_sense_count(_sense_counts, entry)
-        result = decorated[: len(top)]
-        # Within the relevance group (whole reading, starts with, contains), put
-        # the most frequent words first; words with no frequency go last. A
-        # reading with more senses wins the tie, matching lookup()'s rule.
-        result.sort(
+        _group_order = {}
+        for _i, _e in enumerate(decorated):
+            if _e.get("simplified") not in _group_order:
+                _group_order[_e.get("simplified")] = _i
+        decorated.sort(
             key=lambda entry: (
-                entry.get("_search_rank", 99),
-                entry.get("freq") is None,
-                entry["freq"]["rank"] if entry.get("freq") else 0,
+                _group_order.get(entry.get("simplified"), 0),
                 -entry.get("_sense_count", 0),
             )
         )
@@ -6947,9 +6969,8 @@ def _search_core(
             entry.pop("_search_rank", None)
             entry.pop("_sense_count", None)
         if part == "primary":
-            return result, True
-        result.extend(decorated[len(top):])
-        return result, True
+            return decorated[: len(entries[:insert_at] + source_prefix)], True
+        return decorated, True
 
     # Exact pinyin reading (e.g. "yabai" -> 牙白): if the query is a complete
     # Chinese pronunciation, show only those matches and skip English results.
@@ -7568,8 +7589,12 @@ def _search_core(
         and os.environ.get("YABAI_RELEVANCE", "1") != "0"
     ):
         _attach_freq(entries)
-        _attach_relevance(entries, query)
-        entries = relevance.rank_entries(entries, query)
+        _attach_relevance(entries, original_query)
+        entries = relevance.rank_entries(
+            entries,
+            original_query,
+            boost_exact=original_query[:1].isupper() and original_query[:1].isalpha(),
+        )
     if language_query:
         entries = _rank_language_matches(entries, query)[:limit]
     # Also surface headwords that only the secondary sources or the frequency

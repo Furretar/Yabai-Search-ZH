@@ -292,7 +292,7 @@ def exact_whole_gloss(english: str, query: str) -> bool:
     ).lower()
 
 
-def rank_entries(entries: list[dict], query: str) -> list[dict]:
+def rank_entries(entries: list[dict], query: str, boost_exact: bool | None = None) -> list[dict]:
     """Sort matched rows; rows with no match keep their relative order at the end.
 
     A capitalized query (a proper noun such as "France") gives a small edge to
@@ -309,8 +309,9 @@ def rank_entries(entries: list[dict], query: str) -> list[dict]:
             unmatched.append(entry)
         else:
             matched.append((features, entry))
-    capitalized = bool(query.strip()) and query.strip()[0].isupper() and query.strip()[0].isalpha()
-    has_exact = capitalized and any(
+    if boost_exact is None:
+        boost_exact = bool(query.strip()) and query.strip()[0].isupper() and query.strip()[0].isalpha()
+    has_exact = boost_exact and any(
         features.tier == 1
         and exact_whole_gloss(entry.get("english") or "", query)
         for features, entry in matched
