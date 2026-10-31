@@ -337,13 +337,30 @@ def test_non_standard_pinyin_falls_through_to_definitions():
     assert not pinyin_match
     words = {entry["simplified"] for entry in entries}
     assert "词汇" in words
-    # A headword that only contains the Latin word but whose definition does
-    # not mention it must not be added as a candidate.
-    assert "word姐" not in words
-    assert entries[0]["tier"] == 1
+    # An unquoted Latin query also matches Latin text inside a headword or a
+    # reading, and those tier-0 rows come first.
+    assert entries[0]["simplified"] == "word姐"
+    assert entries[0]["tier"] == 0
+    assert entries[0]["category"] == 1
     # A real pinyin query still takes the pinyin path.
     _entries, pinyin_match = db.search("shan", limit=10, part="all", hydrate=0)
     assert pinyin_match
+
+
+def test_latin_reading_run_counts_as_tier_zero():
+    """A headword that only spells the query out in its reading still matches."""
+    entries, pinyin_match = db.search("cos", limit=10, part="all", hydrate=0)
+    assert not pinyin_match
+    assert entries[0]["simplified"] == "cos"
+    assert entries[0]["tier"] == 0
+
+
+def test_quoted_latin_query_stays_definition_only():
+    """Quoting is an explicit phrase search; no headword/reading T0 rows."""
+    entries, pinyin_match = db.search('"word"', limit=100, part="all", hydrate=0)
+    assert not pinyin_match
+    assert "word姐" not in {entry["simplified"] for entry in entries}
+    assert all(entry.get("tier") != 0 for entry in entries)
 
 
 def test_lookup_many_matches_lookup_for_each_word():

@@ -6667,7 +6667,7 @@ def _tw_cedict_rows(
     )
 
 
-def search(
+def _search_core(
     query: str,
     limit: int = 50,
     taiwan: bool = False,
@@ -7539,6 +7539,166 @@ def search(
     return decorated, False
 
 
+# Rows whose headword or reading can match a Latin query at tier 0. The set is
+# tiny (a few hundred CEDICT rows), so it is built once and scanned in memory
+# instead of adding a GLOB scan to every search.
+_LATIN_CANDIDATE_CACHE: list[dict] | None = None
+_LATIN_CANDIDATE_LOCK = threading.Lock()
+
+
+def _latin_reading_runs(reading: str) -> list[str]:
+    """Join each run of one-letter pinyin tokens (``w o r d`` -> ``word``)."""
+    runs: list[str] = []
+    run: list[str] = []
+    for token in (reading or "").split():
+        base = to_toneless(token)
+        if len(base) == 1:
+            run.append(base)
+        else:
+            if run:
+                runs.append("".join(run))
+                run = []
+    if run:
+        runs.append("".join(run))
+    return runs
+
+
+def _latin_candidate_rows() -> list[dict]:
+    """CEDICT rows that can match a Latin query by headword or reading."""
+    global _LATIN_CANDIDATE_CACHE
+    if _LATIN_CANDIDATE_CACHE is not None:
+        return _LATIN_CANDIDATE_CACHE
+    with _LATIN_CANDIDATE_LOCK:
+        if _LATIN_CANDIDATE_CACHE is not None:
+            return _LATIN_CANDIDATE_CACHE
+        connection = connect()
+        try:
+            headword_rows = connection.execute(
+                "SELECT id, simplified, traditional, pinyin, english, "
+                "english_normalized FROM entries "
+                "WHERE simplified GLOB '*[A-Za-z]*' "
+                "OR traditional GLOB '*[A-Za-z]*'"
+            ).fetchall()
+            # GLOB is only a cheap prefilter: it can match the tail of one
+            # syllable and the head of the next ("jīn r ge"), so the Python
+            # classifier still decides which readings are really spelled-out
+            # Latin words.
+            reading_rows = connection.execute(
+                "SELECT id, simplified, traditional, pinyin, english, "
+                "english_normalized FROM entries "
+                "WHERE pinyin GLOB '*[A-Za-z] [A-Za-z] [A-Za-z]*'"
+            ).fetchall()
+            rows: dict[int, dict] = {}
+            for row in headword_rows:
+                rows[row["id"]] = dict(row)
+            for row in reading_rows:
+                if not is_standard_pinyin(row["pinyin"]):
+                    rows[row["id"]] = dict(row)
+        finally:
+            connection.close()
+        _LATIN_CANDIDATE_CACHE = list(rows.values())
+        return _LATIN_CANDIDATE_CACHE
+
+
+def _latin_candidates(query: str, limit: int) -> list[dict]:
+    """Rows whose headword or reading contains `query` as Latin text.
+
+    A headword such as ``word姐`` matches by its headword. A reading that
+    spells a Latin word out token by token (``w o r d jiě``) matches by the
+    joined one-letter run. Both are tier 0.
+    """
+    normalized = unicodedata.normalize("NFKC", query).strip().lower()
+    if not normalized or not relevance.is_latin_query(normalized):
+        return []
+    matches: list[tuple[relevance.Features, dict]] = []
+    for row in _latin_candidate_rows():
+        entry = dict(row)
+        features = None
+        for headword in (entry.get("simplified"), entry.get("traditional")):
+            features = relevance.headword_features(headword or "", normalized)
+            if features is not None:
+                break
+        if features is None:
+            runs = _latin_reading_runs(entry.get("pinyin", ""))
+            # A headword match outranks a reading-only match; inside the
+            # reading group an exact run sorts ahead of a mere substring.
+            if any(normalized == run for run in runs):
+                features = relevance.Features(0, 1, 0)
+            elif any(normalized in run for run in runs):
+                features = relevance.Features(0, 1, 1)
+        if features is not None:
+            matches.append((features, entry))
+    if not matches:
+        return []
+    entries = [entry for _features, entry in matches]
+    _attach_freq(entries)
+    matches.sort(key=lambda item: relevance.relevance_key(item[0], item[1]))
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict] = []
+    for _features, entry in matches:
+        key = (entry.get("traditional", ""), entry.get("pinyin", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(entry)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def search(
+    query: str,
+    limit: int = 50,
+    taiwan: bool = False,
+    part: str = "all",
+    _skip_pinyin: bool = False,
+    hydrate: int | None = None,
+) -> tuple[list[dict], bool]:
+    """Search the dictionary, adding tier-0 Latin headword/reading matches.
+
+    The core search finds headwords, readings and definitions. For an unquoted
+    Latin query, rows whose headword or reading contains the query as Latin
+    text are prepended at tier 0 (``word`` finds ``word姐`` first). Quoted
+    queries stay definition-only. `part="secondary"` never prepends them, so
+    the primary and secondary halves still merge into the same list.
+    """
+    entries, pinyin_match = _search_core(
+        query,
+        limit,
+        taiwan,
+        part=part,
+        _skip_pinyin=_skip_pinyin,
+        hydrate=hydrate,
+    )
+    text = query.strip()
+    quoted = len(text) >= 2 and text.startswith('"') and text.endswith('"')
+    if (
+        part != "secondary"
+        and not quoted
+        and text
+        and os.environ.get("YABAI_RELEVANCE", "1") != "0"
+        and relevance.is_latin_query(unicodedata.normalize("NFKC", text))
+    ):
+        latin = _latin_candidates(text, min(50, limit))
+        if latin:
+            seen = {
+                (entry.get("traditional", ""), entry.get("pinyin", ""))
+                for entry in entries
+            }
+            latin = [
+                entry
+                for entry in latin
+                if (entry.get("traditional", ""), entry.get("pinyin", ""))
+                not in seen
+            ]
+            for entry in latin:
+                entry["tier"] = 0
+                # Keep rank_by_category from re-sorting the prepended rows.
+                entry["_relevance"] = True
+                entry["category"] = 1
+            entries = latin + entries
+    return entries, pinyin_match
+
 
 # Trim set for English-word tokens; must match scripts/import_english_words.py.
 _ENGLISH_WORD_STRIP = " \t\r\n!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~“”‘’「」【】《》…·—–~"
@@ -7806,6 +7966,7 @@ def warm_caches() -> None:
     _warm_step("ids_entries", _ids_entries)
     _warm_step("zhuyin", _zhuyin_map)
     _warm_step("definition_grams", _definition_grams)
+    _warm_step("latin_candidates", _latin_candidate_rows)
     # The "*" headword list and the source pinyin rows are not built here: they
     # cost tens of seconds of OpenCC work on a phone. The prebuilt search index
     # answers both, and without it they are built on first use.
