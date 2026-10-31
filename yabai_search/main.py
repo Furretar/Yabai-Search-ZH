@@ -324,8 +324,19 @@ def _normal_search_state(
     return results, fuzzy, pinyin_match, english_match, counters, timings
 
 
+def _is_chinese_wildcard(q: str) -> bool:
+    """True for a "*"/"?" pattern whose literal part contains Han characters."""
+    text = (q or "").strip()
+    if not any(c in text for c in "*?＊？"):
+        return False
+    literal = db.to_simplified(text)
+    for char in ("*", "?", "＊", "？"):
+        literal = literal.replace(char, "")
+    return db.has_cjk(literal)
+
+
 def _wildcard_search_state(
-    q: str, taiwan: bool, selected_dicts: set[str], candidates: list[dict]
+    q: str, taiwan: bool, selected_dicts: set[str]
 ) -> tuple[list[dict], list[dict], bool, bool, dict, dict]:
     """Ranked rows for a Chinese wildcard pattern, ready to cache."""
     timings: dict[str, float] = {}
@@ -336,6 +347,10 @@ def _wildcard_search_state(
             timings.get(name, 0.0) + (time.perf_counter() - at) * 1000, 2
         )
 
+    at = time.perf_counter()
+    with pd.stage("wildcard"):
+        candidates = db.wildcard_candidates(q) or []
+    mark("wildcard", at)
     at = time.perf_counter()
     with pd.stage("expand"):
         results = _expand_variants(candidates)
@@ -1410,18 +1425,7 @@ def api_search(
         ):
             # A wildcard pattern is paged: the first (and only) response is
             # the requested page, with its total for the pager.
-            at = time.perf_counter()
-            with pd.stage("wildcard"):
-                # A Chinese pattern (`?后`, `*后`) returns every row it fits so
-                # the whole list can be ranked before paging. A pinyin pattern
-                # (None here) is still paged inside the database query.
-                candidates = db.wildcard_candidates(q)
-                if candidates is None:
-                    entries, total, pinyin_match = db.wildcard_search(
-                        q, db.ALL_PAGE_SIZE, offset, taiwan=taiwan
-                    )
-            mark("db", at)
-            if candidates is not None:
+            if _is_chinese_wildcard(q):
                 # Same ranking as a normal search: exact matches first, then
                 # words that start with a match, then words that contain one
                 # (each by frequency). Sorting the whole list before slicing
@@ -1436,9 +1440,7 @@ def api_search(
                 )
                 state, rank_cache_status = _rank_cache_get_or_compute(
                     cache_key,
-                    lambda: _wildcard_search_state(
-                        q, taiwan, selected_dicts, candidates
-                    ),
+                    lambda: _wildcard_search_state(q, taiwan, selected_dicts),
                 )
                 (
                     results,
@@ -1464,6 +1466,12 @@ def api_search(
                 with pd.stage("decorate_page"):
                     results = db.decorate_entries(results)
             else:
+                at = time.perf_counter()
+                with pd.stage("wildcard"):
+                    entries, total, pinyin_match = db.wildcard_search(
+                        q, db.ALL_PAGE_SIZE, offset, taiwan=taiwan
+                    )
+                mark("db", at)
                 at = time.perf_counter()
                 with pd.stage("expand"):
                     results = _expand_variants(entries)
