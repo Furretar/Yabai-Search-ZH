@@ -702,6 +702,10 @@ def data_version() -> str:
 # stores them in data/search_index.sqlite, and this module reads them back with
 # plain SQL. On the tablet that replaces ~90 s of pure-Python OpenCC work.
 _SEARCH_INDEX_VERSION = 1
+# The dialect early-out tables have their own version so adding them does not
+# invalidate the headword/pinyin index (which would force a 110 s rebuild on the
+# tablet just to gain a small lookup table).
+_DIALECT_INDEX_VERSION = 1
 
 
 def _search_index_enabled() -> bool:
@@ -813,6 +817,33 @@ def _source_pinyin_index_rows(
     return [tuple(row) for row in rows]
 
 
+def _dialect_index_rows() -> tuple[list[str], list[str]]:
+    """Distinct dialect labels and toneless readings for the early-out tables."""
+    if not WIKTIONARY_DB_PATH.exists():
+        return [], []
+    connection = _connect(WIKTIONARY_DB_PATH)
+    try:
+        labels = [
+            row[0]
+            for row in connection.execute(
+                "SELECT DISTINCT lower(label) FROM readings "
+                "WHERE kind <> 'mandarin' AND label <> ''"
+            )
+        ]
+        pinyin = [
+            row[0]
+            for row in connection.execute(
+                "SELECT DISTINCT pinyin_toneless FROM readings "
+                "WHERE kind <> 'mandarin'"
+            )
+        ]
+    except sqlite3.Error:
+        return [], []
+    finally:
+        connection.close()
+    return labels, pinyin
+
+
 def build_search_index(path: Path | None = None) -> dict[str, int]:
     """Write data/search_index.sqlite from the current source databases.
 
@@ -832,6 +863,7 @@ def build_search_index(path: Path | None = None) -> dict[str, int]:
     heads = _build_all_headwords_list()
     groups = _all_headwords_cache[1] if _all_headwords_cache else []
     pinyin_rows = _source_pinyin_rows()
+    dialect_labels, dialect_pinyin = _dialect_index_rows()
     signature = _search_index_signature()
 
     connection = sqlite3.connect(partial)
@@ -851,6 +883,12 @@ def build_search_index(path: Path | None = None) -> dict[str, int]:
             "word TEXT NOT NULL, simplified TEXT NOT NULL, "
             "marked TEXT NOT NULL, numeric TEXT NOT NULL)"
         )
+        connection.execute(
+            "CREATE TABLE dialect_labels (label TEXT PRIMARY KEY)"
+        )
+        connection.execute(
+            "CREATE TABLE dialect_pinyin (toneless TEXT PRIMARY KEY)"
+        )
         connection.executemany(
             "INSERT INTO headwords (position, word, grp) VALUES (?, ?, ?)",
             ((position, word, groups[position]) for position, word in enumerate(heads)),
@@ -862,6 +900,14 @@ def build_search_index(path: Path | None = None) -> dict[str, int]:
             "(word, simplified, marked, toneless, numeric) VALUES (?, ?, ?, ?, ?)",
             pinyin_rows,
         )
+        connection.executemany(
+            "INSERT INTO dialect_labels (label) VALUES (?)",
+            ((label,) for label in dialect_labels),
+        )
+        connection.executemany(
+            "INSERT INTO dialect_pinyin (toneless) VALUES (?)",
+            ((toneless,) for toneless in dialect_pinyin),
+        )
         connection.execute("CREATE INDEX pinyin_toneless ON pinyin (toneless, id)")
         connection.executemany(
             "INSERT INTO meta (key, value) VALUES (?, ?)",
@@ -870,13 +916,21 @@ def build_search_index(path: Path | None = None) -> dict[str, int]:
                 ("signature", signature),
                 ("headwords", str(len(heads))),
                 ("pinyin", str(len(pinyin_rows))),
+                ("dialect_version", str(_DIALECT_INDEX_VERSION)),
+                ("dialect_labels", str(len(dialect_labels))),
+                ("dialect_pinyin", str(len(dialect_pinyin))),
             ),
         )
         connection.commit()
     finally:
         connection.close()
     partial.replace(target)
-    return {"headwords": len(heads), "pinyin": len(pinyin_rows)}
+    return {
+        "headwords": len(heads),
+        "pinyin": len(pinyin_rows),
+        "dialect_labels": len(dialect_labels),
+        "dialect_pinyin": len(dialect_pinyin),
+    }
 
 
 # sources() is served on / and /about; its COUNT(DISTINCT ...) queries are the
@@ -4690,6 +4744,60 @@ def _dialect_rows(text: str, limit: int) -> tuple[tuple, ...]:
     return _dialect_query(text, limit)
 
 
+_dialect_index_cache: tuple[list[str], set[str]] | None = None
+_dialect_index_loaded = False
+
+
+def _dialect_index() -> tuple[list[str], set[str]] | None:
+    """Load the dialect early-out tables, or None when the index lacks them."""
+    global _dialect_index_cache, _dialect_index_loaded
+    if _dialect_index_loaded:
+        return _dialect_index_cache
+    _dialect_index_loaded = True
+    if not _search_index_ok():
+        return None
+    connection = _connect(SEARCH_INDEX_DB_PATH)
+    try:
+        version = connection.execute(
+            "SELECT value FROM meta WHERE key = 'dialect_version'"
+        ).fetchone()
+        if not version or version[0] != str(_DIALECT_INDEX_VERSION):
+            return None
+        labels = [
+            row[0]
+            for row in connection.execute("SELECT label FROM dialect_labels")
+        ]
+        pinyin = {
+            row[0]
+            for row in connection.execute("SELECT toneless FROM dialect_pinyin")
+        }
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    _dialect_index_cache = (labels, pinyin)
+    return _dialect_index_cache
+
+
+def _dialect_early_out(text: str) -> bool:
+    """True when the index proves the dialect scan would return no rows."""
+    index = _dialect_index()
+    if index is None:
+        return False
+    lowered = text.lower()
+    # _like_pattern treats all of these specially; do not try to reason about
+    # wildcard queries here.
+    if any(char in lowered for char in "?*%_\\＊？"):
+        return False
+    labels, pinyin = index
+    if any(lowered in label for label in labels):
+        return False
+    letters = to_toneless(text)
+    if letters and letters in pinyin:
+        return False
+    return True
+
+
 def dialect_entries(query: str, limit: int | None = None) -> list[dict]:
     """Words whose Wiktionary dialect reading label or reading matches `query`.
 
@@ -4708,6 +4816,11 @@ def dialect_entries(query: str, limit: int | None = None) -> list[dict]:
     if limit is None:
         limit = _cap(200)
     if not WIKTIONARY_DB_PATH.exists():
+        return []
+    if (
+        os.environ.get("YABAI_DIALECT_INDEX", "1") != "0"
+        and _dialect_early_out(text)
+    ):
         return []
     if os.environ.get("YABAI_DIALECT_CACHE", "1") == "0":
         rows = _dialect_query(text, limit)

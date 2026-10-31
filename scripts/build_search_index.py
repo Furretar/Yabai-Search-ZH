@@ -43,7 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     elapsed = time.perf_counter() - started
     print(
         f"{args.path}: {counts['headwords']} headwords, "
-        f"{counts['pinyin']} pinyin rows in {elapsed:.1f} s",
+        f"{counts['pinyin']} pinyin rows, "
+        f"{counts.get('dialect_labels', 0)} dialect labels, "
+        f"{counts.get('dialect_pinyin', 0)} dialect readings in {elapsed:.1f} s",
         flush=True,
     )
     return 0

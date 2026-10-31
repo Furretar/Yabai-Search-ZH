@@ -25,6 +25,8 @@ def index_file(tmp_path_factory):
     counts = db.build_search_index(path)
     assert counts["headwords"] > 100_000
     assert counts["pinyin"] > 10_000
+    assert counts["dialect_labels"] > 0
+    assert counts["dialect_pinyin"] > 0
     return path
 
 
@@ -32,8 +34,12 @@ def index_file(tmp_path_factory):
 def _reset_index_cache():
     """The readiness answer and the loaded headword list are process globals."""
     db._search_index_ok_cache = None
+    db._dialect_index_cache = None
+    db._dialect_index_loaded = False
     yield
     db._search_index_ok_cache = None
+    db._dialect_index_cache = None
+    db._dialect_index_loaded = False
 
 
 def _use_index(monkeypatch, path):
@@ -121,3 +127,29 @@ def test_index_disabled_by_environment(index_file, monkeypatch):
     monkeypatch.setenv("YABAI_SEARCH_INDEX", "0")
     assert db._search_index_ok() is False
     assert db._load_headwords_from_index() is None
+
+
+def test_dialect_tables_match_the_source(index_file, monkeypatch):
+    """The index carries the label and reading sets the scan uses."""
+    _use_index(monkeypatch, index_file)
+    labels, pinyin = db._dialect_index()
+    expected_labels, expected_pinyin = db._dialect_index_rows()
+    assert labels == expected_labels
+    assert pinyin == set(expected_pinyin)
+
+
+def test_dialect_early_out_never_hides_rows(index_file, monkeypatch):
+    """When the index says "no rows", the real scan must agree."""
+    _use_index(monkeypatch, index_file)
+    db._dialect_index_loaded = False
+    index = db._dialect_index()
+    assert index is not None
+    labels, pinyin = index
+    queries = list(labels[:30])
+    queries.extend(label[:3] for label in labels[:20] if len(label) >= 3)
+    queries.extend(sorted(pinyin)[:30])
+    queries.extend(["zzzz", "qqqq", "xyzzy", "notalabel", "abc"])
+    for query in queries:
+        rows = db._dialect_query(query, 200)
+        if db._dialect_early_out(query):
+            assert rows == (), query
