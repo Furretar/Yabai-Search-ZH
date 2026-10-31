@@ -415,7 +415,7 @@ def test_zhuyin_conversion_skips_dialect_readings():
     assert "isPinyinSyllable(raw)" in js
     assert 'kind === "latin"' in js
     assert '["m", "n", "ng", "hm", "hng"].includes(base)' in js
-    assert "/^[A-Z]$/.test(raw)" in js
+    assert "/^[A-ZÜ]$/.test(raw)" in js
     # Dialect readings still pass allowTones=false.
     assert "allowTones: !entry.pinyin_no_tone" in js
     assert "!entry.pinyin_no_tone" in js

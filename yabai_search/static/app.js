@@ -726,7 +726,7 @@ function phoneticTokens(syllables, { allowTones = true } = {}) {
         if (!allowTones) {
             return { text: raw, kind: "latin" };
         }
-        if (/^[A-Z]$/.test(raw)) {
+        if (/^[A-ZÜ]$/.test(raw)) {
             return { text: raw, kind: "latin" };
         }
         const base = plainSyllable(raw);
