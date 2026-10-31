@@ -194,6 +194,7 @@ TAIWAN_DB_PATH = DATA_DIR / "taiwan_readings.sqlite"
 # scripts/import_wiktionary.py.
 WIKTIONARY_DB_PATH = DATA_DIR / "wiktionary.sqlite"
 SOURCE_GLOSS_DB_PATH = DATA_DIR / "source_gloss.sqlite"
+SENSE_COUNTS_DB_PATH = DATA_DIR / "sense_counts.sqlite"
 _source_gloss_ok_cache: bool | None = None
 HEAD_GRAMS_DB_PATH = DATA_DIR / "head_grams.sqlite"
 _head_grams_ok_cache: bool | None = None
@@ -1922,6 +1923,128 @@ def _set_variant_fields(entries: list[dict], form_rows_all: list[tuple]) -> list
     return entries
 
 
+_SENSE_COUNTS_VERSION = 1
+_sense_counts_ok_cache: bool | None = None
+
+
+def _sense_counts_ok() -> bool:
+    """True when sense_counts.sqlite was built from the current CEDICT file."""
+    global _sense_counts_ok_cache
+    if _sense_counts_ok_cache is not None:
+        return _sense_counts_ok_cache
+    if os.environ.get("YABAI_SENSE_COUNTS", "1") == "0":
+        _sense_counts_ok_cache = False
+        return False
+    if not SENSE_COUNTS_DB_PATH.exists():
+        _sense_counts_ok_cache = False
+        return False
+    connection = _connect(SENSE_COUNTS_DB_PATH)
+    try:
+        version = connection.execute(
+            "SELECT value FROM meta WHERE key = 'version'"
+        ).fetchone()
+        signature = connection.execute(
+            "SELECT value FROM meta WHERE key = 'signature'"
+        ).fetchone()
+    except sqlite3.Error:
+        version = signature = None
+    finally:
+        connection.close()
+    _sense_counts_ok_cache = (
+        bool(version)
+        and version[0] == str(_SENSE_COUNTS_VERSION)
+        and bool(signature)
+        and signature[0] == _file_change_stamp(DB_PATH)
+    )
+    return _sense_counts_ok_cache
+
+
+def build_sense_counts(
+    path: Path | None = None, cedict_path: Path | None = None
+) -> dict[str, int]:
+    """Write sense_counts.sqlite from the current CEDICT senses table.
+
+    Stores both counts the app needs: the filtered count used by
+    `_cedict_reading_counts` (blank and cross-reference rows excluded) and the
+    raw count used by lookup's ORDER BY (only cross-references excluded).
+    """
+    target = Path(path) if path is not None else SENSE_COUNTS_DB_PATH
+    source = Path(cedict_path) if cedict_path is not None else DB_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(target.name + ".part")
+    if partial.exists():
+        partial.unlink()
+
+    connection = _connect(source)
+    try:
+        rows = connection.execute(
+            "SELECT word, reading, "
+            "SUM(CASE WHEN text IS NOT NULL AND TRIM(text) <> '' "
+            f"AND {_XREF_SQL} THEN 1 ELSE 0 END), "
+            f"SUM(CASE WHEN {_XREF_SQL} THEN 1 ELSE 0 END) "
+            "FROM senses GROUP BY word, reading"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    stored = [
+        (word, reading or "", min(count, _MAX_DEFS), raw)
+        for word, reading, count, raw in rows
+        if count or raw
+    ]
+    writer = sqlite3.connect(partial)
+    try:
+        writer.execute("PRAGMA journal_mode=OFF")
+        writer.execute("PRAGMA synchronous=OFF")
+        writer.execute(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        writer.execute(
+            "CREATE TABLE senses ("
+            "word TEXT NOT NULL, reading TEXT NOT NULL, "
+            "count INTEGER NOT NULL, raw_count INTEGER NOT NULL, "
+            "PRIMARY KEY (word, reading))"
+        )
+        writer.executemany(
+            "INSERT INTO senses (word, reading, count, raw_count) "
+            "VALUES (?, ?, ?, ?)",
+            stored,
+        )
+        writer.executemany(
+            "INSERT INTO meta (key, value) VALUES (?, ?)",
+            (
+                ("version", str(_SENSE_COUNTS_VERSION)),
+                ("signature", _file_change_stamp(source)),
+                ("rows", str(len(stored))),
+            ),
+        )
+        writer.commit()
+    finally:
+        writer.close()
+    partial.replace(target)
+    return {"rows": len(stored)}
+
+
+def _raw_sense_counts(words: list[str]) -> dict[tuple[str, str], int]:
+    """Raw lookup-order counts for these simplified words, from the small DB."""
+    if not words or not _sense_counts_ok():
+        return {}
+    counts: dict[tuple[str, str], int] = {}
+    connection = _connect(SENSE_COUNTS_DB_PATH)
+    try:
+        for chunk in _chunks(sorted(set(words))):
+            placeholders = ",".join("?" * len(chunk))
+            for word, reading, raw in connection.execute(
+                "SELECT word, reading, raw_count FROM senses "
+                f"WHERE word IN ({placeholders})",
+                tuple(chunk),
+            ):
+                counts[(word, reading or "")] = raw
+    finally:
+        connection.close()
+    return counts
+
+
 def _cedict_reading_counts(words: list[str]) -> dict[str, dict[str, int]]:
     """Count CEDICT senses per (headword, reading), capped like the definitions.
 
@@ -1930,8 +2053,23 @@ def _cedict_reading_counts(words: list[str]) -> dict[str, dict[str, int]]:
     """
     if not words:
         return {}
-    connection = connect()
     counts: dict[str, dict[str, int]] = {}
+    if _sense_counts_ok():
+        connection = _connect(SENSE_COUNTS_DB_PATH)
+        try:
+            for chunk in _chunks(words):
+                placeholders = ",".join("?" * len(chunk))
+                rows = connection.execute(
+                    "SELECT word, reading, count FROM senses "
+                    f"WHERE word IN ({placeholders})",
+                    tuple(chunk),
+                ).fetchall()
+                for word, reading, count in rows:
+                    counts.setdefault(word, {})[reading or ""] = count
+        finally:
+            connection.close()
+        return counts
+    connection = connect()
     try:
         for chunk in _chunks(words):
             placeholders = ",".join("?" * len(chunk))
@@ -2745,32 +2883,63 @@ def _lookup_uncached(words: list[str]) -> dict[str, list[dict]]:
     simplified and traditional forms are both requested) is shared between
     them; callers copy before mutating, as they already did for lookup().
     """
-    targets = set(words)
     result: dict[str, list[dict]] = {word: [] for word in words}
+    use_counts = _sense_counts_ok()
     for start in range(0, len(words), _LOOKUP_BATCH_WORDS):
         batch = words[start : start + _LOOKUP_BATCH_WORDS]
+        batch_set = set(batch)
         placeholders = ",".join("?" * len(batch))
         params = tuple(batch) * 2
-        connection = connect()
-        try:
-            rows = connection.execute(
-                "SELECT simplified, traditional, pinyin, english, english_normalized "
-                f"FROM entries WHERE simplified IN ({placeholders}) "
+        columns = (
+            "simplified, traditional, pinyin, english, english_normalized, "
+            "entries.id AS _id"
+        )
+        if use_counts:
+            sql = (
+                f"SELECT {columns} FROM entries "
+                f"WHERE simplified IN ({placeholders}) "
+                f"OR traditional IN ({placeholders})"
+            )
+        else:
+            sql = (
+                f"SELECT {columns} FROM entries "
+                f"WHERE simplified IN ({placeholders}) "
                 f"OR traditional IN ({placeholders}) "
                 "ORDER BY (SELECT COUNT(*) FROM senses s "
                 "          WHERE s.word = entries.simplified "
                 "          AND s.reading = entries.pinyin "
                 f"          AND {_XREF_SQL}) DESC, "
-                "entries.id",
-                params,
-            ).fetchall()
+                "entries.id"
+            )
+        connection = connect()
+        try:
+            rows = [dict(row) for row in connection.execute(sql, params).fetchall()]
         finally:
             connection.close()
-        decorated = _decorate([dict(row) for row in rows])
-        for entry in decorated:
-            for key in {entry["simplified"], entry["traditional"]}:
-                if key in targets:
-                    result[key].append(entry)
+        batch_rows: dict[str, list[dict]] = {word: [] for word in batch}
+        for row in rows:
+            for key in {row["simplified"], row["traditional"]}:
+                if key in batch_set:
+                    batch_rows[key].append(row)
+        if use_counts:
+            raw_counts = _raw_sense_counts(
+                [row["simplified"] for row in rows if row.get("simplified")]
+            )
+            for word in batch:
+                batch_rows[word].sort(
+                    key=lambda row: (
+                        -raw_counts.get(
+                            (row["simplified"], row["pinyin"] or ""), 0
+                        ),
+                        row["_id"],
+                    )
+                )
+        unique = {id(row): row for word in batch for row in batch_rows[word]}
+        for row in unique.values():
+            row.pop("_id", None)
+        _decorate(list(unique.values()))
+        for word in batch:
+            result[word] = batch_rows[word]
     for word in words:
         _preferred_sort(word, result[word])
     return result

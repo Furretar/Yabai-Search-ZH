@@ -296,6 +296,41 @@ def test_preferred_reading_for_mei():
     assert db.lookup("沒")[0]["pinyin"] == "méi"
 
 
+def test_sense_counts_match_the_live_queries(monkeypatch):
+    """The precomputed counts produce the same lookup order and counts."""
+    if not db.SENSE_COUNTS_DB_PATH.exists():
+        pytest.skip("sense_counts.sqlite not built")
+    words = ["乾", "干", "只", "隻", "了", "瞭", "没", "沒", "檔案"]
+    try:
+        db._sense_counts_ok_cache = None
+        db._lookup_cache.clear()
+        precomputed = {word: db.lookup(word) for word in words}
+        precomputed_counts = db._cedict_reading_counts(words)
+
+        monkeypatch.setenv("YABAI_SENSE_COUNTS", "0")
+        db._sense_counts_ok_cache = None
+        db._lookup_cache.clear()
+        live = {word: db.lookup(word) for word in words}
+        live_counts = db._cedict_reading_counts(words)
+
+        assert precomputed == live
+        assert precomputed_counts == live_counts
+    finally:
+        db._sense_counts_ok_cache = None
+        db._lookup_cache.clear()
+
+
+def test_sense_counts_fall_back_when_the_file_is_missing(monkeypatch, tmp_path):
+    """A missing sense_counts.sqlite must not break lookup."""
+    monkeypatch.setattr(db, "SENSE_COUNTS_DB_PATH", tmp_path / "missing.sqlite")
+    db._sense_counts_ok_cache = None
+    try:
+        assert db._sense_counts_ok() is False
+        assert db.lookup("没")
+    finally:
+        db._sense_counts_ok_cache = None
+
+
 def test_lookup_many_matches_lookup_for_each_word():
     """The batched path returns the same rows, in the same order."""
     words = ["没", "沒", "檔案", "了", "乾", "干", "只", "隻"]

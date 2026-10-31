@@ -49,7 +49,7 @@ CREATE TABLE freq (
     rank        INTEGER NOT NULL,  -- row number in the combined list, 1 = most frequent
     count       INTEGER NOT NULL,  -- occurrences in the 20 GB sample
     per_million REAL NOT NULL      -- occurrences per million tokens
-);
+) WITHOUT ROWID;
 CREATE INDEX idx_freq_rank ON freq(rank);
 DROP TABLE IF EXISTS freq_fts;
 CREATE VIRTUAL TABLE freq_fts USING fts5(

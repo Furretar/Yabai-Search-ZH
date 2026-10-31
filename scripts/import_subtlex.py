@@ -40,7 +40,7 @@ CREATE TABLE freq (
     rank        INTEGER NOT NULL,  -- frequency rank, 1 = most frequent
     count       INTEGER NOT NULL,  -- occurrences in the subtitle corpus
     per_million REAL               -- occurrences per million words
-);
+) WITHOUT ROWID;
 
 CREATE INDEX idx_freq_rank ON freq(rank);
 

@@ -27,6 +27,7 @@ def _make_source(path: Path) -> None:
     connection.executescript(
         """
         CREATE TABLE entries (id INTEGER PRIMARY KEY, word TEXT, gloss TEXT);
+        CREATE TABLE senses (word TEXT, reading TEXT, text TEXT);
         CREATE VIRTUAL TABLE entries_fts USING fts5(
             gloss, content='entries', content_rowid='id'
         );
@@ -41,6 +42,10 @@ def _make_source(path: Path) -> None:
     connection.executemany(
         "INSERT INTO entries (word, gloss) VALUES (?, ?)",
         [(word, f"a {word} gloss") for word in WORDS],
+    )
+    connection.executemany(
+        "INSERT INTO senses (word, reading, text) VALUES (?, ?, ?)",
+        [(word, "reading", f"sense of {word}") for word in WORDS],
     )
     connection.executemany(
         "INSERT INTO word_fts (word) VALUES (?)", [(word,) for word in WORDS]
@@ -104,9 +109,20 @@ def test_build_all_skips_derived_and_empty_databases(tmp_path: Path) -> None:
 
     built = build_all(data, tmp_path / "dummy", rows=2)
 
-    assert set(built) == {"cedict.sqlite", "head_grams.sqlite"}
+    assert set(built) == {
+        "cedict.sqlite",
+        "head_grams.sqlite",
+        "sense_counts.sqlite",
+    }
     assert (tmp_path / "dummy" / "cedict.sqlite").is_file()
+    assert (tmp_path / "dummy" / "sense_counts.sqlite").is_file()
     assert not (tmp_path / "dummy" / "search_index.sqlite").exists()
+    # The sense counts are rebuilt from the dummy CEDICT, not copied stale.
+    counts = sqlite3.connect(tmp_path / "dummy" / "sense_counts.sqlite")
+    try:
+        assert counts.execute("SELECT COUNT(*) FROM senses").fetchone()[0] == 2
+    finally:
+        counts.close()
     # The copy is stamped with the dummy CEDICT, so the app sees it as current
     # and uses the fast path instead of falling back to a live scan.
     stub = sqlite3.connect(tmp_path / "dummy" / "head_grams.sqlite")

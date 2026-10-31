@@ -26,13 +26,14 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 DEFAULT_SOURCE = PROJECT_ROOT / "data"
 DEFAULT_OUTPUT = DEFAULT_SOURCE / "dummy"
 
-# search_index.sqlite is derived from the other databases. Copying it would
-# leave a stale index whose signature no longer matches, so rebuild it with
-# scripts/build_search_index.py after this script instead.
-DERIVED_DATABASES = {"search_index.sqlite"}
+# These databases are derived from the others. Copying them would leave a stale
+# signature, so rebuild them from the dummy sources instead (the search index
+# with scripts/build_search_index.py, the sense counts below).
+DERIVED_DATABASES = {"search_index.sqlite", "sense_counts.sqlite"}
 
 # fts5 keeps its index in these shadow tables. They belong to the virtual table
 # and are recreated by it, so they must never be copied by hand.
@@ -199,6 +200,20 @@ def build_all(
         size_kb = target.stat().st_size / 1024
         print(f"{source.name:28} {sum(counts.values()):6} rows {size_kb:7.0f} KB")
     refresh_signatures(output_dir)
+    # Build the sense-count table from the dummy CEDICT, so it agrees with the
+    # copied rows instead of carrying the real file's counts.
+    cedict = output_dir / "cedict.sqlite"
+    if cedict.is_file():
+        from yabai_search import db as app_db
+
+        counts = app_db.build_sense_counts(
+            output_dir / "sense_counts.sqlite", cedict_path=cedict
+        )
+        built["sense_counts.sqlite"] = {"senses": counts["rows"]}
+        print(
+            f"{'sense_counts.sqlite':28} {counts['rows']:6} rows"
+            f" { (output_dir / 'sense_counts.sqlite').stat().st_size / 1024:7.0f} KB"
+        )
     return built
 
 
