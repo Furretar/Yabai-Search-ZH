@@ -1147,6 +1147,11 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     box-shadow: 0 0 9px 1px var(--tier-color, var(--entry-divider));
 }
 
+/* An exact definition match: ranked above the other definition matches. */
+.entry-separator[data-tier="0"] {
+    --tier-color: #f59e0b;
+}
+
 .entry-separator[data-tier="1"] {
     --tier-color: var(--tone1);
 }

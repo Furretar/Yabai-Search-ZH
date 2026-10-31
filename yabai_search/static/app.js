@@ -2795,6 +2795,8 @@ function entryTier(entry, query) {
     // The server already ranked this row; use its tier so the page cannot
     // disagree with the order it was sent in.
     if (Number.isInteger(entry.tier)) return entry.tier;
+    // A definition that exactly equals the query is its own tier.
+    if (entry.definition_exact) return 0;
     // A dialect-only reading is tier 4 even if it happens to match the query.
     if (entry.pinyin_label || entry.pinyin_no_tone) return 4;
     // A bare "*" fits every headword, so every ordinary result is tier 1.
@@ -2862,7 +2864,7 @@ let lastResultTier = 0;
 function addEntrySeparator(tier) {
     const separator = document.createElement("div");
     separator.className = "entry-separator";
-    separator.dataset.tier = String(tier || 1);
+    separator.dataset.tier = String(Number.isInteger(tier) ? tier : 1);
     separator.setAttribute("aria-hidden", "true");
     results.append(separator);
 }
@@ -2871,8 +2873,11 @@ function addEntrySeparator(tier) {
 // between rows. With no results it stays neutral.
 function updateFooterSeparator(tier) {
     if (!footerSeparator) return;
-    if (tier > 0) footerSeparator.dataset.tier = String(tier);
-    else delete footerSeparator.dataset.tier;
+    if (Number.isInteger(tier) && tier >= 0) {
+        footerSeparator.dataset.tier = String(tier);
+    } else {
+        delete footerSeparator.dataset.tier;
+    }
 }
 
 // Build the results list from the array of entries returned by the API.
@@ -2947,7 +2952,7 @@ function render(entries, query) {
         // The separator below a row shows that row's tier. Using the highest
         // tier so far breaks at the category boundary, where the tier can go
         // back down (category 1 tier 3 -> category 2 tier 1).
-        if (hasEntry) addEntrySeparator(lastTier || tier);
+        if (hasEntry) addEntrySeparator(lastTier);
         results.append(entryRow(entry));
         hasEntry = true;
         lastTier = tier;

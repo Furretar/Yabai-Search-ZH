@@ -318,7 +318,13 @@ def _normal_search_state(
     if selected_dicts:
         at = time.perf_counter()
         with pd.stage("category_rank"):
-            results = db.rank_by_category(results, selected_dicts, q, taiwan)
+            results = db.rank_by_category(
+                results,
+                selected_dicts,
+                q,
+                taiwan,
+                definition_search=not pinyin_match,
+            )
         mark("category_rank", at)
         counters["selected_dicts"] = ",".join(sorted(selected_dicts))
     return results, fuzzy, pinyin_match, english_match, counters, timings
@@ -1491,7 +1497,13 @@ def api_search(
             # Rank and page the preview by whole groups too, so its rows are
             # already in their final order and spelling when they appear.
             if selected_dicts:
-                results = db.rank_by_category(results, selected_dicts, q, taiwan)
+                results = db.rank_by_category(
+                    results,
+                    selected_dicts,
+                    q,
+                    taiwan,
+                    definition_search=not pinyin_match,
+                )
                 counters["selected_dicts"] = ",".join(sorted(selected_dicts))
             if os.environ.get("YABAI_SERVER_ORDER", "1") != "0":
                 results, _ = db.page_groups(results, 0, limit)

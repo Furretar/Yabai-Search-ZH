@@ -1923,7 +1923,7 @@ def _set_variant_fields(entries: list[dict], form_rows_all: list[tuple]) -> list
     return entries
 
 
-_SENSE_COUNTS_VERSION = 1
+_SENSE_COUNTS_VERSION = 2
 _sense_counts_ok_cache: bool | None = None
 
 
@@ -1984,6 +1984,10 @@ def build_sense_counts(
             f"SUM(CASE WHEN {_XREF_SQL} THEN 1 ELSE 0 END) "
             "FROM senses GROUP BY word, reading"
         ).fetchall()
+        exact_rows = connection.execute(
+            "SELECT DISTINCT word, text FROM senses "
+            "WHERE text IS NOT NULL AND TRIM(text) <> ''"
+        ).fetchall()
     finally:
         connection.close()
 
@@ -1992,6 +1996,11 @@ def build_sense_counts(
         for word, reading, count, raw in rows
         if count or raw
     ]
+    exact = {
+        (normalize_english(text).strip().lower(), word)
+        for word, text in exact_rows
+        if normalize_english(text).strip()
+    }
     writer = sqlite3.connect(partial)
     try:
         writer.execute("PRAGMA journal_mode=OFF")
@@ -2005,10 +2014,19 @@ def build_sense_counts(
             "count INTEGER NOT NULL, raw_count INTEGER NOT NULL, "
             "PRIMARY KEY (word, reading))"
         )
+        writer.execute(
+            "CREATE TABLE exact_senses ("
+            "text TEXT NOT NULL, word TEXT NOT NULL, "
+            "PRIMARY KEY (text, word)) WITHOUT ROWID"
+        )
         writer.executemany(
             "INSERT INTO senses (word, reading, count, raw_count) "
             "VALUES (?, ?, ?, ?)",
             stored,
+        )
+        writer.executemany(
+            "INSERT INTO exact_senses (text, word) VALUES (?, ?)",
+            sorted(exact),
         )
         writer.executemany(
             "INSERT INTO meta (key, value) VALUES (?, ?)",
@@ -2016,13 +2034,37 @@ def build_sense_counts(
                 ("version", str(_SENSE_COUNTS_VERSION)),
                 ("signature", _file_change_stamp(source)),
                 ("rows", str(len(stored))),
+                ("exact_senses", str(len(exact))),
             ),
         )
         writer.commit()
     finally:
         writer.close()
     partial.replace(target)
-    return {"rows": len(stored)}
+    return {"rows": len(stored), "exact_senses": len(exact)}
+
+
+@lru_cache(maxsize=512)
+def _exact_sense_words(query: str) -> set[str]:
+    """Words with a CEDICT sense whose normalized text equals `query`."""
+    if not _sense_counts_ok():
+        return set()
+    text = (query or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        text = text[1:-1].strip()
+    text = normalize_english(text).strip().lower()
+    if not text:
+        return set()
+    connection = _connect(SENSE_COUNTS_DB_PATH)
+    try:
+        rows = connection.execute(
+            "SELECT word FROM exact_senses WHERE text = ?", (text,)
+        ).fetchall()
+    except sqlite3.Error:
+        return set()
+    finally:
+        connection.close()
+    return {row[0] for row in rows}
 
 
 def _raw_sense_counts(words: list[str]) -> dict[tuple[str, str], int]:
@@ -5836,6 +5878,7 @@ def rank_by_category(
     selected: set[str],
     query: str = "",
     taiwan: bool = False,
+    definition_search: bool = False,
 ) -> list[dict]:
     """Order a whole result list the way the page orders one page, across all pages.
 
@@ -5906,6 +5949,14 @@ def rank_by_category(
 
     # The query side is the same for every row; compute it once.
     text, is_cjk, wildcard, client_key = _match_context(query)
+    # An English definition search promotes rows whose own sense is exactly the
+    # query. Tier 0 sits below exact/prefix headword matches (tiers 1-2) but
+    # above the other definition matches (tier 3).
+    exact_words = (
+        _exact_sense_words(query)
+        if definition_search and not is_cjk
+        else set()
+    )
 
     def key(index: int) -> tuple[int, int, int]:
         entry = entries[index]
@@ -5925,6 +5976,8 @@ def rank_by_category(
                 )
                 or 3
             )
+        if tier == 3 and entry.get("simplified") in exact_words:
+            tier = 0
         # Category is the primary key, so it always beats the tier.
         if category1[index]:
             category = 1
@@ -5950,6 +6003,7 @@ def rank_by_category(
         # (and cannot disagree with the server order).
         entry["category"] = category
         entry["tier"] = tier
+        entry["definition_exact"] = tier == 0
         ranked.append(entry)
     return ranked
 
