@@ -149,6 +149,21 @@ def test_search_results_are_identical_with_the_rank_cache_off(client, monkeypatc
         assert on[key] == off[key]
 
 
+def test_wildcard_results_are_identical_with_the_rank_cache_off(
+    client, monkeypatch
+):
+    """The Chinese-wildcard cache also changes timing only."""
+    from yabai_search import main as app_main
+
+    app_main._rank_cache.clear()
+    params = {"q": "?后", "limit": 25, "offset": 0}
+    on = client.get("/api/search", params=params).json()
+    monkeypatch.setattr(app_main, "_RANK_CACHE_ENABLED", False)
+    off = client.get("/api/search", params=params).json()
+    for key in ("results", "fuzzy", "total", "pinyin_match"):
+        assert on[key] == off[key]
+
+
 def test_search_api_is_cacheable_only_with_a_data_version(client):
     """A `dv` request may be cached; the same request without it may not."""
     response = client.get("/api/search", params={"q": "档案", "limit": 25, "dv": "test"})
