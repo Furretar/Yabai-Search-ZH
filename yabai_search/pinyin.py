@@ -126,6 +126,29 @@ def to_toneless(pinyin: str) -> str:
     return text
 
 
+def is_standard_pinyin(pinyin: str) -> bool:
+    """True unless the reading spells a Latin word out as single letters.
+
+    CEDICT has a few entries that write a Latin word as separate one-letter
+    "syllables" (``word姐`` is ``w o r d jiě``). That must not make a plain
+    English query look like a pinyin search. Legitimate readings can still
+    contain a single-letter token (``R`` in a name, an erhua ``r``), so only a
+    run of three or more one-letter tokens is treated as non-pinyin.
+    """
+    tokens = (pinyin or "").split()
+    if not tokens:
+        return False
+    run = 0
+    for token in tokens:
+        if len(to_toneless(token)) == 1:
+            run += 1
+            if run >= 3:
+                return False
+        else:
+            run = 0
+    return True
+
+
 def split_syllables(chunk: str, syllables: set[str]) -> list[str]:
     """Split one chunk into the fewest valid pinyin syllables.
 

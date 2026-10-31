@@ -29,6 +29,7 @@ from yabai_search.overrides import (
 )
 from yabai_search.pinyin import (
     _MARK_TO_BASE,
+    is_standard_pinyin,
     numeric_to_marked,
     split_pinyin,
     to_numeric,
@@ -7111,6 +7112,11 @@ def search(
         for row in rows:
             if not has_cjk(row["simplified"]):
                 continue
+            # Do not let a Latin word spelled out as pinyin ("w o r d jiě")
+            # hijack an English query. If no standard reading remains, the
+            # search falls through to the English-definition path.
+            if not is_standard_pinyin(row["pinyin"]):
+                continue
             # A pinned segmentation must match the entry's own syllable split.
             if len(segments) > 1 and not wildcard:
                 syllables = [to_toneless(part) for part in row["pinyin"].split()]
@@ -7127,6 +7133,11 @@ def search(
                 source_rows = _source_pinyin_entries(
                     query, limit=limit, taiwan=taiwan
                 )
+        source_rows = [
+            entry
+            for entry in source_rows
+            if is_standard_pinyin(entry.get("pinyin", ""))
+        ]
         if entries or source_rows:
             if part == "primary":
                 return decorate(entries), True

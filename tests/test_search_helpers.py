@@ -331,6 +331,19 @@ def test_sense_counts_fall_back_when_the_file_is_missing(monkeypatch, tmp_path):
         db._sense_counts_ok_cache = None
 
 
+def test_non_standard_pinyin_falls_through_to_definitions():
+    """A Latin word spelled out as pinyin must not hijack an English query."""
+    entries, pinyin_match = db.search("word", limit=100, part="all", hydrate=0)
+    assert not pinyin_match
+    assert entries[0]["simplified"] == "word姐"
+    assert entries[0]["tier"] == 0
+    words = {entry["simplified"] for entry in entries}
+    assert "词汇" in words
+    # A real pinyin query still takes the pinyin path.
+    _entries, pinyin_match = db.search("shan", limit=10, part="all", hydrate=0)
+    assert pinyin_match
+
+
 def test_lookup_many_matches_lookup_for_each_word():
     """The batched path returns the same rows, in the same order."""
     words = ["没", "沒", "檔案", "了", "乾", "干", "只", "隻"]
