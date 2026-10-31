@@ -1274,6 +1274,12 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     gap: 2px;
 }
 
+/* A readable character before the IDS part, e.g. 搞 in 搞⿰车匡. */
+.ids-prefix {
+    display: inline-block;
+    line-height: 1;
+}
+
 /* The glyph is a mask filled with the current colour, so it can be tone-coloured
    (and works on both light and dark pages). */
 .ids-glyph {

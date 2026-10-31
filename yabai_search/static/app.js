@@ -1792,6 +1792,16 @@ function idsHeadword(text, reading, images, entry) {
     }
     const imageRow = document.createElement("span");
     imageRow.className = "ids-images";
+    // Some headwords mix a normal character with an IDS part (搞 + ⿰车匡);
+    // the Commons image only covers the IDS part, so keep the readable prefix.
+    const idsStart = text.search(/[\u2ff0-\u2fff]/);
+    const prefix = idsStart > 0 ? text.slice(0, idsStart) : "";
+    if (prefix) {
+        const prefixNode = document.createElement("span");
+        prefixNode.className = "ids-prefix";
+        prefixNode.textContent = prefix;
+        imageRow.append(prefixNode);
+    }
     images.forEach((url, i) => {
         const glyph = document.createElement("span");
         glyph.className = "ids-glyph";

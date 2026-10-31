@@ -421,3 +421,12 @@ def test_zhuyin_conversion_skips_dialect_readings():
     assert "!entry.pinyin_no_tone" in js
     # The old all-or-nothing guard is gone.
     assert "syllables.every((s) => isPinyinSyllable(s))" not in js
+
+
+def test_ids_headword_keeps_readable_prefix():
+    """An image only covers the IDS part; a normal prefix stays as text."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
+    assert "text.search(/[\\u2ff0-\\u2fff]/)" in js
+    assert 'prefixNode.className = "ids-prefix"' in js
+    assert ".ids-prefix" in css

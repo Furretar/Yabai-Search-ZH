@@ -45,6 +45,29 @@ IDS_IMAGES: dict[str, str] = {
     "⿰訁𪢱": "/static/ids_images/ids_c8f6c4dd873b.png",
     "⿱寶⿰寶寶": "/static/ids_images/ids_0d0f1a1c7626.png",
     "⿱𡩧⿺進⿰貝招": "/static/ids_images/ids_7567c4aaf284.png",
+    # More Commons headword images, scraped the same way. Simplified and
+    # traditional spellings share an image where Wiktionary has only one page.
+    "⿰讠旦": "/static/ids_images/ids_64ee5d2784e5.png",
+    "⿰贝专": "/static/ids_images/ids_2f40c7943657.png",
+    "⿰车匡": "/static/ids_images/ids_7de0dd13289a.png",
+    "搞⿰车匡": "/static/ids_images/ids_7b5e1ecec5eb.png",
+    "⿰车卜": "/static/ids_images/ids_0c0c9fa7a236.png",
+    "⿰阝单": "/static/ids_images/ids_5633968c62db.png",
+    "⿰麦方": "/static/ids_images/ids_b82252ebbbfa.png",
+    "⿱⺈⿻⿻⿵冂⿰一一⿺乚丨⿻⿱ココ弖": "/static/ids_images/ids_c28a58fafeb5.png",
+    "⿱⿻丅⿱冖⿰丶丶令": "/static/ids_images/ids_13e77ab622b2.png",
+    "⿱⿻丅⿱冖⿰丶丶双": "/static/ids_images/ids_43c1e9e28a3b.png",
+    "⿱⿻丅⿱冖⿰丶丶巴": "/static/ids_images/ids_45264f56de1c.png",
+    "⿳⿱⿴𦥑⿵冂〒冖⿰金⿷⿼己⿼コ丨⿷匚丨火": "/static/ids_images/ids_e1d880cfec03.png",
+    "⿳宀珎⿺进⿰贝招": "/static/ids_images/ids_6cefca80597e.png",
+    "⿳宀珎⿺進⿰貝招": "/static/ids_images/ids_6cefca80597e.png",
+    "⿴⿻弓𠃊⿴囗⿻⿰丿丿丶": "/static/ids_images/ids_98d3da6883cf.png",
+    "⿺⻍⿳⿻山昍⿰月⿱⿲糸言糸⿰长𮪉心": "/static/ids_images/ids_5c1ed04e886f.png",
+    "⿺⻍⿳⿻山昍⿰月⿱⿲糸言糸⿰長𮪉心": "/static/ids_images/ids_5c1ed04e886f.png",
+    "⿺⻍⿳⿻山昍⿰月⿱⿲糸言糸⿰长𮪉心⿺⻍⿳⿻山昍⿰月⿱⿲糸言糸⿰长𮪉心面": "/static/ids_images/ids_227b65c13fdf.png",
+    "⿺⻍⿳⿻山昍⿰月⿱⿲糸言糸⿰長𮪉心⿺⻍⿳⿻山昍⿰月⿱⿲糸言糸⿰長𮪉心麵": "/static/ids_images/ids_227b65c13fdf.png",
+    "⿺辶⿳⿻山昍⿰月⿱亦⿰𲈤长心": "/static/ids_images/ids_f61aa6cb1ef4.png",
+    "⿻屮⿱⿻⿰コ匚一冂": "/static/ids_images/ids_5c278ecec0f7.png",
 }
 
 
