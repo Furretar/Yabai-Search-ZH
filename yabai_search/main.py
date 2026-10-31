@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import copy
 import hashlib
 import ipaddress
 import json
@@ -118,6 +119,236 @@ def _page_layouts_cached(
         while len(_page_layout_cache) > _PAGE_LAYOUT_CACHE_MAX:
             _page_layout_cache.popitem(last=False)
     return simplified, traditional, alt_same
+
+
+# --- Rank cache ------------------------------------------------------------
+# The full ranked list for a query is expensive to rebuild (db.search, variant
+# expansion, dialect merge, category ranking). Cache that whole list and slice
+# it per page; only the page slice is copied and decorated.
+_RANK_CACHE_ROW_BYTES = 2048
+_RANK_CACHE_ENABLED = os.environ.get("YABAI_RANK_CACHE", "1") != "0"
+
+
+def _rank_cache_budget_rows() -> int:
+    """Row budget from MemAvailable, capped at 128 MB (override in MB)."""
+    if not _RANK_CACHE_ENABLED:
+        return 0
+    override = os.environ.get("YABAI_RANK_CACHE_MB")
+    if override:
+        try:
+            mb = float(override)
+        except ValueError:
+            mb = 64.0
+    else:
+        mb = 64.0
+        try:
+            with open("/proc/meminfo", encoding="ascii") as handle:
+                for line in handle:
+                    if line.startswith("MemAvailable:"):
+                        available_kb = int(line.split()[1])
+                        mb = min(128.0, available_kb / 1024.0 * 0.04)
+                        break
+        except (OSError, ValueError):
+            pass
+    return max(0, int(mb * 1024 * 1024 / _RANK_CACHE_ROW_BYTES))
+
+
+_RANK_CACHE_MAX_ROWS = _rank_cache_budget_rows()
+# Lists larger than half the budget are still returned, just not stored.
+_RANK_CACHE_STORE_ROWS = _RANK_CACHE_MAX_ROWS // 2
+_rank_cache: "collections.OrderedDict[tuple, tuple]" = collections.OrderedDict()
+_rank_cache_lock = threading.Lock()
+_rank_cache_events: dict[tuple, threading.Event] = {}
+
+
+def _rank_cache_total_rows_locked() -> int:
+    return sum(len(value[0]) + len(value[1]) for value in _rank_cache.values())
+
+
+def _evict_rank_cache_locked() -> None:
+    total = _rank_cache_total_rows_locked()
+    while total > _RANK_CACHE_MAX_ROWS and _rank_cache:
+        _, value = _rank_cache.popitem(last=False)
+        total -= len(value[0]) + len(value[1])
+
+
+def _rank_cache_get_or_compute(key: tuple, compute):
+    """Return (state, status) with single-flight computation per key.
+
+    Status is "hit", "miss", or "skipped" (cache disabled or budget zero).
+    Identical concurrent requests wait for the leader instead of each running
+    the whole search.
+    """
+    if not _RANK_CACHE_ENABLED or _RANK_CACHE_MAX_ROWS <= 0:
+        return compute(), "skipped"
+    while True:
+        with _rank_cache_lock:
+            hit = _rank_cache.get(key)
+            if hit is not None:
+                _rank_cache.move_to_end(key)
+                return hit, "hit"
+            event = _rank_cache_events.get(key)
+            if event is None:
+                event = threading.Event()
+                _rank_cache_events[key] = event
+                break
+        event.wait()
+    try:
+        value = compute()
+    except BaseException:
+        with _rank_cache_lock:
+            _rank_cache_events.pop(key, None)
+            event.set()
+        raise
+    with _rank_cache_lock:
+        _rank_cache_events.pop(key, None)
+        event.set()
+        rows, fuzzy = value[0], value[1]
+        if len(rows) + len(fuzzy) <= _RANK_CACHE_STORE_ROWS:
+            _rank_cache[key] = value
+            _rank_cache.move_to_end(key)
+            _evict_rank_cache_locked()
+    return value, "miss"
+
+
+def _page_groups_copy(
+    rows: list[dict], offset: int, limit: int
+) -> tuple[list[dict], int]:
+    """Same result as db.page_groups, without mutating the cached rows."""
+    groups = db.group_rows(rows)
+    page = groups[offset : offset + limit]
+    page_rows: list[dict] = []
+    for group in page:
+        key = group[0].get("simplified") or group[0].get("traditional") or ""
+        for row in group:
+            copied = copy.deepcopy(row)
+            copied["group"] = key
+            page_rows.append(copied)
+    return page_rows, len(groups)
+
+
+def _normal_search_state(
+    q: str, limit: int, taiwan: bool, selected_dicts: set[str]
+) -> tuple[list[dict], list[dict], bool, bool, dict, dict]:
+    """Everything a normal search computes before paging, ready to cache."""
+    timings: dict[str, float] = {}
+    counters: dict[str, object] = {}
+
+    def mark(name: str, at: float) -> None:
+        timings[name] = round(
+            timings.get(name, 0.0) + (time.perf_counter() - at) * 1000, 2
+        )
+
+    at = time.perf_counter()
+    with pd.stage("db_search"):
+        entries, pinyin_match = db.search(
+            q, _MAX_NORMAL_RESULTS, taiwan, hydrate=0
+        )
+    mark("db", at)
+    at = time.perf_counter()
+    with pd.stage("expand"):
+        results = _expand_variants(entries)
+    mark("expand", at)
+    counters["raw"] = len(entries)
+    counters["expanded"] = len(results)
+    fuzzy: list[dict] = []
+    variant = db.tonal_variant(q)
+    if variant and not results:
+        at = time.perf_counter()
+        with pd.stage("fuzzy_db"):
+            fuzzy, _ = db.search(variant, limit, taiwan)
+        mark("fuzzy_db", at)
+    elif variant and _has_explicit_tones(q):
+        seen = {
+            (entry.get("traditional"), entry.get("simplified"))
+            for entry in results
+        }
+        at = time.perf_counter()
+        with pd.stage("fuzzy_db"):
+            variant_results, _ = db.search(variant, limit, taiwan)
+        mark("fuzzy_db", at)
+        at = time.perf_counter()
+        fuzzy = [
+            entry
+            for entry in _expand_variants(variant_results)
+            if (entry.get("traditional"), entry.get("simplified")) not in seen
+        ]
+        mark("fuzzy_expand", at)
+    if not pinyin_match:
+        at = time.perf_counter()
+        forms = db.headword_query_forms(q)
+        if forms:
+            headword_matches = [
+                entry
+                for entry in results
+                if any(
+                    form in word
+                    for form in forms
+                    for word in (
+                        entry.get("simplified", ""),
+                        entry.get("traditional", ""),
+                    )
+                    if word
+                )
+            ]
+            if headword_matches:
+                results = headword_matches
+        mark("filter", at)
+        counters["filtered"] = len(results)
+    at = time.perf_counter()
+    if pinyin_match:
+        dialect = []
+    else:
+        with pd.stage("dialect_entries"):
+            dialect = db.dialect_entries(q)
+    mark("dialect", at)
+    counters["dialect"] = len(dialect)
+    if dialect:
+        at = time.perf_counter()
+        expanded = _expand_variants(dialect)
+        if db._is_language_query(q):
+            results = db._merge_unique(results, expanded)
+        else:
+            results = db._merge_unique(expanded, results)
+        mark("dialect_merge", at)
+    english_match = False
+    if pinyin_match:
+        with pd.stage("english_hint"):
+            english_match = db.has_english_match(q.strip())
+    if selected_dicts:
+        at = time.perf_counter()
+        with pd.stage("category_rank"):
+            results = db.rank_by_category(results, selected_dicts, q, taiwan)
+        mark("category_rank", at)
+        counters["selected_dicts"] = ",".join(sorted(selected_dicts))
+    return results, fuzzy, pinyin_match, english_match, counters, timings
+
+
+def _wildcard_search_state(
+    q: str, taiwan: bool, selected_dicts: set[str], candidates: list[dict]
+) -> tuple[list[dict], list[dict], bool, bool, dict, dict]:
+    """Ranked rows for a Chinese wildcard pattern, ready to cache."""
+    timings: dict[str, float] = {}
+    counters: dict[str, object] = {}
+
+    def mark(name: str, at: float) -> None:
+        timings[name] = round(
+            timings.get(name, 0.0) + (time.perf_counter() - at) * 1000, 2
+        )
+
+    at = time.perf_counter()
+    with pd.stage("expand"):
+        results = _expand_variants(candidates)
+    mark("expand", at)
+    counters["raw"] = len(candidates)
+    counters["expanded"] = len(results)
+    if selected_dicts:
+        at = time.perf_counter()
+        with pd.stage("category_rank"):
+            results = db.rank_by_category(results, selected_dicts, q, taiwan)
+        mark("category_rank", at)
+        counters["selected_dicts"] = ",".join(sorted(selected_dicts))
+    return results, [], False, False, counters, timings
 
 # Cache of the local device's Tailscale IPs, used to decide whether a report
 # request came from this machine.
@@ -1189,32 +1420,41 @@ def api_search(
                     entries, total, pinyin_match = db.wildcard_search(
                         q, db.ALL_PAGE_SIZE, offset, taiwan=taiwan
                     )
-                else:
-                    entries, pinyin_match = candidates, False
             mark("db", at)
-            at = time.perf_counter()
-            with pd.stage("expand"):
-                results = _expand_variants(entries)
-            mark("expand", at)
-            counters["raw"] = len(entries)
-            counters["expanded"] = len(results)
             if candidates is not None:
                 # Same ranking as a normal search: exact matches first, then
                 # words that start with a match, then words that contain one
                 # (each by frequency). Sorting the whole list before slicing
                 # keeps the order identical on every page.
-                if selected_dicts:
-                    at = time.perf_counter()
-                    with pd.stage("category_rank"):
-                        results = db.rank_by_category(
-                            results, selected_dicts, q, taiwan
-                        )
-                    mark("category_rank", at)
-                    counters["selected_dicts"] = ",".join(sorted(selected_dicts))
+                cache_key = (
+                    q,
+                    taiwan,
+                    tuple(sorted(selected_dicts)),
+                    db.ALL_PAGE_SIZE,
+                    search_version(),
+                    tuple(os.environ.get(name, "") for name in _RESULT_ENV_FLAGS),
+                )
+                state, rank_cache_status = _rank_cache_get_or_compute(
+                    cache_key,
+                    lambda: _wildcard_search_state(
+                        q, taiwan, selected_dicts, candidates
+                    ),
+                )
+                (
+                    results,
+                    fuzzy,
+                    pinyin_match,
+                    english_match,
+                    cached_counters,
+                    cached_timings,
+                ) = state
+                counters.update(cached_counters)
+                timings.update(cached_timings)
+                counters["rank_cache"] = rank_cache_status
                 # Page whole simplified-headword groups, like a normal search,
                 # so a wildcard search cannot split 了/瞭 across two pages.
                 if os.environ.get("YABAI_SERVER_ORDER", "1") != "0":
-                    results, total = db.page_groups(
+                    results, total = _page_groups_copy(
                         results, offset, db.ALL_PAGE_SIZE
                     )
                 else:
@@ -1223,8 +1463,15 @@ def api_search(
                 # Only the rows on the requested page need their definitions.
                 with pd.stage("decorate_page"):
                     results = db.decorate_entries(results)
-            fuzzy = []
-            english_match = False
+            else:
+                at = time.perf_counter()
+                with pd.stage("expand"):
+                    results = _expand_variants(entries)
+                mark("expand", at)
+                counters["raw"] = len(entries)
+                counters["expanded"] = len(results)
+                fuzzy = []
+                english_match = False
         elif part == "primary":
             at = time.perf_counter()
             # A Chinese query previews the first dictionary for the selected
@@ -1279,120 +1526,36 @@ def api_search(
             else:
                 english_match = False
         else:
-            at = time.perf_counter()
-            # Lazy hydration: rank every match (so the total stays exact) but
-            # only fetch definitions for the rows that reach the page.
-            with pd.stage("db_search"):
-                entries, pinyin_match = db.search(
-                    q, _MAX_NORMAL_RESULTS, taiwan, hydrate=0
-                )
-            mark("db", at)
-            at = time.perf_counter()
-            with pd.stage("expand"):
-                results = _expand_variants(entries)
-            mark("expand", at)
-            counters["raw"] = len(entries)
-            counters["expanded"] = len(results)
-            fuzzy = []
-            variant = db.tonal_variant(q)
-            if variant and not results:
-                # If a tonal reading matched nothing, offer a tone-insensitive
-                # "fuzzy" search.
-                at = time.perf_counter()
-                with pd.stage("fuzzy_db"):
-                    fuzzy, _ = db.search(variant, limit, taiwan)
-                mark("fuzzy_db", at)
-            elif variant and _has_explicit_tones(q):
-                # A tonal search that did find results still shows the
-                # tone-insensitive matches under "Fuzzy match".
-                seen = {
-                    (entry.get("traditional"), entry.get("simplified"))
-                    for entry in results
-                }
-                at = time.perf_counter()
-                with pd.stage("fuzzy_db"):
-                    variant_results, _ = db.search(variant, limit, taiwan)
-                mark("fuzzy_db", at)
-                at = time.perf_counter()
-                fuzzy = [
-                    entry
-                    for entry in _expand_variants(variant_results)
-                    if (entry.get("traditional"), entry.get("simplified")) not in seen
-                ]
-                mark("fuzzy_expand", at)
-            # Definition-only matches are hidden when the query also matched a
-            # headword or reading. Number queries try every numeral spelling,
-            # so 21 also keeps 二十一世纪 and 廿一 headwords.
-            if not pinyin_match:
-                at = time.perf_counter()
-                forms = db.headword_query_forms(q)
-                if forms:
-                    headword_matches = [
-                        entry
-                        for entry in results
-                        if any(
-                            form in word
-                            for form in forms
-                            for word in (
-                                entry.get("simplified", ""),
-                                entry.get("traditional", ""),
-                            )
-                            if word
-                        )
-                    ]
-                    if headword_matches:
-                        results = headword_matches
-                mark("filter", at)
-                counters["filtered"] = len(results)
-            # Variety labels live on source readings, not on headwords or
-            # glosses. Only search them when the query has no reading match:
-            # an unquoted query with a reading never falls through to
-            # definition-like searches.
-            at = time.perf_counter()
-            if pinyin_match:
-                dialect = []
-            else:
-                with pd.stage("dialect_entries"):
-                    dialect = db.dialect_entries(q)
-            mark("dialect", at)
-            counters["dialect"] = len(dialect)
-            if dialect:
-                at = time.perf_counter()
-                expanded = _expand_variants(dialect)
-                # A place/variety label search (e.g. "Chengdu") is about the
-                # labelled words, so show them first. For a language name the
-                # language entry itself is already first, so append.
-                if db._is_language_query(q):
-                    results = db._merge_unique(results, expanded)
-                else:
-                    results = db._merge_unique(expanded, results)
-                mark("dialect_merge", at)
-            # Offer the English search only when it would actually find something.
-            english_match = False
-            if pinyin_match:
-                with pd.stage("english_hint"):
-                    english_match = db.has_english_match(q.strip())
-            # Fuzzy matches are the tail of the combined list: they come after
-            # every official result, so they only appear on the last pages.
-            # The pager total covers both lists, and the requested page is a
-            # slice of that combined list.
-            # Order the whole list by the six-level tier (then by section: a
-            # definition in a selected dictionary first) before paging, so the
-            # order the page shows is the same on every page and a green row can
-            # never sit ahead of a red or yellow row that is on a later page.
-            if selected_dicts:
-                at = time.perf_counter()
-                with pd.stage("category_rank"):
-                    results = db.rank_by_category(
-                        results, selected_dicts, q, taiwan
-                    )
-                mark("category_rank", at)
-                counters["selected_dicts"] = ",".join(sorted(selected_dicts))
+            # The whole ranked list (official rows plus fuzzy tail) is expensive
+            # to rebuild; cache it and let every page slice the same list.
+            cache_key = (
+                q,
+                taiwan,
+                tuple(sorted(selected_dicts)),
+                limit,
+                search_version(),
+                tuple(os.environ.get(name, "") for name in _RESULT_ENV_FLAGS),
+            )
+            state, rank_cache_status = _rank_cache_get_or_compute(
+                cache_key,
+                lambda: _normal_search_state(q, limit, taiwan, selected_dicts),
+            )
+            (
+                results,
+                fuzzy,
+                pinyin_match,
+                english_match,
+                cached_counters,
+                cached_timings,
+            ) = state
+            counters.update(cached_counters)
+            timings.update(cached_timings)
+            counters["rank_cache"] = rank_cache_status
             # Page whole simplified-headword groups, so one word (e.g. 了 with
             # 瞭) cannot appear on two pages and the total counts merged words.
             # YABAI_SERVER_ORDER=0 restores the old raw-row paging.
             if os.environ.get("YABAI_SERVER_ORDER", "1") != "0":
-                results, official_total = db.page_groups(results, offset, limit)
+                results, official_total = _page_groups_copy(results, offset, limit)
                 counters["official_total"] = official_total
                 counters["fuzzy_total"] = len(fuzzy)
                 total = official_total + len(fuzzy)
@@ -1459,6 +1622,8 @@ def api_search(
     total_ms = round((time.perf_counter() - started) * 1000, 2)
     timing_parts = [f"{name};dur={value}" for name, value in timings.items()]
     timing_parts.append(f"total;dur={total_ms}")
+    if "rank_cache" in counters:
+        timing_parts.append(f"rank_cache;desc={counters['rank_cache']}")
     pd.mark("handler_end")
     response.headers["Server-Timing"] = ", ".join(timing_parts)
     response.headers["X-Yabai-Debug"] = json.dumps(
