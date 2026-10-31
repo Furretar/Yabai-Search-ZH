@@ -11,7 +11,7 @@ import sys
 import time
 import unicodedata
 from bisect import bisect_left
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
@@ -2701,32 +2701,32 @@ def decorate_entries(entries: list[dict]) -> list[dict]:
     return entries
 
 
-@lru_cache(maxsize=8192)
-def lookup(word: str) -> list[dict]:
-    """Return entries whose simplified or traditional form is exactly `word`.
+# Explicit LRU shared by lookup() and lookup_many(): the batched path can fill
+# entries for several words at once, while a single lookup still stays cheap.
+_lookup_cache: "OrderedDict[str, list[dict]]" = OrderedDict()
+_lookup_cache_lock = threading.Lock()
+_LOOKUP_CACHE_MAX = 8192
+_LOOKUP_BATCH_WORDS = 400
 
-    Entries are ordered so the reading with the most senses (normally the most
-    common one) comes first - e.g. 都[dōu] before 都[dū] and 都[Dū] - because the
-    parsed input shows the first entry's reading. Cached: callers only read the
-    returned entries (annotate, variant expansion), never mutate them.
-    """
-    connection = connect()
-    try:
-        rows = connection.execute(
-            "SELECT simplified, traditional, pinyin, english, english_normalized "
-            "FROM entries WHERE simplified = ? OR traditional = ? "
-            "ORDER BY (SELECT COUNT(*) FROM senses s "
-            "          WHERE s.word = entries.simplified "
-            "          AND s.reading = entries.pinyin "
-            f"          AND {_XREF_SQL}) DESC, "
-            "entries.id",
-            (word, word),
-        ).fetchall()
-    finally:
-        connection.close()
-    entries = _decorate([dict(row) for row in rows])
-    # A manual preference (overrides.py) wins over the sense-count order above,
-    # so the parsed input shows the reading we want (e.g. 了 -> le, not liǎo).
+
+def _lookup_cache_get(word: str) -> list[dict] | None:
+    with _lookup_cache_lock:
+        hit = _lookup_cache.get(word)
+        if hit is not None:
+            _lookup_cache.move_to_end(word)
+        return hit
+
+
+def _lookup_cache_put(word: str, entries: list[dict]) -> None:
+    with _lookup_cache_lock:
+        _lookup_cache[word] = entries
+        _lookup_cache.move_to_end(word)
+        while len(_lookup_cache) > _LOOKUP_CACHE_MAX:
+            _lookup_cache.popitem(last=False)
+
+
+def _preferred_sort(word: str, entries: list[dict]) -> None:
+    """Apply lookup()'s preferred-reading rule to one word's rows."""
     preferred = (
         PREFERRED_READINGS.get(word)
         or PREFERRED_READINGS.get(to_simplified(word))
@@ -2735,6 +2735,84 @@ def lookup(word: str) -> list[dict]:
     if preferred:
         target = _preferred_key(preferred)
         entries.sort(key=lambda entry: _preferred_key(entry["pinyin"]) != target)
+
+
+def _lookup_uncached(words: list[str]) -> dict[str, list[dict]]:
+    """Fetch and decorate several headwords with one query per batch.
+
+    The SQL order is the same as lookup()'s, and the preferred-reading sort is
+    applied per target afterwards. A row that matches two targets (its
+    simplified and traditional forms are both requested) is shared between
+    them; callers copy before mutating, as they already did for lookup().
+    """
+    targets = set(words)
+    result: dict[str, list[dict]] = {word: [] for word in words}
+    for start in range(0, len(words), _LOOKUP_BATCH_WORDS):
+        batch = words[start : start + _LOOKUP_BATCH_WORDS]
+        placeholders = ",".join("?" * len(batch))
+        params = tuple(batch) * 2
+        connection = connect()
+        try:
+            rows = connection.execute(
+                "SELECT simplified, traditional, pinyin, english, english_normalized "
+                f"FROM entries WHERE simplified IN ({placeholders}) "
+                f"OR traditional IN ({placeholders}) "
+                "ORDER BY (SELECT COUNT(*) FROM senses s "
+                "          WHERE s.word = entries.simplified "
+                "          AND s.reading = entries.pinyin "
+                f"          AND {_XREF_SQL}) DESC, "
+                "entries.id",
+                params,
+            ).fetchall()
+        finally:
+            connection.close()
+        decorated = _decorate([dict(row) for row in rows])
+        for entry in decorated:
+            for key in {entry["simplified"], entry["traditional"]}:
+                if key in targets:
+                    result[key].append(entry)
+    for word in words:
+        _preferred_sort(word, result[word])
+    return result
+
+
+def lookup_many(words: list[str]) -> dict[str, list[dict]]:
+    """Return lookup(word) for every word, using as few queries as possible."""
+    unique = [word for word in dict.fromkeys(words) if word]
+    if not unique:
+        return {}
+    result: dict[str, list[dict]] = {}
+    missing: list[str] = []
+    for word in unique:
+        hit = _lookup_cache_get(word)
+        if hit is not None:
+            result[word] = hit
+        else:
+            missing.append(word)
+    if missing:
+        fetched = _lookup_uncached(missing)
+        for word in missing:
+            entries = fetched.get(word, [])
+            _lookup_cache_put(word, entries)
+            result[word] = entries
+    return result
+
+
+def lookup(word: str) -> list[dict]:
+    """Return entries whose simplified or traditional form is exactly `word`.
+
+    Entries are ordered so the reading with the most senses (normally the most
+    common one) comes first - e.g. 都[dōu] before 都[dū] and 都[Dū] - because the
+    parsed input shows the first entry's reading. Cached: callers only read the
+    returned entries (annotate, variant expansion), never mutate them.
+    """
+    if not word:
+        return []
+    hit = _lookup_cache_get(word)
+    if hit is not None:
+        return hit
+    entries = _lookup_uncached([word])[word]
+    _lookup_cache_put(word, entries)
     return entries
 
 

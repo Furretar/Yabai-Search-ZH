@@ -1183,6 +1183,18 @@ def _expand_variants(results: list[dict]) -> list[dict]:
     for entry in results:
         if entry.get("traditional"):
             by_trad.setdefault(entry["traditional"], []).append(entry)
+    # First pass: collect every redirect target that is not already in this
+    # result set. One batched lookup replaces one query per target.
+    targets: set[str] = set()
+    for entry in results:
+        if not entry.get("main"):
+            continue
+        target = entry["main"]
+        want = entry.get("pinyin") or ""
+        local = [c for c in by_trad.get(target, []) if not c.get("main")]
+        if not (_readings_like(local, want, strict=True) if want else []):
+            targets.add(target)
+    looked_by_target = db.lookup_many(sorted(targets)) if targets else {}
     for entry in results:
         if entry.get("main"):
             target = entry["main"]
@@ -1193,7 +1205,9 @@ def _expand_variants(results: list[dict]) -> list[dict]:
             local = [c for c in by_trad.get(target, []) if not c.get("main")]
             shown = _readings_like(local, want, strict=True) if want else []
             if not shown:
-                looked = [e for e in db.lookup(target) if not e.get("main")]
+                looked = [
+                    e for e in looked_by_target.get(target, []) if not e.get("main")
+                ]
                 on_target = [e for e in looked if e["traditional"] == target] or looked
                 # A variant only redirects within its own reading: for "gan", the
                 # gān old-variant 乹 must not pull in 乾's unrelated qián readings.

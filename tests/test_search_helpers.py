@@ -296,6 +296,65 @@ def test_preferred_reading_for_mei():
     assert db.lookup("沒")[0]["pinyin"] == "méi"
 
 
+def test_lookup_many_matches_lookup_for_each_word():
+    """The batched path returns the same rows, in the same order."""
+    words = ["没", "沒", "檔案", "了", "乾", "干", "只", "隻"]
+    batched = db.lookup_many(words)
+    for word in words:
+        assert batched[word] == db.lookup(word)
+
+
+def test_lookup_many_uses_one_query_for_a_batch(monkeypatch):
+    """Five or fifty targets cost one lookup statement, not one each."""
+
+    class FakeCursor:
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params):
+            self.calls.append(sql)
+            return FakeCursor()
+
+        def close(self):
+            pass
+
+    connection = FakeConnection()
+    monkeypatch.setattr(db, "connect", lambda: connection)
+    for words in (
+        ["没", "檔案", "了", "乾", "干"],
+        [f"missing{i}" for i in range(50)],
+    ):
+        connection.calls.clear()
+        db._lookup_uncached(words)
+        assert (
+            sum("FROM entries WHERE simplified IN" in sql for sql in connection.calls)
+            == 1
+        )
+
+
+def test_expand_variants_batch_matches_per_target(monkeypatch):
+    """Batching the redirect lookups does not change the expanded list."""
+    from yabai_search import main as app_main
+
+    cases = {}
+    for query in ("gan", "tian", "shan"):
+        results, _ = db.search(query, limit=100, part="all")
+        cases[query] = app_main._expand_variants([dict(entry) for entry in results])
+    monkeypatch.setattr(
+        db,
+        "lookup_many",
+        lambda words: {word: db.lookup(word) for word in words},
+    )
+    for query in ("gan", "tian", "shan"):
+        results, _ = db.search(query, limit=100, part="all")
+        got = app_main._expand_variants([dict(entry) for entry in results])
+        assert got == cases[query]
+
+
 def test_parse_pinyin_query_reads_one_tone():
     """A tone digit marks both its tone and a syllable boundary."""
     assert db._parse_pinyin_query("shi4shi") == (
