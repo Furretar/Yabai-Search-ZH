@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import hashlib
 import ipaddress
 import json
 import os
@@ -43,6 +44,15 @@ _README_PATH = BASE.parent / "README.md"
 # Directory holding the static assets served under /static/.
 _STATIC_DIR = BASE / "static"
 
+
+def served_by() -> str:
+    """Which copy answers: laptop, tablet or dev, set by deploy/run.sh.
+
+    Used by the X-Served-By header, the hamburger menu and the search log, so
+    the fallback name lives here instead of being repeated at each call site.
+    """
+    return os.environ.get("YABAI_SERVED_BY", "unknown")
+
 # Normal (non-wildcard) searches are paged as well. Fetch up to this many
 # matches so the total and the requested page can be computed in one pass.
 # The full request ranks every match so `total` and later pages are exact.
@@ -52,15 +62,37 @@ _MAX_NORMAL_RESULTS = (
     5000 if os.environ.get("YABAI_UNCAPPED") == "0" else db.UNBOUNDED
 )
 
-# Process start time, folded into the API cache version: a restart invalidates
-# cached search responses even when the data files did not change (for example
-# after editing overrides.py or ranking code).
-_START_TS = int(time.time())
+# Env flags that change which rows are returned or how they are ordered.
+_RESULT_ENV_FLAGS = (
+    "YABAI_UNCAPPED",
+    "YABAI_SERVER_ORDER",
+    "YABAI_SERVER_MERGE",
+    "YABAI_SEARCH_INDEX",
+    "YABAI_GLOSS_LEGACY",
+)
+
+
+def _code_fingerprint() -> str:
+    """Short hash of the search code and result-affecting env flags.
+
+    A restart must not invalidate Cloudflare's edge cache if no file changed;
+    editing a module or flipping one of these flags must invalidate it.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(BASE.glob("*.py")):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    for name in _RESULT_ENV_FLAGS:
+        digest.update(f"{name}={os.environ.get(name, '')}\n".encode())
+    return digest.hexdigest()[:8]
+
+
+_CODE_VERSION = _code_fingerprint()
 
 
 def search_version() -> str:
-    """Cache version for /api/search: data fingerprint plus process start time."""
-    return f"{db.data_version()}-{_START_TS:x}"
+    """Cache version for /api/search: data fingerprint plus code fingerprint."""
+    return f"{db.data_version()}-{_CODE_VERSION}"
 
 
 # The two merged layouts for a page, cached across identical requests. The key
@@ -353,7 +385,7 @@ async def _debug_stamp(request, call_next):
         with _inflight_lock:
             _inflight -= 1
     response.headers["X-Yabai-Inflight"] = str(seen)
-    response.headers["X-Served-By"] = os.environ.get("YABAI_SERVED_BY", "unknown")
+    response.headers["X-Served-By"] = served_by()
     if lag_ms is not None:
         response.headers["X-Yabai-Lag"] = str(lag_ms)
     if trace is not None:
@@ -413,7 +445,9 @@ async def cache_headers(request, call_next):
     return response
 
 
-app.add_middleware(GZipMiddleware, minimum_size=500)
+# Level 6 is ~3x faster than the Starlette default (9) for a nearly identical
+# size; the tablet re-compresses every API response and asset.
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
 
 
 @app.on_event("startup")
@@ -533,6 +567,7 @@ def debug_status(request: Request) -> dict:
     # Keep the established flat fast-path keys; page_cache is additive.
     status = db.fast_path_status()
     status["page_cache"] = db.page_cache_status()
+    status["search_index"] = db.search_index_status()
     return status
 
 
@@ -659,7 +694,7 @@ def _index_page(
             # The debug log button is useful for every client, not just local.
             "show_debug": True,
             # Which machine is serving this page (see deploy/run.sh).
-            "served_by": os.environ.get("YABAI_SERVED_BY", "unknown"),
+            "served_by": served_by(),
         },
     )
 
@@ -979,10 +1014,13 @@ def _expand_variants(results: list[dict]) -> list[dict]:
     return expanded
 
 
-# Debug log: the last 10 searches, with each SQL statement's timing (see
+# Debug log: the last few searches, with each SQL statement's timing (see
 # db.start_log). The per-request instrumentation is on by default.
-_SEARCH_LOG_PATH = BASE.parent / "data" / "search.log"
-_recent_searches: "collections.deque[dict]" = collections.deque(maxlen=10)
+SEARCH_LOG_ENTRIES = 3  # how many searches data/search.log keeps
+_SEARCH_LOG_PATH = db.DATA_DIR / "search.log"
+_recent_searches: "collections.deque[dict]" = collections.deque(
+    maxlen=SEARCH_LOG_ENTRIES
+)
 _recent_searches_lock = threading.Lock()
 
 
@@ -1004,6 +1042,7 @@ def _record_search(
         _recent_searches.append(
             {
                 "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "host": served_by(),
                 "query": query,
                 "ms": round(duration_ms, 1),
                 "results": count,
@@ -1014,7 +1053,7 @@ def _record_search(
             with _SEARCH_LOG_PATH.open("w", encoding="utf-8") as handle:
                 for entry in _recent_searches:
                     handle.write(
-                        f"[{entry['at']}] {entry['query']!r} -> "
+                        f"[{entry['at']}] [{entry['host']}] {entry['query']!r} -> "
                         f"{entry['results']} results in {entry['ms']} ms\n"
                     )
                     for statement in entry["sql"]:
