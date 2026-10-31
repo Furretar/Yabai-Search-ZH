@@ -410,7 +410,13 @@ def test_zhuyin_conversion_skips_dialect_readings():
     """Only Mandarin pinyin becomes bopomofo; dialect readings stay as written."""
     js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
     # furigana() gets allowTones=false for a dialect entry (pinyin_no_tone).
-    assert 'state.phonetic === "zhuyin" && allowTones' in js
-    # The IDS headword and the copy button use the same guard.
-    assert 'state.phonetic === "zhuyin" && !entry.pinyin_no_tone' in js
+    assert (
+        'state.phonetic === "zhuyin" && allowTones && !isLatinReading(rawReading)'
+        in js
+    )
+    # The IDS headword uses the dialect guard too, and also skips a reading
+    # that spells a Latin word out (word姐's "w o r d jiě").
+    assert "!entry.pinyin_no_tone" in js
+    assert "!entry.pinyin_latin" in js
+    assert "!isLatinReading(reading)" in js
     assert "syllables.every((s) => isPinyinSyllable(s))" in js
