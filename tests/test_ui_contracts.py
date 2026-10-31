@@ -219,7 +219,8 @@ def test_definition_copy_converts_pinyin_to_zhuyin():
     js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
     assert "function pinyinToZhuyinForCopy(" in js
     assert "pinyinToZhuyinForCopy(definition, pinyin)" in js
-    assert 'syllables.map((s) => toZhuyin(s)).join(" ")' in js
+    # Conversion is per token now, so a Latin token in a reading stays Latin.
+    assert "phoneticTokens(syllables" in js
 
 
 def test_search_url_carries_selected_dictionaries():

@@ -187,9 +187,25 @@ def latin_tokens(pinyin: str) -> list[str]:
 
 
 def is_standard_pinyin(pinyin: str) -> bool:
-    """True when every token is Mandarin pinyin (no Latin word spelled out)."""
+    """True unless the reading spells a Latin word out as single letters.
+
+    The per-token `is_pinyin_token` is available for display, but it flags
+    legitimate readings such as ``U tū nèi kù`` and ``sān Q``. Search filtering
+    stays conservative: only a run of three or more one-letter tokens is
+    treated as a spelled-out Latin word.
+    """
     tokens = (pinyin or "").split()
-    return bool(tokens) and not latin_tokens(pinyin)
+    if not tokens:
+        return False
+    run = 0
+    for token in tokens:
+        if len(to_toneless(token)) == 1:
+            run += 1
+            if run >= 3:
+                return False
+        else:
+            run = 0
+    return True
 
 
 def split_syllables(chunk: str, syllables: set[str]) -> list[str]:
