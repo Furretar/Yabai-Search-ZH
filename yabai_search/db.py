@@ -2846,7 +2846,7 @@ def _decorate(entries: list[dict]) -> list[dict]:
                 images = _ids_images_for(word)
                 if images:
                     entry["ids_images"] = images
-                break
+                    break
 
     _mark_latin_readings(entries)
     return entries
