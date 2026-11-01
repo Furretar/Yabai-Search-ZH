@@ -37,8 +37,8 @@ def _make_tree(root: Path) -> None:
     (root / "data" / "search.log").write_text("['q'] 1 results\n", encoding="utf-8")
     # The dummy databases are kept whole, so the archive can run the
     # optimisation tests without the real data.
-    (root / "data" / "dummy").mkdir()
-    (root / "data" / "dummy" / "cedict.sqlite").write_bytes(b"dummy db")
+    (root / "data" / "dummy-test-databases").mkdir()
+    (root / "data" / "dummy-test-databases" / "cedict.sqlite").write_bytes(b"dummy db")
 
 
 def _stored_names(zip_path: Path) -> list[str]:

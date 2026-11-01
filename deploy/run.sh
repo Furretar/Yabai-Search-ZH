@@ -72,7 +72,7 @@ while true; do
     # Bind to localhost only: cloudflared runs on the same machine.
     "${LAUNCH[@]}" "$APP" --host 127.0.0.1 --port "$PORT" &
     CHILD=$!
-    echo "$CHILD" > run/uvicorn.pid
+    echo "$CHILD" > deploy/run/uvicorn.pid
     wait "$CHILD"
     echo "app exited, restarting in 2s" >&2
     sleep 2

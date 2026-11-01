@@ -57,6 +57,9 @@ def iter_source_files(root: Path):
     """
     for dir_path, dir_names, file_names in os.walk(root):
         # Prune in place: os.walk then never descends into these folders.
+        relative = Path(dir_path).relative_to(root)
+        if relative == Path("deploy") and "run" in dir_names:
+            dir_names.remove("run")
         dir_names[:] = sorted(
             name
             for name in dir_names
