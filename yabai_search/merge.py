@@ -190,6 +190,13 @@ def merge_entries(
             merged["category"] = group[0]["category"]
         if group[0].get("tier") is not None:
             merged["tier"] = group[0]["tier"]
+        # Every dictionary whose definition matched a definition search, for
+        # any spelling in the group.
+        anchors = sorted(
+            {a for entry in group for a in entry.get("match_anchors") or []}
+        )
+        if anchors:
+            merged["match_anchors"] = anchors
         for entry in group:
             if entry is not base:
                 _merge_entry(merged, entry, taiwan)

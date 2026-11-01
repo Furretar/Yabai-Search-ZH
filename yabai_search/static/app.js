@@ -1711,11 +1711,39 @@ function entryDicts(entry) {
     return enabled;
 }
 
+// A definition-search row the server put under "Other Dictionaries": the
+// search text matched a definition only in dictionaries outside the selection
+// (Taiwan selected, "word" matched CC-CEDICT's English). `match_anchors` lists
+// the dictionaries whose definitions matched.
+function isOtherDefinitionMatch(entry) {
+    return (
+        !state.customDicts &&
+        entry.category === 2 &&
+        (entry.match_anchors || []).length > 0
+    );
+}
+
+// Languages tried, in order, when a result has nothing in the search language.
+const FALLBACK_LANG_ORDER = ["english", "taiwan", "mainland", "japanese"];
+
+// The highest-priority anchor of `anchors`, by the language's dictionary order.
+function topAnchor(anchors, lang) {
+    return [...anchors].sort(
+        (a, b) => dictRank(a, lang) - dictRank(b, lang)
+    )[0];
+}
+
 // The initial dictionaries for a result. Detailed mode uses every selected
 // dictionary; compact mode keeps only the highest-ordered dictionary in each
 // language that actually has a definition for the entry.
+//
+// With custom dictionaries off (always compact), a result with no definition in
+// the search language falls back to the next dictionaries instead of showing
+// none: the ones that matched a definition search, otherwise the best
+// dictionary of the first other language that has one.
 function initialDictSelection(entry) {
     let selected = new Set(state.dicts);
+    let fallback = false;
     if (!state.customDicts) {
         // In default mode the search language decides: every English source
         // (CC-CEDICT, Wiktionary) is on, even though only CC-CEDICT is a
@@ -1730,6 +1758,17 @@ function initialDictSelection(entry) {
         if ((entry.forms || []).length && lang === "english") {
             selected.add("cedict");
         }
+        const defined = (entry.definitions || []).map((source) => source.anchor);
+        if (isOtherDefinitionMatch(entry)) {
+            // Show the definitions that matched the search, not unrelated
+            // ones from the search language.
+            const matched = new Set(entry.match_anchors);
+            const shown = defined.filter((anchor) => matched.has(anchor));
+            if (shown.length) selected = new Set(shown);
+        } else if (!selected.size && defined.length) {
+            selected = new Set(defined);
+            fallback = true;
+        }
     }
     if (!state.compact) return selected;
     const byLang = new Map();
@@ -1739,18 +1778,16 @@ function initialDictSelection(entry) {
         if (!byLang.has(lang)) byLang.set(lang, []);
         byLang.get(lang).push(source.anchor);
     }
+    if (fallback) {
+        // One dictionary only: the first other language that has a definition.
+        const lang =
+            FALLBACK_LANG_ORDER.find((name) => byLang.has(name)) ||
+            byLang.keys().next().value;
+        return new Set(lang === undefined ? [] : [topAnchor(byLang.get(lang), lang)]);
+    }
     const result = new Set();
     for (const [lang, anchors] of byLang) {
-        const order = Array.isArray(dictOrder[lang]) ? dictOrder[lang] : [];
-        anchors.sort((a, b) => {
-            const ia = order.indexOf(a);
-            const ib = order.indexOf(b);
-            return (
-                (ia < 0 ? Number.MAX_SAFE_INTEGER : ia) -
-                (ib < 0 ? Number.MAX_SAFE_INTEGER : ib)
-            );
-        });
-        result.add(anchors[0]);
+        result.add(topAnchor(anchors, lang));
     }
     return result;
 }
@@ -2569,6 +2606,9 @@ document.addEventListener("pointerdown", (event) => {
 // for it; a word found only in unselected dictionaries lives in the "Matches in
 // other dictionaries" section instead.
 function hasSelectedDefs(entry) {
+    // Shown with the dictionaries that matched, but the match is outside the
+    // selection, so it is not a selected-dictionary result.
+    if (isOtherDefinitionMatch(entry)) return false;
     const enabled = entryDicts(entry);
     if ((entry.definitions || []).some((s) => enabled.has(s.anchor))) return true;
     // A "see X" variant has no senses - only "other forms" (CC-CEDICT) - but it

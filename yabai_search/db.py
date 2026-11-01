@@ -6006,7 +6006,6 @@ def rank_by_category(
     """
     if not entries:
         return entries
-    import sys as _dbg; print("DBG rbc called n=", len(entries), "def_search=", definition_search, "selected=", sorted(selected), file=_dbg.stderr)
     words = sorted(
         {entry["traditional"] for entry in entries if entry.get("traditional")}
         | {entry["simplified"] for entry in entries if entry.get("simplified")}
@@ -6059,8 +6058,6 @@ def rank_by_category(
         # Dictionaries". Headword matches (the Latin tier-0 rows) and rows whose
         # definition match cannot be verified keep the headword rule above.
         matched = _definition_match_anchors(entries, query)
-        import sys as _dbg; print("DBG api matched", [sorted(m) for m in matched[:5]], "selected", sorted(selected), "n", len(entries), file=_dbg.stderr)
-        import sys as _dbg; print("DBG match_anchors", [sorted(m) for m in matched[:5]], "selected", sorted(selected), "_SOURCE_QUERIES", [s["anchor"] for s in _SOURCE_QUERIES], file=_dbg.stderr)
         for i, entry in enumerate(entries):
             if entry.pop("_head_match", False) or not matched[i]:
                 continue
@@ -6079,7 +6076,6 @@ def rank_by_category(
                 # The dictionaries that matched, so the page can show those
                 # definitions for a row that lives under "Other Dictionaries".
                 entry["match_anchors"] = sorted(matched[i])
-                import sys as _dbg; print("DBG set match_anchors", entry.get("simplified"), entry.get("match_anchors"), file=_dbg.stderr)
             entry.pop("_relevance", None)
             ranked.append((category, i, entry))
         # Category is the primary key. The sort is stable on the original

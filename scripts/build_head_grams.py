@@ -30,6 +30,7 @@ def main() -> None:
     source.close()
     if TEMP_OUT.exists():
         TEMP_OUT.unlink()
+    TEMP_OUT.parent.mkdir(parents=True, exist_ok=True)
     out = sqlite3.connect(TEMP_OUT)
     out.executescript(
         """

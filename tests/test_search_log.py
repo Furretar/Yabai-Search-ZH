@@ -29,19 +29,18 @@ def _log_to(tmp_path, monkeypatch, host="tablet"):
     return log
 
 
-def test_log_keeps_only_the_last_three_searches(tmp_path, monkeypatch):
+def test_log_keeps_only_the_last_five_searches(tmp_path, monkeypatch):
     log = _log_to(tmp_path, monkeypatch)
 
-    for number in range(5):
+    for number in range(6):
         main._record_search(f"query{number}", 1.5, number, [f"SELECT {number};"])
 
     text = log.read_text(encoding="utf-8")
     assert "query0" not in text
-    assert "query1" not in text
-    for number in (2, 3, 4):
+    for number in (1, 2, 3, 4, 5):
         assert f"'query{number}'" in text
     # Each kept search contributes exactly one SQL line.
-    assert text.count("SELECT ") == 3
+    assert text.count("SELECT ") == 5
 
 
 def test_entry_names_the_serving_copy(tmp_path, monkeypatch):

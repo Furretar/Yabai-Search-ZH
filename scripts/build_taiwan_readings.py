@@ -112,6 +112,7 @@ def build(output: Path, samples: int = 8) -> None:
     moe_anchors = {"moe", "moe_revised"}
 
     temporary = output.with_name(output.name + ".tmp")
+    output.parent.mkdir(parents=True, exist_ok=True)
     if temporary.exists():
         temporary.unlink()
     out = sqlite3.connect(temporary)
