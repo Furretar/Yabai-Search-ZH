@@ -1246,7 +1246,7 @@ def _expand_variants(results: list[dict]) -> list[dict]:
 
 # Debug log: the last few searches, with each SQL statement's timing (see
 # db.start_log). The per-request instrumentation is on by default.
-SEARCH_LOG_ENTRIES = 3  # how many searches data/search.log keeps
+SEARCH_LOG_ENTRIES = 5  # how many searches data/search.log keeps
 _SEARCH_LOG_PATH = db.DATA_DIR / "search.log"
 _recent_searches: "collections.deque[dict]" = collections.deque(
     maxlen=SEARCH_LOG_ENTRIES
@@ -1291,6 +1291,13 @@ def _record_search(
                     handle.write("\n")
         except OSError:
             pass  # logging must never break a search
+
+
+@app.get("/api/search-log")
+def api_search_log():
+    """The last few searches with their SQL timings (for the debug log)."""
+    with _recent_searches_lock:
+        return {"entries": [dict(entry) for entry in _recent_searches]}
 
 
 @app.get("/api/search")

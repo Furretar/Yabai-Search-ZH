@@ -336,7 +336,7 @@ function readCustomDictionaryDebugInfo() {
     }
 }
 
-function debugSnapshot() {
+function debugSnapshot(serverSearchLog = null) {
     const currentState = {
         script: state.script,
         toneColoring: state.toneColoring,
@@ -381,14 +381,22 @@ function debugSnapshot() {
         customDictionaryStats: window.customDictsStats || null,
         currentSearch,
         recentEvents: debugEvents.slice(-50),
+        serverSearchLog: serverSearchLog,
     };
     return "Yabai Search debug log\n" + JSON.stringify(info, null, 2) + "\n";
 }
 
 // Save the debug snapshot as a .txt file so it can be attached to a report or
 // opened in an editor. The menu item shows brief "Downloaded" feedback.
-function downloadDebugLog() {
-    const text = debugSnapshot();
+async function downloadDebugLog() {
+    let serverSearchLog = null;
+    try {
+        const response = await fetch("/api/search-log");
+        if (response.ok) serverSearchLog = await response.json();
+    } catch (error) {
+        // The server log is best-effort debug data.
+    }
+    const text = debugSnapshot(serverSearchLog);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
