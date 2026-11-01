@@ -1147,11 +1147,6 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     box-shadow: 0 0 9px 1px var(--tier-color, var(--entry-divider));
 }
 
-/* An exact definition match: ranked above the other definition matches. */
-.entry-separator[data-tier="0"] {
-    --tier-color: #f59e0b;
-}
-
 .entry-separator[data-tier="1"] {
     --tier-color: var(--tone1);
 }
@@ -1272,6 +1267,19 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     display: inline-flex;
     align-items: flex-end;
     gap: 2px;
+}
+
+/* A Latin token inside a Mandarin reading (e.g. the "w o r d" in
+   "w o r d jiě") is not converted to bopomofo, so it stays muted instead of
+   taking a tone colour. */
+.furigana .reading .latin,
+.ids-headword .reading .latin {
+    color: var(--muted);
+}
+
+/* Dialect readings are already muted; keep their Latin text at that level. */
+.def-source-cls .dialect-reading .reading .latin {
+    color: inherit;
 }
 
 /* A readable character before the IDS part, e.g. 搞 in 搞⿰车匡. */

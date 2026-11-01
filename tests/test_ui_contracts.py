@@ -436,6 +436,12 @@ def test_ids_headword_keeps_readable_prefix():
     assert ".ids-prefix" in css
 
 
+def test_latin_reading_tokens_are_muted():
+    css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
+    assert ".furigana .reading .latin" in css
+    assert "color: var(--muted);" in css
+
+
 def test_frontend_javascript_parses():
     """A syntax error in app.js breaks the whole page, so guard against it."""
     node = shutil.which("node")
