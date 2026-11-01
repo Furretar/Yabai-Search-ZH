@@ -100,7 +100,9 @@ def test_build_all_skips_derived_and_empty_databases(tmp_path: Path) -> None:
     (data / "search_index.sqlite").write_bytes(b"")  # derived, never copied
     (data / "wikt.sqlite").write_bytes(b"")  # truncated leftover file
     # A derived index that remembers the CEDICT it was built from.
-    derived = sqlite3.connect(data / "head_grams.sqlite")
+    source_generated = data / "generated-indexes-optimizations"
+    source_generated.mkdir(parents=True, exist_ok=True)
+    derived = sqlite3.connect(source_generated / "head_grams.sqlite")
     derived.executescript(
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
         "INSERT INTO meta VALUES ('cedict_sha256', 'built-from-the-real-file');"
@@ -114,18 +116,19 @@ def test_build_all_skips_derived_and_empty_databases(tmp_path: Path) -> None:
         "head_grams.sqlite",
         "sense_counts.sqlite",
     }
+    generated = tmp_path / "dummy" / "generated-indexes-optimizations"
     assert (tmp_path / "dummy" / "cedict.sqlite").is_file()
-    assert (tmp_path / "dummy" / "sense_counts.sqlite").is_file()
-    assert not (tmp_path / "dummy" / "search_index.sqlite").exists()
+    assert (generated / "sense_counts.sqlite").is_file()
+    assert not (generated / "search_index.sqlite").exists()
     # The sense counts are rebuilt from the dummy CEDICT, not copied stale.
-    counts = sqlite3.connect(tmp_path / "dummy" / "sense_counts.sqlite")
+    counts = sqlite3.connect(generated / "sense_counts.sqlite")
     try:
         assert counts.execute("SELECT COUNT(*) FROM senses").fetchone()[0] == 2
     finally:
         counts.close()
     # The copy is stamped with the dummy CEDICT, so the app sees it as current
     # and uses the fast path instead of falling back to a live scan.
-    stub = sqlite3.connect(tmp_path / "dummy" / "head_grams.sqlite")
+    stub = sqlite3.connect(generated / "head_grams.sqlite")
     try:
         stored = stub.execute(
             "SELECT value FROM meta WHERE key = 'cedict_sha256'"
@@ -150,7 +153,7 @@ def test_yabai_data_dir_points_the_app_at_the_dummy_folder(tmp_path: Path) -> No
         "print(db.DB_PATH);"
         "print(db.MOE_DB_PATH);"
         "print(db.SEARCH_INDEX_DB_PATH);"
-        "assert all(p.parent == db.DATA_DIR for p in "
+        "assert all(db.DATA_DIR in p.parents or p.parent == db.DATA_DIR for p in "
         "(db.DB_PATH, db.MOE_DB_PATH, db.SEARCH_INDEX_DB_PATH))"
     )
 
@@ -166,4 +169,5 @@ def test_yabai_data_dir_points_the_app_at_the_dummy_folder(tmp_path: Path) -> No
     lines = result.stdout.strip().splitlines()
     assert lines[0] == str(tmp_path)
     assert lines[1] == str(tmp_path / "cedict.sqlite")
+    assert lines[2] == str(tmp_path / "moe-taiwan" / "moe.sqlite")
     assert lines[3] == str(tmp_path / "search_index.sqlite")

@@ -84,7 +84,8 @@ def make_project(base: Path) -> Path:
     cedict.commit()
     cedict.close()
 
-    moe = sqlite3.connect(data / "moe.sqlite")
+    (data / "moe-taiwan").mkdir()
+    moe = sqlite3.connect(data / "moe-taiwan" / "moe.sqlite")
     moe.execute("CREATE TABLE moe (word TEXT, pinyin TEXT, zhuyin TEXT)")
     for word, pinyin in [
         ("垃圾", "lè sè"),
@@ -142,7 +143,7 @@ def test_prefill() -> None:
             env={"PYTHONPATH": str(Path(__file__).parent / "_stubs")},
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        out = sqlite3.connect(project / "data" / "taiwan_readings.sqlite")
+        out = sqlite3.connect(project / "data" / "generated-indexes-optimizations" / "taiwan_readings.sqlite")
         got = {
             (src, word, main): (reading, changed)
             for src, word, main, reading, changed in out.execute(
@@ -205,7 +206,7 @@ def test_prefill() -> None:
         assert db.taiwan_table_status() == "stale"
         db.TAIWAN_READINGS["血"] = original
         assert db.taiwan_table_status() == "ok"
-        conn = sqlite3.connect(project / "data" / "moe.sqlite")  # a source is edited
+        conn = sqlite3.connect(project / "data" / "moe-taiwan" / "moe.sqlite")  # a source is edited
         conn.execute("INSERT INTO moe VALUES ('桶','tǒng','')")
         conn.commit()
         conn.close()

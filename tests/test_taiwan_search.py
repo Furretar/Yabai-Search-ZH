@@ -81,8 +81,8 @@ def test_taiwan_search() -> None:
         assert [e["traditional"] for e in db.search("lajidai", 25, taiwan=False)[0]] == ["垃圾袋"]
 
         # --- without the table the old behaviour remains ------------------
-        (project / "data" / "taiwan_readings.sqlite").rename(
-            project / "data" / "taiwan_readings.off"
+        (project / "data" / "generated-indexes-optimizations" / "taiwan_readings.sqlite").rename(
+            project / "data" / "generated-indexes-optimizations" / "taiwan_readings.off"
         )
         db, _ = load(project)
         for name in ("_attach_sources", "_attach_definitions", "_attach_freq",
