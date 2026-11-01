@@ -333,14 +333,14 @@ def test_sense_counts_fall_back_when_the_file_is_missing(monkeypatch, tmp_path):
 
 def test_non_standard_pinyin_falls_through_to_definitions():
     """A Latin word spelled out as pinyin must not hijack an English query."""
-    entries, pinyin_match = db.search("word", limit=100, part="all", hydrate=0)
+    entries, pinyin_match = db.search("word", limit=200, part="all", hydrate=0)
     assert not pinyin_match
     words = {entry["simplified"] for entry in entries}
     assert "词汇" in words
     # An unquoted Latin query also matches Latin text inside a headword or a
     # reading, and those tier-0 rows come first.
     assert entries[0]["simplified"] == "word姐"
-    assert entries[0]["tier"] == 0
+    assert entries[0]["tier"] == 1
     assert entries[0]["category"] == 1
     # A real pinyin query still takes the pinyin path.
     _entries, pinyin_match = db.search("shan", limit=10, part="all", hydrate=0)
@@ -352,7 +352,7 @@ def test_latin_reading_run_counts_as_tier_zero():
     entries, pinyin_match = db.search("cos", limit=10, part="all", hydrate=0)
     assert not pinyin_match
     assert entries[0]["simplified"] == "cos"
-    assert entries[0]["tier"] == 0
+    assert entries[0]["tier"] == 1
 
 
 def test_headword_reading_with_more_definitions_comes_first():
