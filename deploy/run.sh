@@ -63,7 +63,7 @@ if [ -z "${LD_LIBRARY_PATH:-}" ] && [ -d /nix/store ]; then
     done
 fi
 
-mkdir -p run
+mkdir -p deploy/run
 CHILD=""
 # On stop, take the app down with us.
 trap '[ -n "$CHILD" ] && kill "$CHILD" 2>/dev/null; exit 0' TERM INT
