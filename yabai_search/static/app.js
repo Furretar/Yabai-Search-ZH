@@ -759,7 +759,7 @@ function phoneticTokens(syllables, { allowTones = true } = {}) {
     // never joins a run.
     const joinsRun = (i) =>
         tokens[i].kind === "latin" ||
-        (/^\\p{L}$/u.test(raws[i]) && toneOf(raws[i]) === 5);
+        (/^\p{L}$/u.test(raws[i]) && toneOf(raws[i]) === 5);
 
     let i = 0;
     while (i < tokens.length) {
@@ -2802,9 +2802,9 @@ function matchTier(entry, query) {
         const words = [entry.simplified, entry.traditional].filter(Boolean);
         // A Chinese "*" / "?" pattern is matched as a pattern, not as text.
         if (isWildcardQuery(text)) return wildcardTier(words, text);
-        if (words.some((word) => word === text)) return 1;
-        if (words.some((word) => word.startsWith(text))) return 2;
-        if (words.some((word) => word.includes(text))) return 3;
+        if (words.some((word) => word === text)) return 2;
+        if (words.some((word) => word.startsWith(text))) return 3;
+        if (words.some((word) => word.includes(text))) return 4;
         return null;
     }
     const key = toToneless(text);
@@ -2813,9 +2813,9 @@ function matchTier(entry, query) {
     // Taiwan reading (the server matched and ordered by it too), not CEDICT's.
     const shown = state.taiwan && entry.pinyin_taiwan ? entry.pinyin_taiwan : entry.pinyin;
     const reading = toToneless(shown || "");
-    if (reading === key) return 1;
-    if (reading.startsWith(key)) return 2;
-    if (reading.includes(key)) return 3;
+    if (reading === key) return 2;
+    if (reading.startsWith(key)) return 3;
+    if (reading.includes(key)) return 4;
     return null;
 }
 
