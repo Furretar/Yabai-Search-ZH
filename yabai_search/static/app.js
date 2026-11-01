@@ -728,8 +728,13 @@ function toZhuyin(syllable) {
 // Classify each reading token. A token that is valid Mandarin pinyin becomes
 // bopomofo; everything else stays Latin. Lone m/n/ng and uppercase single
 // letters stay Latin because ㄇ˙/ㄋ˙ or ㄚ˙ would be misleading.
+//
+// A Latin word spelled out letter by letter ("w o r d jiě") is the exception
+// to per-token checking: its "o" and "r" are valid pinyin on their own. So a
+// run of neutral-tone single letters and non-pinyin tokens that contains at
+// least one non-pinyin token is kept Latin as a whole.
 function phoneticTokens(syllables, { allowTones = true } = {}) {
-    return syllables.map((syllable) => {
+    const tokens = syllables.map((syllable) => {
         const raw = String(syllable || "");
         if (!allowTones) {
             return { text: raw, kind: "latin" };
@@ -746,6 +751,36 @@ function phoneticTokens(syllables, { allowTones = true } = {}) {
         }
         return { text: raw, kind: "latin" };
     });
+    if (!allowTones) return tokens;
+
+    const raws = syllables.map((syllable) => String(syllable || ""));
+    // Could be one letter of a spelled-out word: already Latin, or an
+    // unmarked single letter. A toned ā/ò is a real interjection, so it
+    // never joins a run.
+    const joinsRun = (i) =>
+        tokens[i].kind === "latin" ||
+        (/^\\p{L}$/u.test(raws[i]) && toneOf(raws[i]) === 5);
+
+    let i = 0;
+    while (i < tokens.length) {
+        if (!joinsRun(i)) {
+            i += 1;
+            continue;
+        }
+        let end = i;
+        let hasNonPinyin = false;
+        while (end < tokens.length && joinsRun(end)) {
+            if (!isPinyinSyllable(raws[end])) hasNonPinyin = true;
+            end += 1;
+        }
+        if (hasNonPinyin) {
+            for (let j = i; j < end; j += 1) {
+                tokens[j] = { text: raws[j], kind: "latin" };
+            }
+        }
+        i = end;
+    }
+    return tokens;
 }
 
 // Build the reading text for a group of syllables: one tone-colored span per
