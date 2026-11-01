@@ -14,7 +14,7 @@ memory at runtime - no per-request disk access.
 # Search language -> the dictionary anchors enabled by default.
 DEFAULTS: dict[str, list[str]] = {
     "EN": ["cedict"],
-    "ZH": ["zhwiktionary"],
+    "ZH": ["zhwiktionary", "baidu"],
     "TW": ["moe", "moe_revised"],
     "JP": ["jpwiktionary"],
 }

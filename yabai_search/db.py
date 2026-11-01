@@ -213,6 +213,10 @@ ZHWIKTIONARY_DB_PATH = DATA_DIR / "zhwiktionary.sqlite"
 # scripts/import_jpwiktionary.py.
 JPWIKTIONARY_DB_PATH = DATA_DIR / "jpwiktionary.sqlite"
 
+# Path to the Baidu pinyin crawler headwords (300k, CC-CEDICT-unlicensed
+# scrape), built by scripts/import_baidu.py. Contributes a source chip only.
+BAIDU_DB_PATH = DATA_DIR / "baidu.sqlite"
+
 # Path to the SUBTLEX-CH word frequencies (Cai & Brysbaert, 2010), built by
 # scripts/import_subtlex.py.
 SUBTLEX_DB_PATH = DATA_DIR / "subtlex.sqlite"
@@ -686,6 +690,31 @@ _SOURCE_QUERIES = [
         "pinyin_rows_sql": "SELECT word, simplified, pinyin FROM headwords "
                            "WHERE pinyin <> ''",
         "split_pinyin": True,
+        "count_sql": "SELECT COUNT(*) FROM headwords",
+    },
+    {
+        "label": "Baidu",
+        "anchor": "baidu",
+        "lang": "mainland",
+        "database": BAIDU_DB_PATH,
+        "sql": "SELECT DISTINCT word FROM headwords WHERE word IN ({ph})",
+        "like_sql": "SELECT DISTINCT word FROM headwords "
+                    "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        "prefix_sql": "SELECT word, word AS traditional, word AS simplified, "
+                      "'' AS pinyin FROM headwords WHERE word LIKE ? ESCAPE '\\'",
+        "head_fts_sql": "SELECT DISTINCT word FROM headwords "
+                        "WHERE word LIKE ? ESCAPE '\\'",
+        "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "repeat": 1,
+        "sense_sql": _SENSES_SQL,
+        "cls_sql": _CLASSIFIERS_SQL,
+        "forms_sql": None,
+        "pinyin_sql": "SELECT '' FROM headwords WHERE word = ? LIMIT 1",
+        "pinyin_batch_sql": "SELECT word, '' FROM headwords "
+                            "WHERE word IN ({ph})",
+        "pinyin_rows_sql": "SELECT word, word, '' FROM headwords "
+                           "WHERE word <> ''",
+        "split_pinyin": False,
         "count_sql": "SELECT COUNT(*) FROM headwords",
     },
 ]
@@ -5717,6 +5746,83 @@ def _anchor_defined_words(anchor: str, words: list[str]) -> set[str]:
     return found
 
 
+# Per-dictionary "does a definition contain the query" lookups, keyed by anchor.
+# `{ph}` is the IN (...) list of headwords; the one `?` is the LIKE pattern.
+# CC-CEDICT is not listed: its rows already carry their English text, so the
+# match is tested in Python (see _definition_match_anchors).
+_SENSE_TEXT_MATCH_SQL = (
+    "SELECT DISTINCT word FROM senses WHERE word IN ({ph}) "
+    "AND lower(text) LIKE ? ESCAPE '\\'"
+)
+_DEFINITION_MATCH_SQL = {
+    "wiktionary": (
+        "SELECT DISTINCT word FROM wiktionary WHERE word IN ({ph}) "
+        "AND gloss IS NOT NULL AND lower(gloss) LIKE ? ESCAPE '\\'"
+    ),
+}
+
+
+def _definition_needle(query: str) -> str:
+    """The text a definition search looks for: the query without its quotes."""
+    text = (query or "").strip()
+    if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+        text = text[1:-1]
+    return text.strip().lower()
+
+
+def _definition_match_anchors(entries: list[dict], query: str) -> list[set[str]]:
+    """For each row, the dictionaries whose DEFINITIONS contain the query.
+
+    A definition search ("word", or any query that matched no headword or
+    reading) finds a row because some dictionary's definition text contains the
+    query. Which dictionary that was decides whether the row belongs to the
+    selected dictionaries or to "Other Dictionaries": a headword that merely
+    exists in a selected dictionary (字 in the MOE dictionary) says nothing
+    about the definition that matched (CC-CEDICT's "word"). A row nothing could
+    be verified for gets an empty set; the caller keeps its older rules for it.
+    """
+    needle = _definition_needle(query)
+    matches: list[set[str]] = [set() for _ in entries]
+    if not needle or not entries:
+        return matches
+    pattern_re = _query_regex(needle)
+    for i, entry in enumerate(entries):
+        text = entry.get("english_normalized") or entry.get("english") or ""
+        if text and pattern_re.search(text.lower()):
+            matches[i].add("cedict")
+    like = _like_pattern(f"*{needle}*")
+    words = sorted(
+        {entry["traditional"] for entry in entries if entry.get("traditional")}
+        | {entry["simplified"] for entry in entries if entry.get("simplified")}
+    )
+    for source in _SOURCE_QUERIES:
+        anchor = source["anchor"]
+        if anchor == "cedict" or not source["database"].exists():
+            continue
+        sql = _DEFINITION_MATCH_SQL.get(anchor, _SENSE_TEXT_MATCH_SQL)
+        found: set[str] = set()
+        connection = _connect(source["database"])
+        try:
+            for chunk in _chunks(words):
+                holes = ",".join("?" * len(chunk))
+                try:
+                    rows = connection.execute(
+                        sql.format(ph=holes), (*chunk, like)
+                    ).fetchall()
+                except sqlite3.Error:
+                    # Older source databases may predate the senses table.
+                    break
+                found.update(row[0] for row in rows)
+        finally:
+            connection.close()
+        if not found:
+            continue
+        for i, entry in enumerate(entries):
+            if entry.get("traditional") in found or entry.get("simplified") in found:
+                matches[i].add(anchor)
+    return matches
+
+
 _NON_PINYIN_LETTER_RE = re.compile(r"[^a-zü]")
 
 
@@ -5900,6 +6006,7 @@ def rank_by_category(
     """
     if not entries:
         return entries
+    import sys as _dbg; print("DBG rbc called n=", len(entries), "def_search=", definition_search, "selected=", sorted(selected), file=_dbg.stderr)
     words = sorted(
         {entry["traditional"] for entry in entries if entry.get("traditional")}
         | {entry["simplified"] for entry in entries if entry.get("simplified")}
@@ -5941,16 +6048,44 @@ def rank_by_category(
                 any_defined |= _anchor_defined_words(source["anchor"], probe)
 
     # An English definition search arrives already ordered by relevance.py.
-    # Keep that order; only annotate the category the page needs for its
-    # "Other Dictionaries" heading and keep the relevance tier.
+    # Keep that order inside a category; only annotate the category the page
+    # needs for its "Other Dictionaries" heading and keep the relevance tier.
     if definition_search and any(entry.get("_relevance") for entry in entries):
+        # A row found by its definition belongs to the selected dictionaries
+        # only when a SELECTED dictionary's definition contains the query. That
+        # a selected dictionary also lists the headword is irrelevant: with
+        # Taiwan selected, "word" matches CC-CEDICT's English for 字, and 字
+        # being in the MOE dictionary must not pull it out of "Other
+        # Dictionaries". Headword matches (the Latin tier-0 rows) and rows whose
+        # definition match cannot be verified keep the headword rule above.
+        matched = _definition_match_anchors(entries, query)
+        import sys as _dbg; print("DBG api matched", [sorted(m) for m in matched[:5]], "selected", sorted(selected), "n", len(entries), file=_dbg.stderr)
+        import sys as _dbg; print("DBG match_anchors", [sorted(m) for m in matched[:5]], "selected", sorted(selected), "_SOURCE_QUERIES", [s["anchor"] for s in _SOURCE_QUERIES], file=_dbg.stderr)
+        for i, entry in enumerate(entries):
+            if entry.pop("_head_match", False) or not matched[i]:
+                continue
+            category1[i] = bool(matched[i] & selected)
+        ranked: list[tuple[int, int, dict]] = []
         for i, entry in enumerate(entries):
             defined = (
-                category1[i] or has_cedict[i] or listed(entry, any_defined)
+                category1[i]
+                or has_cedict[i]
+                or bool(matched[i])
+                or listed(entry, any_defined)
             )
-            entry["category"] = 1 if category1[i] else 2 if defined else 3
+            category = 1 if category1[i] else 2 if defined else 3
+            entry["category"] = category
+            if matched[i]:
+                # The dictionaries that matched, so the page can show those
+                # definitions for a row that lives under "Other Dictionaries".
+                entry["match_anchors"] = sorted(matched[i])
+                import sys as _dbg; print("DBG set match_anchors", entry.get("simplified"), entry.get("match_anchors"), file=_dbg.stderr)
             entry.pop("_relevance", None)
-        return entries
+            ranked.append((category, i, entry))
+        # Category is the primary key. The sort is stable on the original
+        # index, so relevance order is kept inside each category.
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        return [entry for _category, _i, entry in ranked]
 
     # The query side is the same for every row; compute it once.
     text, is_cjk, wildcard, client_key = _match_context(query)
@@ -5988,6 +6123,9 @@ def rank_by_category(
         sub = (2 if ids else 0 if has_reading else 1) if not dialect else 3
         return (category, tier, sub)
 
+    for entry in entries:
+        # Only the definition branch above reads this marker.
+        entry.pop("_head_match", None)
     keys = [key(index) for index in range(len(entries))]
     order = sorted(range(len(entries)), key=keys.__getitem__)
     ranked: list[dict] = []
@@ -6981,7 +7119,7 @@ def _search_core(
             entry.pop("_search_rank", None)
             entry.pop("_sense_count", None)
         if part == "primary":
-            return decorated[: len(entries[:insert_at] + source_prefix)], True
+            return decorated[: len(top)], True
         return decorated, True
 
     # Exact pinyin reading (e.g. "yabai" -> 牙白): if the query is a complete
@@ -7804,6 +7942,9 @@ def search(
                 # Keep rank_by_category from re-sorting the prepended rows.
                 entry["_relevance"] = True
                 entry["category"] = 1
+                # A headword/reading match, not a definition match: it keeps
+                # the headword rule when rank_by_category picks its category.
+                entry["_head_match"] = True
             entries = latin + entries
     return entries, pinyin_match
 
