@@ -18,7 +18,7 @@ from yabai_search.db import (
 )
 
 # The jieba user-dictionary we generate from the dictionary headwords.
-USERDICT_PATH = Path(__file__).resolve().parents[1] / "data" / "cedict_userdict.txt"
+USERDICT_PATH = Path(__file__).resolve().parents[1] / "data" / "dl" / "cedict_userdict.txt"
 
 _loaded = False
 _headword_cache: set[str] | None = None
