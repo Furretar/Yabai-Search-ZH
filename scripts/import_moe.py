@@ -26,7 +26,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ZIP = ROOT / "data" / "dict_concised_2014_20260929.zip"
+DEFAULT_ZIP = ROOT / "data" / "dl" / "dict_concised_2014_20260929.zip"
 DEFAULT_DB = ROOT / "data" / "moe.sqlite"
 REVISED_DIR = ROOT / "data" / "moe"
 REVISED_DB = ROOT / "data" / "moe_revised.sqlite"

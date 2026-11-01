@@ -34,7 +34,7 @@ DEFAULT_URL = (
     "https://dumps.wikimedia.org/jawiktionary/latest/"
     "jawiktionary-latest-pages-articles.xml.bz2"
 )
-DEFAULT_CACHE = ROOT / "data" / "jawiktionary-latest-pages-articles.xml.bz2"
+DEFAULT_CACHE = ROOT / "data" / "dl" / "jawiktionary-latest-pages-articles.xml.bz2"
 DEFAULT_DB = ROOT / "data" / "jpwiktionary.sqlite"
 
 # ja.wiktionary labels the Chinese language section with {{L|zh}}; older pages

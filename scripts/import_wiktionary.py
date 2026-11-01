@@ -35,7 +35,7 @@ from yabai_search.pinyin import split_pinyin, to_numeric, to_toneless
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_URL = "https://kaikki.org/dictionary/Chinese/kaikki.org-dictionary-Chinese.jsonl.gz"
-DEFAULT_CACHE = ROOT / "data" / "kaikki_zh.jsonl.gz"
+DEFAULT_CACHE = ROOT / "data" / "dl" / "kaikki_zh.jsonl.gz"
 DEFAULT_DB = ROOT / "data" / "wiktionary.sqlite"
 # The app splits run-together readings with the syllables CEDICT uses, so the
 # importer precomputes the same spacing from the same source.
