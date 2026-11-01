@@ -185,11 +185,11 @@ DB_PATH = DATA_DIR / "cedict.sqlite"
 
 # Path to the concise MOE dictionary (Taiwan readings), built by
 # scripts/import_moe.py.
-MOE_DB_PATH = DATA_DIR / "moe.sqlite"
+MOE_DB_PATH = DATA_DIR / "moe-taiwan" / "moe.sqlite"
 
 # Path to the comprehensive MOE dictionary (重編國語辭典修訂本), built by
 # scripts/import_moe.py --kind revised.
-MOE_REVISED_DB_PATH = DATA_DIR / "moe_revised.sqlite"
+MOE_REVISED_DB_PATH = DATA_DIR / "moe-taiwan" / "moe_revised.sqlite"
 
 # Path to the prefilled Taiwan readings of every dictionary, built by
 # scripts/build_taiwan_readings.py. Rebuild it whenever a source database, an
