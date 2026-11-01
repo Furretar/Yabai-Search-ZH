@@ -38,12 +38,12 @@ def test_normalization_handles_nested_unbalanced_and_leading_articles():
 def test_one_row_per_tier():
     query = "word"
     rows = {
-        0: entry("word姐", "my big sister", pinyin="w o r d jiě"),
-        1: entry("词", "word; statement", pinyin="cí"),
-        2: entry("被", "the following word should be regarded", pinyin="bèi"),
-        3: entry("下", "I (modest word in letter)", pinyin="xià"),
-        4: entry("关键词", "keyword", pinyin="guān jiàn cí"),
-        5: entry("詞", "variant of word", pinyin="cí"),
+        1: entry("word姐", "my big sister", pinyin="w o r d jiě"),
+        2: entry("词", "word; statement", pinyin="cí"),
+        3: entry("被", "the following word should be regarded", pinyin="bèi"),
+        4: entry("下", "I (modest word in letter)", pinyin="xià"),
+        5: entry("关键词", "keyword", pinyin="guān jiàn cí"),
+        6: entry("詞", "variant of word", pinyin="cí"),
     }
     for tier, row in rows.items():
         features = relevance.match_entry(row, query)
@@ -53,18 +53,18 @@ def test_one_row_per_tier():
 
 def test_player_one_row_per_tier_without_a_headword_match():
     query = "word"
-    assert relevance.match_features("word; statement", query).tier == 1
-    assert relevance.match_features("the following word should be", query).tier == 2
-    assert relevance.match_features("I (modest word in letter)", query).tier == 3
-    assert relevance.match_features("keyword", query).tier == 4
-    assert relevance.match_features("variant of word", query).tier == 5
+    assert relevance.match_features("word; statement", query).tier == 2
+    assert relevance.match_features("the following word should be", query).tier == 3
+    assert relevance.match_features("I (modest word in letter)", query).tier == 4
+    assert relevance.match_features("keyword", query).tier == 5
+    assert relevance.match_features("variant of word", query).tier == 6
 
 
 def test_to_speak_and_empty_or_one_letter_guard():
-    assert relevance.match_features("to speak", "to speak").tier == 1
-    assert relevance.match_features("speak", "to speak").tier == 1
+    assert relevance.match_features("to speak", "to speak").tier == 2
+    assert relevance.match_features("speak", "to speak").tier == 2
     assert relevance.match_features("word", "") is None
-    assert relevance.match_features("a", "a").tier == 1
+    assert relevance.match_features("a", "a").tier == 2
     assert relevance.match_features("cat", "a") is None
 
 
@@ -86,7 +86,7 @@ def test_shuffle_invariance():
 
 
 def test_tier_dominates_frequency():
-    """A tier 0 row beats a tier 1 row even if its frequency rank is worse."""
+    """A tier 1 row beats a tier 2 row even if its frequency rank is worse."""
     rows = [
         entry("词", "word", rank=1),
         entry("word姐", "my big sister", rank=999),

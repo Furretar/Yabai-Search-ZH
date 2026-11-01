@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 
-RELEVANCE_VERSION = 1
+RELEVANCE_VERSION = 2
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -203,17 +203,17 @@ def match_features(english: str, query: str) -> Features | None:
                 or _substring(outside, normalized_query)
             ):
                 continue
-            tier = 5
+            tier = 6
         elif outside == normalized_query:
-            tier = 1
-        elif _whole_word(outside, normalized_query):
             tier = 2
-        elif _whole_word(inside, normalized_query):
+        elif _whole_word(outside, normalized_query):
             tier = 3
+        elif _whole_word(inside, normalized_query):
+            tier = 4
         elif _substring(outside, normalized_query) or _substring(
             inside, normalized_query
         ):
-            tier = 4
+            tier = 5
         else:
             continue
         features = Features(
@@ -251,7 +251,7 @@ def headword_features(headword: str, query: str) -> Features | None:
         + r"(?![a-z0-9])"
     )
     if re.search(pattern, headword.lower()):
-        return Features(0, 0, 0)
+        return Features(1, 0, 0)
     return None
 
 
@@ -312,7 +312,7 @@ def rank_entries(entries: list[dict], query: str, boost_exact: bool | None = Non
     if boost_exact is None:
         boost_exact = bool(query.strip()) and query.strip()[0].isupper() and query.strip()[0].isalpha()
     has_exact = boost_exact and any(
-        features.tier == 1
+        features.tier == 2
         and exact_whole_gloss(entry.get("english") or "", query)
         for features, entry in matched
     )
@@ -324,7 +324,7 @@ def rank_entries(entries: list[dict], query: str, boost_exact: bool | None = Non
             0
             if (
                 has_exact
-                and features.tier == 1
+                and features.tier == 2
                 and exact_whole_gloss(entry.get("english") or "", query)
             )
             else 1
