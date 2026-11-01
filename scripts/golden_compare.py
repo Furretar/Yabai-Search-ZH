@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 from yabai_search import db  # noqa: E402
 from yabai_search.pinyin import to_toneless  # noqa: E402
 
-DATA = ROOT / "data" / "work"
+DATA = ROOT / "data" / "temp"
 QUERIES = DATA / "golden_queries.json"
 CEDICT = ROOT / "data" / "cedict.sqlite"
 
