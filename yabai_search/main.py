@@ -282,17 +282,23 @@ def _normal_search_state(
         at = time.perf_counter()
         forms = db.headword_query_forms(q)
         if forms:
+            def _entry_words(entry):
+                words = [
+                    entry.get("simplified", ""),
+                    entry.get("traditional", ""),
+                ]
+                for form in entry.get("forms", []) or []:
+                    words.append(form.get("traditional", ""))
+                    words.append(form.get("simplified", ""))
+                return [word for word in words if word]
+
             headword_matches = [
                 entry
                 for entry in results
                 if any(
                     form in word
                     for form in forms
-                    for word in (
-                        entry.get("simplified", ""),
-                        entry.get("traditional", ""),
-                    )
-                    if word
+                    for word in _entry_words(entry)
                 )
             ]
             if headword_matches:
@@ -1218,7 +1224,10 @@ def _expand_variants(results: list[dict]) -> list[dict]:
                 looked = [
                     e for e in looked_by_target.get(target, []) if not e.get("main")
                 ]
-                on_target = [e for e in looked if e["traditional"] == target] or looked
+                on_target = [
+                    e for e in looked
+                    if e["traditional"] == target or e["simplified"] == target
+                ] or looked
                 # A variant only redirects within its own reading: for "gan", the
                 # gān old-variant 乹 must not pull in 乾's unrelated qián readings.
                 shown = (
