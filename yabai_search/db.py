@@ -220,7 +220,7 @@ SUBTLEX_DB_PATH = DATA_DIR / "subtlex.sqlite"
 # Temporary frequency source built from the FineWeb2 combined list. The old
 # SUBTLEX rank column stays in the database, so setting
 # YABAI_FREQ_SOURCE=subtlex restores it without rebuilding anything.
-CORPUS_FREQ_DB_PATH = GENERATED_DIR / "corpus_freq.sqlite"
+CORPUS_FREQ_DB_PATH = DATA_DIR / "corpus_freq.sqlite"
 FREQ_SOURCE = os.environ.get("YABAI_FREQ_SOURCE", "corpus").strip().lower()
 if FREQ_SOURCE not in {"corpus", "subtlex"}:
     FREQ_SOURCE = "corpus"
@@ -6940,16 +6940,24 @@ def _search_core(
         # Keep the CEDICT order intact. Source prefixes only move ahead of
         # the first CEDICT row that merely contains the query; source
         # contains-only rows stay at the end.
+        def pinyin_rank(entry: dict) -> int:
+            reading = to_toneless(entry.get("pinyin", ""))
+            if reading == letters:
+                return 0
+            if reading.startswith(letters):
+                return 1
+            return 2
+
         source_prefix = [e for e in source_rows if pinyin_rank(e) <= 1]
         source_contains = [e for e in source_rows if pinyin_rank(e) == 2]
         insert_at = next(
-            (i for i, entry in enumerate(entries) if pinyin_rank(entry) == 2),
-            len(entries),
+            (i for i, entry in enumerate(top) if pinyin_rank(entry) == 2),
+            len(top),
         )
         combined = (
-            entries[:insert_at]
+            top[:insert_at]
             + source_prefix
-            + entries[insert_at:]
+            + top[insert_at:]
             + source_contains
         )
         decorated = decorate(combined)
@@ -7723,9 +7731,9 @@ def _latin_candidates(query: str, limit: int) -> list[dict]:
             # A headword match outranks a reading-only match; inside the
             # reading group an exact run sorts ahead of a mere substring.
             if any(normalized == run for run in runs):
-                features = relevance.Features(0, 1, 0)
+                features = relevance.Features(1, 1, 0)
             elif any(normalized in run for run in runs):
-                features = relevance.Features(0, 1, 1)
+                features = relevance.Features(1, 1, 1)
         if features is not None:
             matches.append((features, entry))
     if not matches:
@@ -7792,7 +7800,7 @@ def search(
                 not in seen
             ]
             for entry in latin:
-                entry["tier"] = 0
+                entry["tier"] = 1
                 # Keep rank_by_category from re-sorting the prepended rows.
                 entry["_relevance"] = True
                 entry["category"] = 1
