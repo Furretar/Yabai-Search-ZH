@@ -6,9 +6,13 @@ markup and source hooks that the recent UI changes rely on.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+JS_FILES = ("app.js", "custom_dicts.js", "glyphs.js")
 
 
 def test_about_page_renders_readme_live(client, monkeypatch, tmp_path):
@@ -430,6 +434,21 @@ def test_ids_headword_keeps_readable_prefix():
     assert "text.search(/[\\u2ff0-\\u2fff]/)" in js
     assert 'prefixNode.className = "ids-prefix"' in js
     assert ".ids-prefix" in css
+
+
+def test_frontend_javascript_parses():
+    """A syntax error in app.js breaks the whole page, so guard against it."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+    for name in JS_FILES:
+        path = ROOT / "yabai_search" / "static" / name
+        result = subprocess.run(
+            [node, "--check", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"{name}: {result.stderr}"
 
 
 def test_pager_puts_buttons_below_page_text():
