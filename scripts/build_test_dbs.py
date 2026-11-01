@@ -28,7 +28,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 DEFAULT_SOURCE = PROJECT_ROOT / "data"
-DEFAULT_OUTPUT = DEFAULT_SOURCE / "dummy"
+DEFAULT_OUTPUT = DEFAULT_SOURCE / "dummy-test-databases"
 
 # These databases are derived from the others. Copying them would leave a stale
 # signature, so rebuild them from the dummy sources instead (the search index
@@ -71,11 +71,11 @@ SIGNATURE_SOURCES = {
 }
 
 
-def refresh_signatures(output_dir: Path) -> None:
+def refresh_signatures(output_dir: Path, generated_dir: Path) -> None:
     """Point the derived indexes' recorded source hashes at the dummy files."""
     digests: dict[str, str] = {}
     for index_name, keys in SIGNATURE_SOURCES.items():
-        index_path = output_dir / index_name
+        index_path = generated_dir / index_name
         if not index_path.is_file():
             continue
         connection = sqlite3.connect(index_path)
@@ -188,6 +188,10 @@ def build_all(
 ) -> dict[str, dict[str, int]]:
     """Build a dummy copy of every source database; return counts per database."""
     built: dict[str, dict[str, int]] = {}
+    generated_source = source_dir / "generated-indexes-optimizations"
+    generated_output = output_dir / "generated-indexes-optimizations"
+    generated_output.mkdir(parents=True, exist_ok=True)
+
     for source in sorted(source_dir.glob("*.sqlite")):
         if source.name in DERIVED_DATABASES:
             continue
@@ -199,7 +203,21 @@ def build_all(
         built[source.name] = counts
         size_kb = target.stat().st_size / 1024
         print(f"{source.name:28} {sum(counts.values()):6} rows {size_kb:7.0f} KB")
-    refresh_signatures(output_dir)
+
+    if generated_source.is_dir():
+        for source in sorted(generated_source.glob("*.sqlite")):
+            if source.name in DERIVED_DATABASES:
+                continue
+            if source.stat().st_size == 0:
+                print(f"skip {source.name}: empty file", file=sys.stderr)
+                continue
+            target = generated_output / source.name
+            counts = copy_database(source, target, rows)
+            built[source.name] = counts
+            size_kb = target.stat().st_size / 1024
+            print(f"{source.name:28} {sum(counts.values()):6} rows {size_kb:7.0f} KB")
+
+    refresh_signatures(output_dir, generated_output)
     # Build the sense-count table from the dummy CEDICT, so it agrees with the
     # copied rows instead of carrying the real file's counts.
     cedict = output_dir / "cedict.sqlite"
@@ -207,12 +225,12 @@ def build_all(
         from yabai_search import db as app_db
 
         counts = app_db.build_sense_counts(
-            output_dir / "sense_counts.sqlite", cedict_path=cedict
+            generated_output / "sense_counts.sqlite", cedict_path=cedict
         )
         built["sense_counts.sqlite"] = {"senses": counts["rows"]}
         print(
             f"{'sense_counts.sqlite':28} {counts['rows']:6} rows"
-            f" { (output_dir / 'sense_counts.sqlite').stat().st_size / 1024:7.0f} KB"
+            f" { (generated_output / 'sense_counts.sqlite').stat().st_size / 1024:7.0f} KB"
         )
     return built
 
@@ -246,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no databases found in {args.source}", file=sys.stderr)
         return 1
 
-    total = sum(path.stat().st_size for path in args.output.glob("*.sqlite"))
+    total = sum(path.stat().st_size for path in args.output.rglob("*.sqlite"))
     print(f"{len(built)} databases, {total / 1024 / 1024:.1f} MB in {args.output}")
     print(
         "next: YABAI_DATA_DIR={out} uv run python scripts/build_search_index.py".format(

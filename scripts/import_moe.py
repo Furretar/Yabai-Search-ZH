@@ -26,9 +26,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ZIP = ROOT / "data" / "dl" / "dict_concised_2014_20260929.zip"
+DEFAULT_ZIP = ROOT / "data" / "dl-base-dictionaries" / "dict_concised_2014_20260929.zip"
 DEFAULT_DB = ROOT / "data" / "moe.sqlite"
-REVISED_DIR = ROOT / "data" / "moe"
+REVISED_DIR = ROOT / "data" / "moe-taiwan"
 REVISED_DB = ROOT / "data" / "moe_revised.sqlite"
 
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -62,7 +62,7 @@ def latest_revised_zip() -> Path:
 
 
 # Where the extracted glyph images live, served by GET /moe-glyphs/<name>.
-GLYPH_DIR = ROOT / "data" / "moe_glyphs"
+GLYPH_DIR = ROOT / "data" / "moe-taiwan" / "moe_glyphs"
 # The 字圖 archive's inner folder ends with this (the glyph pictures for
 # characters UTF-8 cannot represent, referenced as "&8ff0._104_0.gif;").
 _GLYPH_FOLDER_RE = re.compile(r"utf8.*字圖/$")

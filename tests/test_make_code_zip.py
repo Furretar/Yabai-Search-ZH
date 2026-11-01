@@ -54,7 +54,7 @@ def test_archive_holds_source_and_skips_generated_folders(tmp_path: Path) -> Non
 
     expected = [
         "README.md",
-        "data/dummy/cedict.sqlite",
+        "data/dummy-test-databases/cedict.sqlite",
         "data/search.log",
         "yabai_search/main.py",
         "yabai_search/static/app.js",

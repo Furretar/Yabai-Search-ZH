@@ -34,7 +34,7 @@ PAGES = {
     "idioms": "dict_idiomsdict_download.html",
 }
 ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / "data" / "moe"
+OUT_DIR = ROOT / "data" / "moe-taiwan"
 
 # Links to downloadable zips on a dictionary's page, e.g. "download/..._2014_20260929.zip".
 ZIP_RE = re.compile(r'href="(download/[^"]+\.zip)"')

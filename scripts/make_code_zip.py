@@ -46,7 +46,7 @@ KEPT_FILES = (Path("data") / "search.log",)
 # Folders inside a skipped folder that are kept whole. data/dummy holds the
 # small stand-in databases (scripts/build_test_dbs.py), so an archive can run
 # the optimisation tests without the real data.
-KEPT_DIRS = (Path("data") / "dummy",)
+KEPT_DIRS = (Path("data") / "dummy-test-databases",)
 
 
 def iter_source_files(root: Path):

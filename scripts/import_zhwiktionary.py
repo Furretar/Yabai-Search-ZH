@@ -32,7 +32,7 @@ DEFAULT_URL = (
     "https://dumps.wikimedia.org/zhwiktionary/latest/"
     "zhwiktionary-latest-pages-articles.xml.bz2"
 )
-DEFAULT_CACHE = ROOT / "data" / "dl" / "zhwiktionary-latest-pages-articles.xml.bz2"
+DEFAULT_CACHE = ROOT / "data" / "dl-base-dictionaries" / "zhwiktionary-latest-pages-articles.xml.bz2"
 DEFAULT_DB = ROOT / "data" / "zhwiktionary.sqlite"
 CEDICT_DB = ROOT / "data" / "cedict.sqlite"
 

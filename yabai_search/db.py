@@ -176,6 +176,10 @@ DATA_DIR = Path(
     or Path(__file__).resolve().parents[1] / "data"
 )
 
+# Generated indexes and derived databases live in a subfolder so the raw
+# dictionaries stay easy to find. YABAI_DATA_DIR moves the whole tree.
+GENERATED_DIR = DATA_DIR / "generated-indexes-optimizations"
+
 # Path to the generated CEDICT database: <project root>/data/cedict.sqlite.
 DB_PATH = DATA_DIR / "cedict.sqlite"
 
@@ -190,15 +194,15 @@ MOE_REVISED_DB_PATH = DATA_DIR / "moe_revised.sqlite"
 # Path to the prefilled Taiwan readings of every dictionary, built by
 # scripts/build_taiwan_readings.py. Rebuild it whenever a source database, an
 # override in overrides.py or the Taiwan-reading logic below changes (AGENTS.md).
-TAIWAN_DB_PATH = DATA_DIR / "taiwan_readings.sqlite"
+TAIWAN_DB_PATH = GENERATED_DIR / "taiwan_readings.sqlite"
 
 # Path to the Wiktionary headword list (kaikki.org/Wiktextract), built by
 # scripts/import_wiktionary.py.
 WIKTIONARY_DB_PATH = DATA_DIR / "wiktionary.sqlite"
-SOURCE_GLOSS_DB_PATH = DATA_DIR / "source_gloss.sqlite"
-SENSE_COUNTS_DB_PATH = DATA_DIR / "sense_counts.sqlite"
+SOURCE_GLOSS_DB_PATH = GENERATED_DIR / "source_gloss.sqlite"
+SENSE_COUNTS_DB_PATH = GENERATED_DIR / "sense_counts.sqlite"
 _source_gloss_ok_cache: bool | None = None
-HEAD_GRAMS_DB_PATH = DATA_DIR / "head_grams.sqlite"
+HEAD_GRAMS_DB_PATH = GENERATED_DIR / "head_grams.sqlite"
 _head_grams_ok_cache: bool | None = None
 
 # Path to the Chinese Wiktionary (zh.wiktionary.org) database, built by
@@ -216,7 +220,7 @@ SUBTLEX_DB_PATH = DATA_DIR / "subtlex.sqlite"
 # Temporary frequency source built from the FineWeb2 combined list. The old
 # SUBTLEX rank column stays in the database, so setting
 # YABAI_FREQ_SOURCE=subtlex restores it without rebuilding anything.
-CORPUS_FREQ_DB_PATH = DATA_DIR / "corpus_freq.sqlite"
+CORPUS_FREQ_DB_PATH = GENERATED_DIR / "corpus_freq.sqlite"
 FREQ_SOURCE = os.environ.get("YABAI_FREQ_SOURCE", "corpus").strip().lower()
 if FREQ_SOURCE not in {"corpus", "subtlex"}:
     FREQ_SOURCE = "corpus"
@@ -231,15 +235,15 @@ HSK_DB_PATH = DATA_DIR / "hsk.sqlite"
 # Path to the definition word list (scripts/import_english_words.py): the whole
 # words that appear in any dictionary's definitions, used for the English-search
 # hint.
-ENGLISH_WORDS_DB_PATH = DATA_DIR / "english_words.sqlite"
+ENGLISH_WORDS_DB_PATH = GENERATED_DIR / "english_words.sqlite"
 
 # Path to the definition gram index (scripts/import_definition_grams.py): Han
 # unigrams/bigrams used to skip definition scans that cannot match.
-DEFINITION_GRAMS_DB_PATH = DATA_DIR / "definition_grams.sqlite"
+DEFINITION_GRAMS_DB_PATH = GENERATED_DIR / "definition_grams.sqlite"
 
 # Path to the Han unigram/bigram inverted index (scripts/import_gram_words.py):
 # turns 1-2 character CJK queries into one lookup instead of a table scan.
-GRAM_WORDS_DB_PATH = DATA_DIR / "gram_words.sqlite"
+GRAM_WORDS_DB_PATH = GENERATED_DIR / "gram_words.sqlite"
 _gram_words_ok_cache: bool | None = None
 
 # Path to the prebuilt search index (scripts/build_search_index.py): the "*"

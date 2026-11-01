@@ -870,7 +870,7 @@ def pwa_service_worker() -> FileResponse:
 # MOE glyph pictures (data/moe_glyphs/, unpacked by scripts/import_moe.py from
 # the 字圖 zip). Definitions reference them as "&8ff0._104_0.gif;", which the
 # frontend swaps for one of these images so the rare character shows inline.
-_GLYPH_DIR = BASE.parent / "data" / "moe_glyphs"
+_GLYPH_DIR = BASE.parent / "data" / "moe-taiwan" / "moe_glyphs"
 # Names are MOE's own hex codes, e.g. "8ff0._104_0.gif" or "f4ff2_.png" - no
 # path separators, so they cannot escape the directory.
 _GLYPH_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:gif|png)$")

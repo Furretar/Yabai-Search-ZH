@@ -120,7 +120,7 @@ def test_conversion_literally_is_displayed(client):
     assert "(lit.)" not in text
 
 
-GLYPH = DATA / "moe_glyphs" / "8ff0._104_0.gif"
+GLYPH = DATA / "moe-taiwan" / "moe_glyphs" / "8ff0._104_0.gif"
 
 
 def test_exact_cross_reference_shows_the_target_definition(client):

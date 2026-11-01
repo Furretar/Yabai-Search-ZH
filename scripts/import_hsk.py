@@ -26,7 +26,7 @@ DEFAULT_URL = (
     "https://raw.githubusercontent.com/drkameleon/"
     "complete-hsk-vocabulary/main/complete.min.json"
 )
-DEFAULT_CACHE = ROOT / "data" / "dl" / "hsk-complete.min.json"
+DEFAULT_CACHE = ROOT / "data" / "dl-base-dictionaries" / "hsk-complete.min.json"
 DEFAULT_DB = ROOT / "data" / "hsk.sqlite"
 
 SCHEMA = """

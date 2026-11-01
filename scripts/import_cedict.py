@@ -33,7 +33,7 @@ DEFAULT_URL = (
     "https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz"
 )
 # Where we cache the download, and the database we generate from it.
-DEFAULT_CACHE = ROOT / "data" / "dl" / "cedict.txt.gz"
+DEFAULT_CACHE = ROOT / "data" / "dl-base-dictionaries" / "cedict.txt.gz"
 DEFAULT_DB = ROOT / "data" / "cedict.sqlite"
 
 # Matches one CEDICT entry line: "trad simp [pin1 yin1] /def/def/"
