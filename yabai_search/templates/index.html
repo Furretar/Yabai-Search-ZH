@@ -68,6 +68,8 @@
     <script src="/static/inline_furigana.js?v={{ asset_version }}" defer></script>
     <!-- Cleans up the service worker/caches installed by older versions. -->
     <script src="/static/pwa.js" defer></script>
+    <!-- Picks the local host for this visitor (see the comment in hosts.js). -->
+    <script src="/static/hosts.js?v={{ asset_version }}" defer></script>
     </head>
 
 <body{% if exact %} class="exact-mode"{% endif %}>
@@ -123,6 +125,13 @@
                 <div class="menu-host" title="Which machine served this page">
                     <span>Host:</span>
                     <strong>{{ served_by }}</strong>
+                </div>
+                <!-- Filled in by hosts.js when the Worker is in front: which host
+                     answers this visitor's searches, and which one takes account writes. -->
+                <div class="menu-host" id="menu-hosts" hidden
+                    title="Local: answers your searches. Global: the only host that changes accounts.">
+                    <span>Local: <strong id="menu-local-host"></strong></span>
+                    <span>Global: <strong id="menu-global-host"></strong></span>
                 </div>
                 <!-- Auto Clipboard: search the clipboard contents on focus. -->
                 <label class="menu-item menu-switch" for="auto-clipboard-toggle">
@@ -304,7 +313,8 @@
                                     </div>
                                     <div class="dict-items">
                                         {% for d in dictionaries if d.lang == lang %}
-                                        <label><input type="checkbox" class="dict-toggle"
+                                        <label{% if d.hidden %} class="dict-hidden"{% endif %}><input
+                                                type="checkbox" class="dict-toggle"
                                                 data-anchor="{{ d.anchor }}"><span class="dict-name-label">{{ d.label
                                                 }}</span></label>
                                         {% endfor %}

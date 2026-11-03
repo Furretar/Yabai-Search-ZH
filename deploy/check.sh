@@ -33,6 +33,8 @@ probe() {
         "$host" "$status" "${served:--}" "${origin:--}" "$t"
 }
 
+# Who the Worker thinks the global writer is, and how fast each host is from here.
+echo "writer/timings: $(curl -sS -m 10 https://yabaisearch.org/__probe 2>&1)"
 probe yabaisearch.org
 probe www.yabaisearch.org
 probe laptop.yabaisearch.org

@@ -127,12 +127,19 @@ def user_settings(request):
     """
     if not request.user.is_authenticated:
         return _unauthorized()
-    record, _ = UserSettings.objects.get_or_create(user=request.user)
     if request.method == "GET":
+        # A read: do not create the row here (a replica may not write).
+        record = UserSettings.objects.filter(user=request.user).first()
         return HttpResponse(
-            json.dumps({"data": record.data, "updated_at": record.updated_at.isoformat()}),
+            json.dumps(
+                {
+                    "data": record.data if record else {},
+                    "updated_at": record.updated_at.isoformat() if record else None,
+                }
+            ),
             content_type="application/json",
         )
+    record, _ = UserSettings.objects.get_or_create(user=request.user)
     if len(request.body) > MAX_SETTINGS_BYTES:
         return HttpResponse(
             json.dumps({"detail": "Settings are too large."}),

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Keep the app running, restarting it whenever it exits.
 #
-# Usage: deploy/run.sh <role>      role = laptop | tablet | dev
+# Usage: deploy/run.sh <role>      role = laptop | tablet | tabs | tabs2 | galaxy-tab-s | galaxy-tab-s2 | dev
 #
-# laptop and tablet run behind the shared-secret gate (OriginSecretMiddleware,
-# active when YABAI_ORIGIN_SECRET is set) on port 8000. dev runs without that
-# gate on port 8001 (protect it with Cloudflare Access instead). Settings per
-# machine go in deploy/env.local (not in git); DJANGO_SECRET_KEY is required.
+# laptop and the tablets run behind the shared-secret gate
+# (OriginSecretMiddleware, active when YABAI_ORIGIN_SECRET is set) on port 8000.
+# dev runs without that gate on port 8001 (protect it with Cloudflare Access
+# instead). Settings per machine go in deploy/env.local (not in git);
+# DJANGO_SECRET_KEY is required.
 set -u
 
-ROLE="${1:?usage: run.sh laptop|tablet|dev}"
+ROLE="${1:?usage: run.sh laptop|tablet|tabs|tabs2|galaxy-tab-s|galaxy-tab-s2|dev}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -26,7 +27,7 @@ case "$ROLE" in
         # The dev copy sits behind Cloudflare Access, not the Worker's secret.
         unset YABAI_ORIGIN_SECRET
         ;;
-    laptop | tablet)
+    laptop | tablet | tabs | tabs2 | galaxy-tab-s | galaxy-tab-s2)
         PORT="${PORT:-8000}"
         ;;
     *)
@@ -38,17 +39,30 @@ esac
 # gunicorn runs the Django app; threads (not async) keep searches concurrent.
 APP="yabai_site.wsgi:application"
 THREADS="${YABAI_THREADS:-8}"
+# A tablet can expose the app on its LAN/Tailscale address with YABAI_BIND=0.0.0.0.
+BIND="${YABAI_BIND:-127.0.0.1}"
 
-# Accounts replication (accounts/replication.py) is on for laptop and tablet when
-# YABAI_REPL_PEER_URL is set in deploy/env.local. dev never replicates.
+# Accounts replication (accounts/replication.py) is on for every serving role when
+# YABAI_CONTROL_URL is set in deploy/env.local (the Worker route that names the
+# global writer). dev never replicates. The role name is this host's name in the
+# Worker's HOSTS list, so it must match the tunnel hostname <role>.yabaisearch.org.
 REPL=0
-if [ "$ROLE" != dev ] && [ -n "${YABAI_REPL_PEER_URL:-}" ]; then
+if [ "$ROLE" != dev ] && [ -n "${YABAI_CONTROL_URL:-}" ]; then
     REPL=1
     export YABAI_REPL_NODE="$ROLE"
 fi
 
-# The app reports this in its X-Served-By header.
-export YABAI_SERVED_BY="$ROLE"
+# The app reports this in its X-Served-By header. A host can set its own
+# display name in deploy/env.local; otherwise known roles get a pretty default.
+if [ -z "${YABAI_SERVED_BY:-}" ]; then
+    case "$ROLE" in
+        tablet) YABAI_SERVED_BY="galaxy tab s5e" ;;
+        tabs | galaxy-tab-s) YABAI_SERVED_BY="galaxy tab s" ;;
+        tabs2 | galaxy-tab-s2) YABAI_SERVED_BY="galaxy tab s2" ;;
+        *) YABAI_SERVED_BY="$ROLE" ;;
+    esac
+fi
+export YABAI_SERVED_BY
 
 # Pick the interpreter: the project's .venv first (what the laptop services
 # use, and it works outside nix develop), then uv, then plain python (Termux).
@@ -93,8 +107,8 @@ SIDE=()   # background helpers (replication server and pull loop)
 trap '[ -n "$CHILD" ] && kill "$CHILD" 2>/dev/null; for p in "${SIDE[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; exit 0' TERM INT
 
 if [ "$REPL" = 1 ]; then
-    # Answer the peer from the start, so a machine booting at the same time as us
-    # can catch up from our copy while we catch up from theirs.
+    # Answer the other hosts from the start, so they can pull from us whenever we
+    # are the writer, even while the app below is still booting.
     "${PYRUN[@]}" -m accounts.replication serve &
     SIDE+=($!)
 fi
@@ -102,9 +116,9 @@ fi
 FIRST=1
 while true; do
     if [ "$REPL" = 1 ]; then
-        # THE GATE: do not serve until the peer's newer accounts database is in
-        # place. The first time we wait for the peer to appear (both machines may be
-        # booting); on later restarts (update.sh) we do not wait.
+        # THE GATE: do not serve until the current writer's accounts database is in
+        # place (a no-op when we ARE the writer). The first time we wait for the
+        # Worker and the writer to answer; on later restarts (update.sh) we do not.
         WAIT=0
         [ "$FIRST" = 1 ] && WAIT="${YABAI_REPL_WAIT:-30}"
         "${PYRUN[@]}" -m accounts.replication catch-up --wait "$WAIT" \
@@ -123,7 +137,7 @@ while true; do
     FIRST=0
 
     # Bind to localhost only: cloudflared runs on the same machine.
-    "${LAUNCH[@]}" "$APP" --bind "127.0.0.1:$PORT" --workers 1 \
+    "${LAUNCH[@]}" "$APP" --bind "$BIND:$PORT" --workers 1 \
         --worker-class gthread --threads "$THREADS" --timeout 60 &
     CHILD=$!
     echo "$CHILD" > deploy/run/uvicorn.pid

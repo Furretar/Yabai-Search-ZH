@@ -52,6 +52,7 @@ ALLOWED_HOSTS = _env_list(
         "laptop.yabaisearch.org",
         "tablet.yabaisearch.org",
         "pc.yabaisearch.org",
+        ".yabaisearch.org",  # any <host>.yabaisearch.org, so a new host needs no code change
         "dev.yabaisearch.org",
         "new.yabaisearch.org",
         "localhost",
@@ -82,6 +83,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "yabai_site.middleware.OriginSecretMiddleware",
+    "yabai_site.middleware.WriterGateMiddleware",
     "yabai_site.middleware.RequestStampMiddleware",
     "yabai_site.middleware.CacheHeadersMiddleware",
     "django.middleware.gzip.GZipMiddleware",
@@ -124,8 +126,8 @@ TEMPLATES = [
 # --- accounts database -------------------------------------------------------
 # The dictionary data stays in its own read-only SQLite files (yabai_search/db.py).
 # This database only holds users, sessions and per-user settings. SQLite is fine
-# for one machine. With a laptop AND a tablet, accounts/replication.py keeps the
-# two files in step (primary/standby, see deploy/PLAN.md section 11); set
+# for one machine. With several hosts, only the global writer changes the file and
+# accounts/replication.py copies it to the others (deploy/GLOBAL-WRITER.md); set
 # YABAI_REPL_NODE and friends in deploy/env.local. A shared hosted Postgres
 # (DJANGO_DB_ENGINE=postgres) is the alternative.
 if os.environ.get("DJANGO_DB_ENGINE", "sqlite") == "postgres":
@@ -172,16 +174,27 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
+# On a multi-host install the first backend checks passwords without ever writing
+# (a replica must not save an upgraded hash); ModelBackend stays listed because
+# accounts/views.py names it when it logs someone in directly.
+if os.environ.get("YABAI_REPL_NODE"):
+    AUTHENTICATION_BACKENDS = [
+        "accounts.backends.ReadOnlyModelBackend",
+        "django.contrib.auth.backends.ModelBackend",
+    ]
 LOGIN_URL = "/accounts/login/"
 LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/"
 # Set YABAI_SIGNUPS_OPEN=0 to close registration without removing the page.
 SIGNUPS_OPEN = _env_bool("YABAI_SIGNUPS_OPEN", True)
 
-# DJANGO_SESSIONS=cookies stores the session inside the signed cookie, so a login
-# survives failover between machines that do not share a database. The cookie is
-# signed, not encrypted: never put secrets in the session.
-if os.environ.get("DJANGO_SESSIONS") == "cookies":
+# Sessions live in the signed cookie, so a login works on EVERY host and logging in
+# never writes to the database (only the global writer may write). The cookie is
+# signed, not encrypted: never put secrets in the session. This is the default when
+# YABAI_REPL_NODE is set; DJANGO_SESSIONS=db or =cookies overrides it.
+if os.environ.get(
+    "DJANGO_SESSIONS", "cookies" if os.environ.get("YABAI_REPL_NODE") else "db"
+) == "cookies":
     SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
 SESSION_COOKIE_AGE = 60 * 60 * 24 * 30
 SESSION_COOKIE_SECURE = not DEBUG

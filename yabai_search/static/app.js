@@ -2006,18 +2006,28 @@ function initialDictSelection(entry) {
         if (!byLang.has(lang)) byLang.set(lang, []);
         byLang.get(lang).push(source.anchor);
     }
+    // The two MOE dictionaries are displayed as one merged block, so compact
+    // mode keeps both when both are selected even though it normally keeps only
+    // one dictionary per language.
+    const withMoePair = (set) => {
+        if (set.has("moe") && selected.has("moe_revised")) set.add("moe_revised");
+        if (set.has("moe_revised") && selected.has("moe")) set.add("moe");
+        return set;
+    };
     if (fallback) {
         // One dictionary only: the first other language that has a definition.
         const lang =
             FALLBACK_LANG_ORDER.find((name) => byLang.has(name)) ||
             byLang.keys().next().value;
-        return new Set(lang === undefined ? [] : [topAnchor(byLang.get(lang), lang)]);
+        return withMoePair(
+            new Set(lang === undefined ? [] : [topAnchor(byLang.get(lang), lang)]),
+        );
     }
     const result = new Set();
     for (const [lang, anchors] of byLang) {
         result.add(topAnchor(anchors, lang));
     }
-    return result;
+    return withMoePair(result);
 }
 
 // Language code -> the definition language it selects (used for ordering).
@@ -2044,8 +2054,16 @@ function visibleDicts(entry) {
 // Toggle one dictionary's definitions for a single result row (not globally).
 function toggleEntryDict(row, entry, anchor) {
     const enabled = entryDicts(entry);
-    if (enabled.has(anchor)) enabled.delete(anchor);
-    else enabled.add(anchor);
+    // The two MOE Taiwan sources share one chip.
+    const anchors =
+        anchor === "moe" || anchor === "moe_revised"
+            ? ["moe", "moe_revised"]
+            : [anchor];
+    const turnOn = !enabled.has(anchor);
+    for (const name of anchors) {
+        if (turnOn) enabled.add(name);
+        else enabled.delete(name);
+    }
     // Re-render in place. The chip order stays fixed, so only the on/off state
     // and the shown definitions change.
     fillEntryRow(row, entry);
@@ -2294,6 +2312,57 @@ function mergeVariantBlocks(blocks) {
     return { ...base, groups, defs: [], classifiers };
 }
 
+// Merge 國語辭典簡編本 and 重編國語辭典修訂本 into one block. The concise
+// dictionary supplies the header and comes first; comprehensive senses are
+// appended unless the exact same trimmed definition is already present.
+function mergeMoeDictionaries(concise, revised) {
+    const groups = [];
+    const seen = new Set();
+    const sameTitle = (a, b) =>
+        JSON.stringify(a.variantTitle || null) === JSON.stringify(b.variantTitle || null);
+    for (const block of [concise, revised]) {
+        const blockGroups =
+            block.groups && block.groups.length
+                ? block.groups
+                : [{ pinyin: "", senses: block.defs || [] }];
+        for (const group of blockGroups) {
+            const senses = [];
+            for (const text of group.senses || []) {
+                const trimmed = String(text || "").trim();
+                if (!trimmed || seen.has(trimmed)) continue;
+                seen.add(trimmed);
+                senses.push(trimmed);
+            }
+            if (!senses.length) continue;
+            const target = groups.find(
+                (item) =>
+                    (item.pinyin || "") === (group.pinyin || "") &&
+                    sameTitle(item, group),
+            );
+            if (target) {
+                target.senses.push(...senses);
+            } else {
+                groups.push({ ...group, senses });
+            }
+        }
+    }
+    const classifiers = [];
+    for (const block of [concise, revised]) {
+        for (const classifier of block.classifiers || []) {
+            const key = JSON.stringify(classifier);
+            if (!classifiers.some((item) => JSON.stringify(item) === key)) {
+                classifiers.push(classifier);
+            }
+        }
+    }
+    return {
+        ...concise,
+        groups,
+        defs: groups.flatMap((group) => group.senses),
+        classifiers,
+    };
+}
+
 // Male-voice pronunciation player shared by every speaker button.
 let audioPlayer = null;
 let activeAudioButton = null;
@@ -2503,12 +2572,21 @@ function fillEntryRow(row, entry) {
         const chipAnchors = new Set();
         for (const source of definitions) {
             if (chipAnchors.has(source.anchor)) continue;
+            // The revised MOE source shares the visible 國語辭典 chip whenever
+            // this entry has both sources, whether the merged chip is on or off.
+            if (
+                source.anchor === "moe_revised" &&
+                definitions.some((item) => item.anchor === "moe")
+            ) {
+                continue;
+            }
             chipAnchors.add(source.anchor);
             const chip = document.createElement("button");
             chip.type = "button";
             chip.className = enabled.has(source.anchor) ? "source on" : "source";
             chip.dataset.anchor = source.anchor;
-            chip.textContent = source.label;
+            chip.textContent =
+                source.anchor === "moe" ? "國語辭典（簡編本＋修訂本）" : source.label;
             chip.addEventListener("click", () => toggleEntryDict(row, entry, source.anchor));
             box.append(chip);
         }
@@ -2558,19 +2636,40 @@ function fillEntryRow(row, entry) {
         if (!byAnchor.has(source.anchor)) byAnchor.set(source.anchor, []);
         byAnchor.get(source.anchor).push(source);
     }
-    let notesPlaced = false;
-    for (const [anchor, blocks] of byAnchor) {
+    // Collapse one dictionary's variant blocks first, then merge the two MOE
+    // dictionaries into a single block with the concise definitions on top.
+    const blockFor = (anchor, blocks) => {
         blocks.sort(
             (a, b) =>
                 (variantOrder.get(a.traditional ?? "") ?? 0) -
                 (variantOrder.get(b.traditional ?? "") ?? 0),
         );
-        const source =
-            blocks.length > 1
-                ? anchor === "cedict"
-                    ? mergeSharedGroups(blocks, displayWord(entry))
-                    : mergeVariantBlocks(blocks)
-                : blocks[0];
+        return blocks.length > 1
+            ? anchor === "cedict"
+                ? mergeSharedGroups(blocks, displayWord(entry))
+                : mergeVariantBlocks(blocks)
+            : blocks[0];
+    };
+    const mergedMoe =
+        byAnchor.has("moe") && byAnchor.has("moe_revised")
+            ? mergeMoeDictionaries(
+                  blockFor("moe", byAnchor.get("moe")),
+                  blockFor("moe_revised", byAnchor.get("moe_revised")),
+              )
+            : null;
+    let notesPlaced = false;
+    let mergedMoeDrawn = false;
+    for (const [anchor, blocks] of byAnchor) {
+        if (mergedMoe && (anchor === "moe" || anchor === "moe_revised")) {
+            if (!mergedMoeDrawn) {
+                defsBox.append(
+                    definitionsBlock(mergedMoe, entry.taiwan_refs, primary, reading, entry.forms || []),
+                );
+                mergedMoeDrawn = true;
+            }
+            continue;
+        }
+        const source = blockFor(anchor, blocks);
         defsBox.append(definitionsBlock(source, entry.taiwan_refs, primary, reading, entry.forms || []));
         if (anchor === "cedict" && notes.length) {
             defsBox.append(...notes);
@@ -4780,10 +4879,11 @@ function loadPrefs() {
         // language's defaults (EN -> every English dictionary). A custom order
         // belongs to
         // the custom setup, so drop it too.
-        state.dicts =
+        state.dicts = expandMoeSelection(
             stored === null || !state.customDicts
                 ? defaultDictsForLanguage(state.lang)
-                : new Set(stored);
+                : new Set(stored),
+        );
         if (!state.customDicts) {
             dictOrder = {};
             saveDictOrder();
@@ -5177,8 +5277,21 @@ function syncGroups() {
 
 for (const toggle of dictToggles) {
     toggle.addEventListener("change", () => {
-        if (toggle.checked) state.dicts.add(toggle.dataset.anchor);
-        else state.dicts.delete(toggle.dataset.anchor);
+        const anchor = toggle.dataset.anchor;
+        // 國語辭典簡編本 and 重編國語辭典修訂本 share one visible checkbox.
+        const anchors =
+            anchor === "moe" || anchor === "moe_revised"
+                ? ["moe", "moe_revised"]
+                : [anchor];
+        for (const name of anchors) {
+            if (toggle.checked) state.dicts.add(name);
+            else state.dicts.delete(name);
+        }
+        for (const input of dictToggles) {
+            if (anchors.includes(input.dataset.anchor)) {
+                input.checked = toggle.checked;
+            }
+        }
         syncGroups();
         entryDictState.clear();
         savePrefs();
@@ -5286,13 +5399,21 @@ function defaultDictsForLanguage(lang) {
     return new Set(langDefaults[lang] || langDefaults.EN || ["cedict"]);
 }
 
+// The two MOE dictionaries share one visible checkbox. Selecting either one
+// selects both, so the client can merge their definitions.
+function expandMoeSelection(dicts) {
+    if (dicts.has("moe")) dicts.add("moe_revised");
+    if (dicts.has("moe_revised")) dicts.add("moe");
+    return dicts;
+}
+
 // Selecting a search language switches on its default dictionaries and off all
 // the others (see yabai_search/default_dictionaries.py).
 function applyDictDefaults(value) {
     if (!(value in langDefaults)) return;
     // Start from a clean slate: every dictionary in the new language category,
     // and compact mode (one definition per language).
-    state.dicts = defaultDictsForLanguage(value);
+    state.dicts = expandMoeSelection(defaultDictsForLanguage(value));
     for (const toggle of dictToggles) {
         toggle.checked = state.dicts.has(toggle.dataset.anchor);
     }
@@ -5305,7 +5426,7 @@ function applyDictDefaults(value) {
 // Reset every dictionary setting: selection, per-entry toggles and the custom
 // drag order. The search language itself stays as the user chose it.
 function resetDictSettings() {
-    state.dicts = defaultDictsForLanguage(state.lang);
+    state.dicts = expandMoeSelection(defaultDictsForLanguage(state.lang));
     for (const toggle of dictToggles) {
         toggle.checked = state.dicts.has(toggle.dataset.anchor);
     }

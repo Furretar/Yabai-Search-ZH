@@ -58,5 +58,12 @@ class AccountsConfig(AppConfig):
     name = "accounts"
 
     def ready(self):
+        if (os.environ.get("YABAI_REPL_NODE") or "").strip():
+            # Logging in would write last_login. Only the global writer may write, and
+            # a login must work on every host, so skip it.
+            from django.contrib.auth.models import update_last_login
+            from django.contrib.auth.signals import user_logged_in
+
+            user_logged_in.disconnect(update_last_login, dispatch_uid="update_last_login")
         pre_migrate.connect(_before_migrate, dispatch_uid="yabai_repl_pre")
         post_migrate.connect(_after_migrate, dispatch_uid="yabai_repl_post")

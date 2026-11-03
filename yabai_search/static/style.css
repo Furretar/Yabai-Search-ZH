@@ -655,6 +655,12 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     cursor: pointer;
 }
 
+/* The revised MOE source shares the visible 國語辭典 row. Keep its checkbox in
+   the DOM so both anchors stay selected, but do not show a second row. */
+.dict-column label.dict-hidden {
+    display: none;
+}
+
 /* Collapsible "Search options" disclosure, under the search row on the panel. */
 .options {
     border-top: 1px solid var(--options-divider);
@@ -3283,6 +3289,10 @@ footer {
     border-top: 1px solid var(--options-divider);
     font-size: .8rem;
     color: var(--control);
+}
+
+.menu-host[hidden] {
+    display: none; /* display:flex above would otherwise override the attribute */
 }
 
 .menu-host strong {

@@ -281,7 +281,8 @@ def run_js(body: str) -> dict:
     return json.loads(result.stdout)
 
 
-def test_compact_mode_prefers_the_simple_dictionary_then_the_comprehensive():
+def test_compact_mode_keeps_both_moe_dictionaries_for_the_merged_block():
+    """Both MOE anchors stay on so the frontend can merge their definitions."""
     out = run_js(
         """
         out.both = shown(entry(["moe", "moe_revised"]));
@@ -291,9 +292,11 @@ def test_compact_mode_prefers_the_simple_dictionary_then_the_comprehensive():
         });
         """
     )
-    assert out["both"] == ["moe"]
+    assert out["both"] == ["moe", "moe_revised"]
     assert out["only_revised"] == ["moe_revised"]
-    assert out["revised_order"] == ["moe_revised"]  # the saved order wins
+    # Both anchors stay on regardless of the saved order; the merged block
+    # still puts the concise definitions on top.
+    assert out["revised_order"] == ["moe", "moe_revised"]
 
 
 def test_compact_mode_shows_the_dictionary_that_matched_a_definition_search():

@@ -3,6 +3,12 @@ tunnel: 761b33d4-1874-431c-9df7-9a81d6cf4bf4
 credentials-file: /data/data/com.termux/files/home/.cloudflared/761b33d4-1874-431c-9df7-9a81d6cf4bf4.json
 
 ingress:
+  # Replication between hosts (accounts/replication.py, port 8765). Hosts reach each
+  # other through this hostname; both secrets are required. The Worker never routes
+  # /__repl/ from the public site.
+  - hostname: tablet.yabaisearch.org
+    path: ^/__repl/
+    service: http://127.0.0.1:8765
   - hostname: tablet.yabaisearch.org
     service: http://127.0.0.1:8000
   - service: http_status:404

@@ -1228,17 +1228,26 @@ def hsk_source() -> dict | None:
 def dictionaries() -> list[dict]:
     """Every dictionary with its key, label, anchor and language group.
 
-    Drives the Dictionaries panel (English / Mainland / Taiwan columns).
+    Drives the Dictionaries panel (English / Mainland / Taiwan columns). The
+    two MOE Taiwan sources share one visible row: 國語辭典簡編本 is the row,
+    and 重編國語辭典修訂本 stays in the DOM but hidden, so the client can keep
+    both anchors checked and merge their definitions.
     """
-    return [
-        {
+    items = []
+    for source in _SOURCE_QUERIES:
+        item = {
             "key": source["anchor"],
             "label": source["label"],
             "anchor": source["anchor"],
             "lang": source["lang"],
         }
-        for source in _SOURCE_QUERIES
-    ]
+        if source["anchor"] == "moe":
+            item["label"] = "國語辭典（簡編本＋修訂本）"
+            item["merged"] = ["moe", "moe_revised"]
+        elif source["anchor"] == "moe_revised":
+            item["hidden"] = True
+        items.append(item)
+    return items
 
 
 # ASCII punctuation that should be full-width when it follows a Chinese

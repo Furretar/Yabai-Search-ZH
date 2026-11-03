@@ -9,8 +9,13 @@ import threading
 import time
 import uuid
 
+from pathlib import Path
+
+from django.conf import settings
+from django.db import connection
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 
+from accounts import writer
 from yabai_search import perf_debug as pd
 
 # Private ranges that may reach the origin without the shared secret: the home
@@ -86,6 +91,60 @@ class OriginSecretMiddleware:
                     )
                 return HttpResponse("Forbidden", status=403, content_type="text/plain")
         return self.get_response(request)
+
+
+def _query_only(on: bool) -> None:
+    """Switch this thread's SQLite connection between read-only and read-write."""
+    if connection.vendor == "sqlite":
+        with connection.cursor() as cursor:
+            cursor.execute(f"PRAGMA query_only = {'ON' if on else 'OFF'}")
+
+
+class WriterGateMiddleware:
+    """Only the global writer may change the accounts database.
+
+    Active only when YABAI_REPL_NODE (this host's name) is set. The Worker sends every
+    account write to the writer it chose and adds X-Yabai-Writer and
+    X-Yabai-Writer-Epoch (see accounts/writer.py). A write that names another host or
+    an old epoch gets 421 ("misdirected"), and the Worker asks again.
+
+    Every other request runs with SQLite's query_only switched ON, so a stray write
+    (anything this code forgot about) fails loudly here instead of silently making
+    this copy diverge from the writer's. List this AFTER OriginSecretMiddleware: the
+    headers are only trusted once the request is known to come from the Worker.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+        self.node = os.environ.get("YABAI_REPL_NODE", "").strip()
+        db = settings.DATABASES["default"]
+        self.epoch_file = Path(str(db.get("NAME", "."))).parent / "writer-epoch"
+        # The admin path can be moved (DJANGO_ADMIN_PATH); it is a write path too.
+        self.prefixes = writer.WRITE_PREFIXES + ("/" + settings.ADMIN_URL_PATH.lstrip("/"),)
+
+    def __call__(self, request):
+        if not self.node:
+            return self.get_response(request)
+        allowed = False
+        if writer.is_write(request.method, request.path, self.prefixes):
+            ok, why = writer.check_write(
+                self.epoch_file,
+                self.node,
+                request.META.get("HTTP_X_YABAI_WRITER", ""),
+                request.META.get("HTTP_X_YABAI_WRITER_EPOCH", ""),
+            )
+            if not ok:
+                response = HttpResponse(f"Not the writer: {why}", status=421, content_type="text/plain")
+                response["Cache-Control"] = "no-store"
+                return response
+            allowed = True
+        _query_only(not allowed)
+        try:
+            return self.get_response(request)
+        finally:
+            # Back to the default. Each request sets its own mode first, so a request
+            # can never inherit write access from the one before it.
+            _query_only(False)
 
 
 _inflight = 0

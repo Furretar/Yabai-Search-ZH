@@ -186,6 +186,17 @@ def test_frontend_resets_dictionaries_and_forces_compact_mode():
     assert "sourceLang === lang" in js
 
 
+def test_moe_dictionaries_merge_into_one_block():
+    """國語辭典簡編本 and the revised dictionary share one block, concise first."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "function mergeMoeDictionaries" in js
+    assert 'byAnchor.has("moe") && byAnchor.has("moe_revised")' in js
+    # Exact duplicates after trimming are dropped, and compact mode keeps both
+    # anchors so the merge still happens.
+    assert "seen.has(trimmed)" in js
+    assert 'set.has("moe") && selected.has("moe_revised")' in js
+
+
 def test_definition_copy_button_does_not_add_line_height():
     """The copy icon collapses to zero width and expands after the text."""
     css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")

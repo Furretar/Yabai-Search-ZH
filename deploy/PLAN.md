@@ -256,6 +256,10 @@ lines once the separate tablet tunnel is live.
 
 ## 11. Accounts database replication (laptop <-> tablet)
 
+> Superseded: the single global writer, the Durable Object that picks it, and
+> replication through Cloudflare instead of Tailscale are described in
+> `deploy/GLOBAL-WRITER.md`. Sections 3 and 11 describe the older laptop-first design.
+
 Accounts, sessions and settings live in `data/accounts.sqlite3` on each machine.
 `accounts/replication.py` (standard library only) keeps them in step. Only one
 machine takes writes at a time: the Worker sends them to the laptop and uses the

@@ -10,9 +10,36 @@ routes = [
   { pattern = "www.yabaisearch.org", custom_domain = true },
 ]
 
-[vars]
-# Milliseconds to wait for the laptop before also asking the tablet.
-HEDGE_MS = "800"
+# The Durable Object that decides who the global writer is. The free plan only
+# allows SQLite-backed ones, hence new_sqlite_classes.
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "Coordinator"
 
-# The shared secret is NOT stored here. Set it once with:
-#   npx wrangler secret put ORIGIN_SECRET
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Coordinator"]
+
+[vars]
+# Every machine that can host. Each needs a tunnel named <name>.<HOST_DOMAIN>
+# (laptop.yabaisearch.org, ...) and the same name as its deploy/run.sh role.
+# The first one is the writer on a brand new install.
+HOSTS = "laptop,tabs,tabs2"
+HOST_DOMAIN = "yabaisearch.org"
+# Unsafe requests under these paths are writes (the admin path must match
+# DJANGO_ADMIN_PATH if you changed it).
+WRITE_PREFIXES = "/accounts/signup/,/api/account/,/admin/"
+
+# Writer rules (milliseconds, MARGIN is a fraction).
+LOCK_MS = "1800000"   # 30 min: no planned move this soon after any move
+LEAD_MS = "300000"    # 5 min: a challenger must stay faster this long
+SLOW_MS = "3000"      # writer median above this ignores the lock
+DEAD_MS = "10000"     # no answer for this long: move at once
+MARGIN = "0.2"        # "faster" means at least 20% faster
+HOLD_MS = "25000"     # a write waits this long for a writer, then 503
+PROBE_MS = "5000"     # time between probes while the site is in use
+HEDGE_MS = "800"      # read hedging delay
+
+# Secrets are NOT stored here. Set them once with:
+#   npx wrangler secret put ORIGIN_SECRET   (same as YABAI_ORIGIN_SECRET on hosts)
+#   npx wrangler secret put REPL_SECRET     (same as YABAI_REPL_SECRET on hosts)

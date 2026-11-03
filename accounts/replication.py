@@ -1,8 +1,10 @@
 """Primary/standby replication of the accounts SQLite database (standard library only).
 
-Only one machine takes writes at a time (the Worker sends them to the laptop and
-falls back to the tablet), so there is nothing to merge. This module makes sure a
-machine that was away catches up before it serves, and never overwrites newer data.
+Only one machine, the global writer, takes writes (the Cloudflare Worker sends them
+there; see accounts/writer.py), so there is nothing to merge. Every other machine is a
+replica: it asks the Worker who the writer is (YABAI_CONTROL_URL), then pulls the
+writer's database through its tunnel hostname at /__repl/*. A replica always converges
+to the writer's copy; if it holds writes the writer lacks, they are archived first.
 
 How "newer" is decided: a version vector. Every write to any table bumps a counter
 that belongs to the machine that made it (SQLite triggers do this, so raw SQL and
@@ -48,12 +50,19 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import writer
+
 log = logging.getLogger("yabai.replication")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 VECTOR_TABLE = "replication_vector"
 TRIGGER_PREFIX = "yabai_repl_"
 SECRET_HEADER = "X-Replication-Secret"
+ORIGIN_HEADER = "X-Origin-Secret"  # the same shared secret the Worker sends to the app
+# Cloudflare's WAF blocks the default Python-urllib User-Agent with a 403, so
+# every replication request identifies itself explicitly.
+USER_AGENT = "Yabai-Replication/1"
+REPL_PREFIX = "/__repl"  # cloudflared sends this path to the replication port
 MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024
 _NOW_SQL = "(julianday('now') - 2440587.5) * 86400.0"
 _NODE_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
@@ -83,7 +92,11 @@ class Config:
     def __init__(self, env=None):
         env = os.environ if env is None else env
         self.node = (env.get("YABAI_REPL_NODE") or "").strip()
+        # Normal mode: the Worker route that names the current writer.
+        self.control_url = (env.get("YABAI_CONTROL_URL") or "").strip()
+        # Fixed peer (tests and manual use only); ignored when control_url is set.
         self.peer_url = (env.get("YABAI_REPL_PEER_URL") or "").strip().rstrip("/")
+        self.origin_secret = env.get("YABAI_ORIGIN_SECRET") or ""
         self.secret = env.get("YABAI_REPL_SECRET") or ""
         self.bind = env.get("YABAI_REPL_BIND") or "127.0.0.1"
         self.port = int(env.get("YABAI_REPL_PORT") or 8765)
@@ -95,6 +108,7 @@ class Config:
         self.archive_dir = Path(
             env.get("YABAI_REPL_ARCHIVE") or (self.db_path.parent / "replication-archive")
         )
+        self.epoch_path = self.db_path.parent / "writer-epoch"
 
     @property
     def enabled(self) -> bool:
@@ -105,8 +119,8 @@ class Config:
             raise ReplicationError("YABAI_REPL_NODE must be lowercase letters/digits, e.g. laptop")
         if not self.secret or len(self.secret) < 16:
             raise ReplicationError("YABAI_REPL_SECRET must be set (16+ characters)")
-        if need_peer and not self.peer_url:
-            raise ReplicationError("YABAI_REPL_PEER_URL must be set")
+        if need_peer and not (self.control_url or self.peer_url):
+            raise ReplicationError("YABAI_CONTROL_URL must be set")
 
 
 # --- database helpers ---------------------------------------------------------
@@ -253,16 +267,24 @@ def compare(a: dict, b: dict) -> str:
     return "equal"
 
 
-def decide(local: dict, peer: dict, local_node: str, peer_node: str, priority: str) -> str:
+def decide(
+    local: dict, peer: dict, local_node: str, peer_node: str, priority: str, follow: bool = False
+) -> str:
     """What this machine should do: 'noop' | 'keep' | 'install' | 'install_conflict'.
 
     'install_conflict' means both sides have writes the other lacks and the peer
     wins; the local copy must be archived first. When the local side wins the answer
     is 'keep' (the peer reaches the opposite conclusion and archives its own copy).
+
+    follow=True is for a replica pulling from the current writer: the writer is always
+    right, so anything but "equal" or "peer newer" means this copy holds writes the
+    writer lacks (lost in a failover); they are archived and the writer's copy wins.
     """
     result = compare(local["vector"], peer["vector"])
     if result == "equal":
         return "noop"
+    if follow:
+        return "install" if result == "b_newer" else "install_conflict"
     if result == "a_newer":
         return "keep"
     if result == "b_newer":
@@ -398,8 +420,17 @@ def _install_by_file(db_path, staged, node: str) -> str:
     return "installed"
 
 
-def download_snapshot(cfg: Config, dest_dir: Path) -> Path:
-    req = urllib.request.Request(cfg.peer_url + "/snapshot", headers={SECRET_HEADER: cfg.secret})
+def _headers(cfg: Config) -> dict:
+    """Both secrets: the origin secret (proves it came from us, not the public) and
+    the replication secret (proves it is allowed to read accounts)."""
+    headers = {"User-Agent": USER_AGENT, SECRET_HEADER: cfg.secret}
+    if cfg.origin_secret:
+        headers[ORIGIN_HEADER] = cfg.origin_secret
+    return headers
+
+
+def download_snapshot(cfg: Config, dest_dir: Path, base: str | None = None) -> Path:
+    req = urllib.request.Request((base or cfg.peer_url) + REPL_PREFIX + "/snapshot", headers=_headers(cfg))
     dest_dir.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".repl-", suffix=".sqlite3", dir=dest_dir)
     total = 0
@@ -425,8 +456,8 @@ def download_snapshot(cfg: Config, dest_dir: Path) -> Path:
         raise
 
 
-def fetch_peer_state(cfg: Config, timeout: float = 5.0) -> dict | None:
-    req = urllib.request.Request(cfg.peer_url + "/state", headers={SECRET_HEADER: cfg.secret})
+def fetch_peer_state(cfg: Config, timeout: float = 5.0, base: str | None = None) -> dict | None:
+    req = urllib.request.Request((base or cfg.peer_url) + REPL_PREFIX + "/state", headers=_headers(cfg))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.load(resp)
@@ -438,25 +469,49 @@ def fetch_peer_state(cfg: Config, timeout: float = 5.0) -> dict | None:
     return data
 
 
+def fetch_control(cfg: Config, timeout: float = 5.0) -> dict | None:
+    """Ask the Worker who the writer is: {"writer", "epoch", "url"}, or None."""
+    req = urllib.request.Request(
+        cfg.control_url,
+        headers={"User-Agent": USER_AGENT, ORIGIN_HEADER: cfg.origin_secret},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    ok = isinstance(data, dict) and all(k in data for k in ("writer", "epoch", "url"))
+    if not ok or not isinstance(data["epoch"], int):
+        return None
+    data["url"] = str(data["url"]).rstrip("/")
+    return data
+
+
 # --- one synchronisation step -------------------------------------------------
 
 
-def sync_once(cfg: Config, live: bool) -> str:
+def sync_once(cfg: Config, live: bool, source: dict | None = None) -> str:
     """Compare with the peer and install its database if the rules say so.
 
     live=True  : the app may be running; only data is replaced, in one transaction.
     live=False : nothing has the database open (start-up); the file is swapped, so
                  an older peer schema is fine (migrate runs next).
+    source (from fetch_control) names the writer to follow; without it cfg.peer_url is used
+    and the old two-machine rules apply.
     Returns a short status word, also logged: unreachable, in-sync, kept-local,
     installed, installed-after-archiving, skipped:<why>.
     """
-    peer = fetch_peer_state(cfg)
+    base = source["url"] if source else None
+    follow = source is not None
+    peer = fetch_peer_state(cfg, base=base)
     if peer is None:
         return "unreachable"
     peer_node = peer["node"]
+    if follow and peer_node != source["writer"]:
+        return f"skipped: {source['url']} answered as {peer_node}, not {source['writer']}"
     db_path = cfg.db_path
     local = state_of(db_path)
-    action = decide(local, peer, cfg.node, peer_node, cfg.priority)
+    action = decide(local, peer, cfg.node, peer_node, cfg.priority, follow)
     if action == "noop":
         return "in-sync"
     if action == "keep":
@@ -466,13 +521,13 @@ def sync_once(cfg: Config, live: bool) -> str:
         return f"skipped: {why}"
 
     # The listing is only a hint; the downloaded file is the authority.
-    staged = download_snapshot(cfg, db_path.parent)
+    staged = download_snapshot(cfg, db_path.parent, base)
     try:
         snap = verify_snapshot(staged)
         snap_node = peer_node
         for attempt in range(5):
             local = state_of(db_path)
-            action = decide(local, snap, cfg.node, snap_node, cfg.priority)
+            action = decide(local, snap, cfg.node, snap_node, cfg.priority, follow)
             if action in ("noop", "keep"):
                 return "in-sync" if action == "noop" else "kept-local"
             ok, why = schema_ok(local, snap, live)
@@ -482,7 +537,7 @@ def sync_once(cfg: Config, live: bool) -> str:
             if action == "install_conflict" and db_path.exists():
                 archived, arch_state = archive_database(db_path, cfg.archive_dir, cfg.node, "lost-conflict")
                 log.warning(
-                    "SPLIT BRAIN: both machines took writes. Keeping the peer's database; "
+                    "LOST WRITES: this machine holds writes the writer never received. Keeping the writer's database; "
                     "this machine's copy was saved to %s (recover accounts with: "
                     "python -m accounts.replication salvage %s)",
                     archived,
@@ -493,7 +548,7 @@ def sync_once(cfg: Config, live: bool) -> str:
                 expect = local if db_path.exists() else None
 
             def still_valid(cur, new, _snap_node=snap_node):
-                act = decide(cur, new, cfg.node, _snap_node, cfg.priority)
+                act = decide(cur, new, cfg.node, _snap_node, cfg.priority, follow)
                 if act == "install" or (act == "install_conflict" and archived is not None):
                     return act
                 return None
@@ -515,12 +570,25 @@ def sync_once(cfg: Config, live: bool) -> str:
             pass
 
 
+def pull_once(cfg: Config, live: bool) -> str:
+    """One step: find out who the writer is, then follow it (or do nothing if it is us)."""
+    if not cfg.control_url:
+        return sync_once(cfg, live)  # fixed peer
+    ctl = fetch_control(cfg)
+    if ctl is None:
+        return "unreachable"
+    writer.observe_epoch(cfg.epoch_path, ctl["epoch"])  # so a replaced writer refuses old epochs
+    if ctl["writer"] == cfg.node:
+        return "i-am-writer"
+    return sync_once(cfg, live, source=ctl)
+
+
 def catch_up(cfg: Config, wait: float = 0.0) -> str:
     """The start-up gate: do not serve until we have the peer's newer data (if reachable)."""
     deadline = time.monotonic() + wait
     while True:
         try:
-            result = sync_once(cfg, live=False)
+            result = pull_once(cfg, live=False)
         except (ReplicationError, sqlite3.Error, OSError, urllib.error.URLError) as exc:
             result = f"failed: {exc}"
         if result != "unreachable" and not result.startswith("failed"):
@@ -558,16 +626,24 @@ def make_handler(cfg: Config):
             self.end_headers()
 
         def _authorised(self) -> bool:
+            # Through cloudflared every caller looks like 127.0.0.1, so the secrets are
+            # the real gate: the origin secret (when set) AND the replication secret.
             if not _peer_allowed(self.client_address[0]):
                 return False
+            if cfg.origin_secret:
+                origin = self.headers.get(ORIGIN_HEADER, "")
+                if not hmac.compare_digest(origin.encode(), cfg.origin_secret.encode()):
+                    return False
             sent = self.headers.get(SECRET_HEADER, "")
             return hmac.compare_digest(sent.encode(), cfg.secret.encode())
 
         def do_GET(self):
             if not self._authorised():
                 return self._deny(403)
+            # cloudflared forwards the full path; the plain /state form still works too.
+            path = self.path[len(REPL_PREFIX):] if self.path.startswith(REPL_PREFIX + "/") else self.path
             try:
-                if self.path == "/state":
+                if path == "/state":
                     state = state_of(cfg.db_path)
                     state["node"] = cfg.node
                     body = json.dumps(state).encode()
@@ -576,7 +652,7 @@ def make_handler(cfg: Config):
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
-                elif self.path == "/snapshot":
+                elif path == "/snapshot":
                     self._send_snapshot()
                 else:
                     self._deny(404)
@@ -631,7 +707,7 @@ def pull_loop(cfg: Config) -> None:
     while True:
         try:
             if cfg.db_path.exists():
-                result = sync_once(cfg, live=True)
+                result = pull_once(cfg, live=True)
             else:
                 result = "waiting for the database to be created"
         except (ReplicationError, sqlite3.Error, OSError, urllib.error.URLError) as exc:
@@ -646,7 +722,7 @@ def daemon(cfg: Config) -> None:
     """Serve our state to the peer and keep pulling theirs when it is newer."""
     cfg.validate()
     serve(cfg)
-    log.info("replication node %s serving on %s:%s, peer %s", cfg.node, cfg.bind, cfg.port, cfg.peer_url)
+    log.info("replication node %s serving on %s:%s, control %s", cfg.node, cfg.bind, cfg.port, cfg.control_url or cfg.peer_url)
     pull_loop(cfg)
 
 
@@ -752,10 +828,14 @@ def main(argv=None) -> int:
             setup(cfg.db_path, cfg.node)
         elif args.cmd == "status":
             print("local:", json.dumps(state_of(cfg.db_path)["vector"]))
-            peer = fetch_peer_state(cfg) if cfg.peer_url else None
-            print("peer: ", json.dumps(peer["vector"]) if peer else "unreachable")
+            ctl = fetch_control(cfg) if cfg.control_url else None
+            if cfg.control_url:
+                print("writer:", f"{ctl['writer']} (epoch {ctl['epoch']})" if ctl else "unknown (Worker unreachable)")
+            base = ctl["url"] if ctl else None
+            peer = fetch_peer_state(cfg, base=base) if (base or cfg.peer_url) else None
+            print("writer state:", json.dumps(peer["vector"]) if peer else "unreachable")
             if peer:
-                print("verdict:", decide(state_of(cfg.db_path), peer, cfg.node, peer["node"], cfg.priority))
+                print("verdict:", decide(state_of(cfg.db_path), peer, cfg.node, peer["node"], cfg.priority, bool(ctl)))
         elif args.cmd == "salvage":
             report = salvage(cfg, Path(args.archive), args.dry_run)
             print(json.dumps(report, indent=2))

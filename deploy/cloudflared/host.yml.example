@@ -1,0 +1,14 @@
+# Template for a new host's Cloudflare tunnel.
+# `deploy/new-host.sh <name>` fills this in as deploy/cloudflared/<name>.yml.
+# On Windows, set credentials-file to the Windows path instead.
+tunnel: __TUNNEL_ID__
+credentials-file: __CREDENTIALS_FILE__
+
+ingress:
+  # Replication between hosts (port 8765); see laptop.yml.
+  - hostname: __HOST__.yabaisearch.org
+    path: ^/__repl/
+    service: http://127.0.0.1:8765
+  - hostname: __HOST__.yabaisearch.org
+    service: http://127.0.0.1:8000
+  - service: http_status:404

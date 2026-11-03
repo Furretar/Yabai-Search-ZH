@@ -3,6 +3,12 @@ tunnel: d434c15b-de6d-4a92-87bd-5780a85d8dcf
 credentials-file: /home/wyatt/.cloudflared/d434c15b-de6d-4a92-87bd-5780a85d8dcf.json
 
 ingress:
+  # Replication between hosts (accounts/replication.py, port 8765). Hosts reach each
+  # other through this hostname; both secrets are required. The Worker never routes
+  # /__repl/ from the public site.
+  - hostname: laptop.yabaisearch.org
+    path: ^/__repl/
+    service: http://127.0.0.1:8766
   - hostname: laptop.yabaisearch.org
     service: http://127.0.0.1:8000
   - service: http_status:404

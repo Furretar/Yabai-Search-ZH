@@ -461,3 +461,142 @@ def test_live_installs_while_the_app_keeps_writing(tmp_path):
     conn = sqlite3.connect(live)
     assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     conn.close()
+
+
+# --- following the global writer (Worker control route, one-way pull) ------------------
+
+ORIGIN = "o" * 32
+
+
+def control_server(servers, answer):
+    """A stand-in for the Worker's /__control/state route. `answer` is a mutable dict."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.headers.get(r.ORIGIN_HEADER) != ORIGIN:
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = json.dumps(answer).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    servers.append(srv)
+    return f"http://127.0.0.1:{srv.server_address[1]}/__control/state"
+
+
+def follower(cfgs, node, control, ports, other):
+    """Re-make `node`'s Config in control mode (no fixed peer)."""
+    old = cfgs[node]
+    return r.Config(
+        {
+            "YABAI_REPL_NODE": node,
+            "YABAI_CONTROL_URL": control,
+            "YABAI_ORIGIN_SECRET": ORIGIN,
+            "YABAI_REPL_SECRET": SECRET,
+            "YABAI_REPL_PORT": str(ports[node]),
+            "DJANGO_DB_PATH": str(old.db_path),
+        }
+    )
+
+
+def test_decide_follow_always_takes_the_writers_copy():
+    a, b = _st({"laptop": 9}), _st({"laptop": 4})
+    # The old rule keeps the bigger copy; following the writer never does.
+    assert r.decide(a, b, "tablet", "laptop", "laptop") == "keep"
+    assert r.decide(a, b, "tablet", "laptop", "laptop", follow=True) == "install_conflict"
+    assert r.decide(b, a, "tablet", "laptop", "laptop", follow=True) == "install"
+    assert r.decide(a, a, "tablet", "laptop", "laptop", follow=True) == "noop"
+    both = r.decide(_st({"laptop": 5, "tablet": 1}), _st({"laptop": 4, "tablet": 3}), "a", "b", "a", follow=True)
+    assert both == "install_conflict"
+
+
+def test_replica_follows_the_writer_named_by_the_worker(pair, tmp_path):
+    cfgs, servers, ports = pair
+    make_db(cfgs["laptop"].db_path, "laptop")
+    make_db(cfgs["tablet"].db_path, "tablet")
+    write_user(cfgs["laptop"].db_path, "alice")
+    # Both machines answer replication requests, but need BOTH secrets now.
+    for n in ("laptop", "tablet"):
+        cfgs[n] = follower(cfgs, n, "", ports, None)
+        start(cfgs[n], servers)
+    answer = {"writer": "laptop", "epoch": 3, "url": f"http://127.0.0.1:{ports['laptop']}"}
+    control = control_server(servers, answer)
+    tab = follower(cfgs, "tablet", control, ports, "laptop")
+    lap = follower(cfgs, "laptop", control, ports, "tablet")
+
+    assert r.pull_once(lap, live=True) == "i-am-writer"  # the writer pulls from nobody
+    assert r.pull_once(tab, live=True) == "installed"
+    assert users(tab.db_path) == ["alice"]
+    assert r.pull_once(tab, live=True) == "in-sync"
+    from accounts import writer
+
+    assert writer.highest_epoch(tab.epoch_path) == 3  # the replica learned the epoch
+
+
+def test_failover_old_writer_returns_and_its_lost_writes_are_archived(pair):
+    cfgs, servers, ports = pair
+    make_db(cfgs["laptop"].db_path, "laptop")
+    make_db(cfgs["tablet"].db_path, "tablet")
+    for n in ("laptop", "tablet"):
+        cfgs[n] = follower(cfgs, n, "", ports, None)
+        start(cfgs[n], servers)
+    answer = {"writer": "laptop", "epoch": 1, "url": f"http://127.0.0.1:{ports['laptop']}"}
+    control = control_server(servers, answer)
+    lap = follower(cfgs, "laptop", control, ports, "tablet")
+    tab = follower(cfgs, "tablet", control, ports, "laptop")
+    write_user(lap.db_path, "early")
+    assert r.pull_once(tab, live=True) == "installed"
+    write_user(lap.db_path, "lost")  # written, but the laptop died before replication
+    # The Worker moves the writer to the tablet, which takes a signup.
+    answer.update(writer="tablet", epoch=2, url=f"http://127.0.0.1:{ports['tablet']}")
+    write_user(tab.db_path, "new")
+    # The laptop returns as a replica. Even with MORE writes it must follow the tablet.
+    assert r.pull_once(lap, live=False) == "installed-after-archiving"
+    assert users(lap.db_path) == ["early", "new"]
+    archived = list(lap.archive_dir.glob("*.sqlite3"))
+    assert len(archived) == 1 and "lost" in users(archived[0])
+
+
+def test_control_route_needs_the_origin_secret_and_replication_server_checks_it(pair):
+    cfgs, servers, ports = pair
+    make_db(cfgs["laptop"].db_path, "laptop")
+    cfg = follower(cfgs, "laptop", "", ports, None)
+    start(cfg, servers)
+    base = f"http://127.0.0.1:{ports['laptop']}"
+
+    def code(headers):
+        try:
+            return urllib.request.urlopen(urllib.request.Request(base + "/__repl/state", headers=headers), timeout=5).status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    assert code({r.SECRET_HEADER: SECRET}) == 403  # replication secret alone is not enough
+    assert code({r.ORIGIN_HEADER: ORIGIN}) == 403  # nor is the origin secret alone
+    assert code({r.SECRET_HEADER: SECRET, r.ORIGIN_HEADER: ORIGIN}) == 200
+    control = control_server(servers, {"writer": "x", "epoch": 1, "url": "http://x"})
+    cfg.control_url = control
+    assert r.fetch_control(cfg)["epoch"] == 1
+    cfg.origin_secret = "wrong"
+    assert r.fetch_control(cfg) is None
+
+
+def test_a_host_that_answers_as_the_wrong_node_is_not_followed(pair):
+    cfgs, servers, ports = pair
+    make_db(cfgs["laptop"].db_path, "laptop")
+    make_db(cfgs["tablet"].db_path, "tablet")
+    for n in ("laptop", "tablet"):
+        cfgs[n] = follower(cfgs, n, "", ports, None)
+        start(cfgs[n], servers)
+    tab = cfgs["tablet"]
+    source = {"writer": "pc", "epoch": 1, "url": f"http://127.0.0.1:{ports['laptop']}"}
+    assert r.sync_once(tab, live=True, source=source).startswith("skipped")

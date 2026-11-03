@@ -218,3 +218,58 @@ def test_logged_in_menu_shows_name_beside_avatar_and_logout_on_right(web, user):
     assert 'class="menu-account-name">alice<' in html
     assert ">Log out<" in html
     assert "Log out (alice)" not in html
+
+
+# --- multi-host: only the global writer may write ---------------------------------------
+
+
+@pytest.fixture
+def host(monkeypatch, tmp_path, settings):
+    """Pretend to be the host called 'laptop' on a multi-host install."""
+    monkeypatch.setenv("YABAI_REPL_NODE", "laptop")
+    from django.http import HttpResponse
+    from yabai_site import middleware
+
+    gate = middleware.WriterGateMiddleware(lambda request: HttpResponse("ran"))
+    gate.epoch_file = tmp_path / "writer-epoch"
+    return gate
+
+
+def _request(path, method="POST", **headers):
+    from django.test import RequestFactory
+
+    meta = {f"HTTP_{k.upper().replace('-', '_')}": v for k, v in headers.items()}
+    return getattr(RequestFactory(), method.lower())(path, **meta)
+
+
+def test_gate_refuses_a_write_without_the_worker_headers(host):
+    assert host(_request("/accounts/signup/")).status_code == 421
+
+
+def test_gate_refuses_a_write_meant_for_another_host_or_an_old_epoch(host):
+    assert host(_request("/accounts/signup/", x_yabai_writer="tablet", x_yabai_writer_epoch="3")).status_code == 421
+    assert host(_request("/accounts/signup/", x_yabai_writer="laptop", x_yabai_writer_epoch="4")).status_code == 200
+    assert host(_request("/accounts/signup/", x_yabai_writer="laptop", x_yabai_writer_epoch="3")).status_code == 421
+
+
+def test_gate_lets_reads_and_logins_through_on_any_host(host):
+    assert host(_request("/api/search", "GET")).status_code == 200
+    assert host(_request("/accounts/login/")).status_code == 200  # sessions are cookies: no write
+    assert host(_request("/api/convert")).status_code == 200
+
+
+def test_gate_is_off_without_a_node_name(monkeypatch):
+    monkeypatch.delenv("YABAI_REPL_NODE", raising=False)
+    from django.http import HttpResponse
+    from yabai_site import middleware
+
+    gate = middleware.WriterGateMiddleware(lambda request: HttpResponse("ran"))
+    assert gate(_request("/accounts/signup/")).status_code == 200
+
+
+def test_settings_get_does_not_create_a_row(web, user):
+    from accounts.models import UserSettings
+
+    web.force_login(user)
+    assert web.get("/api/account/settings").json() == {"data": {}, "updated_at": None}
+    assert not UserSettings.objects.exists()

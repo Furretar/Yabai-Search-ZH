@@ -1,0 +1,12 @@
+# Tunnel for Galaxy Tab S (Termux), port 8000.
+tunnel: 146f27a3-de20-4200-a58b-f9c7e3274d74
+credentials-file: /data/data/com.termux/files/home/.cloudflared/146f27a3-de20-4200-a58b-f9c7e3274d74.json
+
+ingress:
+  # Replication between hosts (port 8765); see laptop.yml.
+  - hostname: tabs.yabaisearch.org
+    path: ^/__repl/
+    service: http://127.0.0.1:8765
+  - hostname: tabs.yabaisearch.org
+    service: http://127.0.0.1:8000
+  - service: http_status:404
