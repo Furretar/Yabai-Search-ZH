@@ -449,6 +449,9 @@ def api_annotate(request):
         return _invalid("text", "Input should be a valid string", "body")
     if len(text) > MAX_ANNOTATE_CHARS:
         return _json({"detail": "Text is too long."}, status=413)
+    # Normalize before the lru_cache call so the same text with ASCII or
+    # full-width punctuation shares one cached result.
+    text = db.normalize_cjk_punct(text)
     services.pd.mark("handler_start")
     queue_ms = round((started - getattr(request, "yabai_arrived", started)) * 1000, 2)
     before = services._annotate_text.cache_info()

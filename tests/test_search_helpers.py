@@ -494,7 +494,8 @@ def test_tonal_variant_returns_toneless_letters():
 
 
 @pytest.mark.skipif(
-    not (DATA / "moe.sqlite").exists() and not (DATA / "moe_revised.sqlite").exists(),
+    not (DATA / "moe-taiwan" / "moe.sqlite").exists()
+    and not (DATA / "moe-taiwan" / "moe_revised.sqlite").exists(),
     reason="MOE databases not built",
 )
 def test_zhuyin_converts_to_numeric_pinyin():
@@ -526,6 +527,17 @@ def test_default_dictionaries_are_registered_anchors():
     for values in DEFAULTS.values():
         assert set(values) <= anchors
     assert "moe_revised" in DEFAULTS["TW"]
+
+
+def test_defaults_include_every_dictionary_in_the_category():
+    """Switching language enables all dictionaries in that category."""
+    by_lang: dict[str, set[str]] = {}
+    for source in db._SOURCE_QUERIES:
+        by_lang.setdefault(source["lang"], set()).add(source["anchor"])
+    assert set(DEFAULTS["EN"]) == by_lang["english"]
+    assert set(DEFAULTS["ZH"]) == by_lang["mainland"]
+    assert set(DEFAULTS["TW"]) == by_lang["taiwan"]
+    assert set(DEFAULTS["JP"]) == by_lang["japanese"]
 
 
 def test_has_english_match_checks_definition_words():

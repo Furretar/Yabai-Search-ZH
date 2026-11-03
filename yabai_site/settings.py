@@ -51,6 +51,7 @@ ALLOWED_HOSTS = _env_list(
         "www.yabaisearch.org",
         "laptop.yabaisearch.org",
         "tablet.yabaisearch.org",
+        "pc.yabaisearch.org",
         "dev.yabaisearch.org",
         "new.yabaisearch.org",
         "localhost",

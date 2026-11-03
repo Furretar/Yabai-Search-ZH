@@ -1,0 +1,8 @@
+# Tunnel for the Windows PC's serving copy (port 8000).
+tunnel: f386a9bd-32ab-4f5a-a873-6fd5c45bc17f
+credentials-file: C:\Users\wyatt\.cloudflared\f386a9bd-32ab-4f5a-a873-6fd5c45bc17f.json
+
+ingress:
+  - hostname: pc.yabaisearch.org
+    service: http://127.0.0.1:8000
+  - service: http_status:404

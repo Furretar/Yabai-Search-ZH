@@ -561,6 +561,15 @@ def _chunks(values: list[str], size: int | None = None):
 # Every source database has `senses` and `classifiers` tables of the same shape
 # (see the importers), so these queries are identical across sources.
 _SENSES_SQL = "SELECT word, position, text FROM senses WHERE word IN ({ph}) ORDER BY position"
+# 重編國語辭典修訂本 appends examples ("如：…") and citations ("《…》：「…」")
+# to each sense. The definition itself ends at the first full stop, so trim
+# there for display. The full text stays in `senses` for search and later use.
+_MOE_REVISED_SENSES_SQL = (
+    "SELECT word, position, "
+    "CASE WHEN instr(text, '。') > 0 "
+    "THEN substr(text, 1, instr(text, '。')) ELSE text END AS text "
+    "FROM senses WHERE word IN ({ph}) ORDER BY position"
+)
 # CEDICT also stores the reading each sense belongs to, so its definitions can be
 # grouped per reading (for polyphonic words).
 _CEDICT_SENSES_SQL = "SELECT word, position, text, reading FROM senses WHERE word IN ({ph})"
@@ -647,7 +656,7 @@ _SOURCE_QUERIES = [
                         "WHERE word LIKE ? ORDER BY word",
         "all_sql": "SELECT DISTINCT word FROM moe WHERE word <> ''",
         "repeat": 1,
-        "sense_sql": _SENSES_SQL,
+        "sense_sql": _MOE_REVISED_SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
         "pinyin_sql": "SELECT pinyin FROM moe WHERE word = ? AND pinyin <> '' LIMIT 1",
         "pinyin_batch_sql": "SELECT word, pinyin FROM moe "
@@ -1232,6 +1241,20 @@ def dictionaries() -> list[dict]:
     ]
 
 
+# ASCII punctuation that should be full-width when it follows a Chinese
+# character. `?` is left out because the search treats it as a wildcard, and
+# `.` because it hits abbreviations and decimals.
+_CJK = r"\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+_PUNCT_FULLWIDTH = {",": "，", ";": "；", ":": "：", "!": "！"}
+_CJK_PUNCT_RE = re.compile(rf"(?<=[{_CJK}])\s*([,;:!])\s*")
+
+
+def normalize_cjk_punct(text: str) -> str:
+    """ASCII punctuation right after a Chinese character -> full-width, and
+    drop the spaces around it: '君子一言, 駟馬難追' -> '君子一言，駟馬難追'."""
+    return _CJK_PUNCT_RE.sub(lambda m: _PUNCT_FULLWIDTH[m.group(1)], text)
+
+
 @lru_cache(maxsize=100_000)
 def _script_forms(word: str) -> tuple[str, ...]:
     """`word` plus its traditional and simplified variants (via OpenCC).
@@ -1239,6 +1262,7 @@ def _script_forms(word: str) -> tuple[str, ...]:
     Lets a traditional query (e.g. 馬) find a simplified entry (马) and vice
     versa.
     """
+    word = normalize_cjk_punct(word)
     return tuple(sorted({word, to_simplified(word), to_traditional(word)}))
 
 

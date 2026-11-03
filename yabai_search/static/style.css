@@ -3290,8 +3290,9 @@ footer {
     font-weight: 600;
 }
 
-/* The Auto Clipboard row: label on the left, info icon, then the switch. The
-   whole row toggles the switch, so it is not underlined like a link. */
+/* The Auto Clipboard row: icon, label, info icon and switch on one line. The
+   whole row toggles the switch. Only the label text is underlined on hover
+   (see the .menu-item rule), so the "i" keeps a clean circle. */
 .menu-switch {
     cursor: pointer;
     text-decoration: none;
@@ -3358,8 +3359,11 @@ footer {
     cursor: pointer;
 }
 
-.menu-item:hover,
-.menu-item:focus-visible {
+/* Underline only the label text, not the icons or the info bubble. A
+   text-decoration on the row would propagate to every descendant and could
+   not be removed by the "i" icon. */
+.menu-item:hover .menu-item-label,
+.menu-item:focus-visible .menu-item-label {
     text-decoration: underline;
 }
 

@@ -6,6 +6,7 @@ import json
 import socket
 import sqlite3
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -353,6 +354,11 @@ def test_snapshot_is_consistent_while_the_app_writes(pair):
         while not stopped.is_set():
             write_user(lap.db_path, f"u{i}")
             i += 1
+            # Leave a tiny gap between transactions. Without it the writer can
+            # starve the peer's /state reader for the whole 5 s client timeout,
+            # which makes this test fail as "unreachable" instead of exercising
+            # the snapshot consistency it is meant to check.
+            time.sleep(0.005)
 
     t = threading.Thread(target=writer)
     t.start()
@@ -429,6 +435,9 @@ def test_live_installs_while_the_app_keeps_writing(tmp_path):
                 conn.execute("INSERT INTO django_session VALUES (?, 'x')", (f"k{count[0]}",))
                 conn.commit()
                 count[0] += 1
+                # Leave a gap so the installer can take its EXCLUSIVE lock.
+                # A zero-gap writer can starve it for the whole timeout.
+                time.sleep(0.005)
             except sqlite3.Error as exc:  # pragma: no cover - would fail the test
                 errors.append(exc)
                 return

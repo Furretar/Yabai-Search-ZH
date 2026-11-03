@@ -16,10 +16,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 requires_moe = pytest.mark.skipif(
-    not (DATA / "moe.sqlite").exists(), reason="MOE concise database not built"
+    not (DATA / "moe-taiwan" / "moe.sqlite").exists(),
+    reason="MOE concise database not built",
 )
 requires_revised = pytest.mark.skipif(
-    not (DATA / "moe_revised.sqlite").exists(),
+    not (DATA / "moe-taiwan" / "moe_revised.sqlite").exists(),
     reason="MOE comprehensive database not built",
 )
 requires_wiktionary = pytest.mark.skipif(
@@ -38,8 +39,8 @@ requires_all_sources = pytest.mark.skipif(
     not all(
         (DATA / name).exists()
         for name in (
-            "moe.sqlite",
-            "moe_revised.sqlite",
+            "moe-taiwan/moe.sqlite",
+            "moe-taiwan/moe_revised.sqlite",
             "wiktionary.sqlite",
             "zhwiktionary.sqlite",
             "jpwiktionary.sqlite",
@@ -122,6 +123,32 @@ def test_moe_revised_source_and_definition(search, find_result):
     )
     assert definition["label"] == "重編國語辭典修訂本"
     assert definition["defs"]
+
+
+@requires_revised
+def test_moe_revised_definition_drops_examples(search, find_result):
+    """The revised MOE definition stops at the first 。; examples stay in the DB."""
+    entry = find_result(search("连续"), "连续")
+    assert entry is not None
+    definition = next(
+        item for item in entry["definitions"] if item["anchor"] == "moe_revised"
+    )
+    assert definition["defs"] == ["繼續不斷。"]
+    assert all("如：" not in text and "《" not in text for text in definition["defs"])
+
+    # The source row still holds the full text, including the example.
+    import sqlite3
+
+    conn = sqlite3.connect(db.MOE_REVISED_DB_PATH)
+    try:
+        full = conn.execute(
+            "SELECT text FROM senses WHERE word = ? ORDER BY position LIMIT 1",
+            ("連續",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert full.startswith("繼續不斷。")
+    assert "如：" in full
 
 
 @requires_revised

@@ -446,6 +446,18 @@ let clipboardNeedsPrompt = false;
 let clipboardWorker = null;
 let clipboardWorkerUrl = "";
 let clipboardTimer = 0;
+let clipboardLastDone = 0;
+
+// Phones and tablets: Android Chrome shows a "Paste" bubble for every read, so
+// polling or reading on every tap would spam it (and tapping it for an
+// unchanged clipboard looked like it did nothing). On touch devices the watch
+// only reads when the page comes back to the foreground, at most once per
+// cooldown, and a read the user approved with the bubble is always searched.
+// Text copied on this page is taken from the selection with no prompt at all.
+const clipboardIsTouch =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches;
+const CLIPBOARD_TOUCH_COOLDOWN_MS = 3000;
 
 async function readClipboardText() {
     if (!navigator.clipboard || !navigator.clipboard.readText) {
@@ -461,10 +473,20 @@ function ignoreNextClipboardChange() {
     clipboardSuppressUntil = performance.now() + 1500;
 }
 
+// Search clipboard text if it is worth searching.
+function searchClipboardValue(value) {
+    if (!value || value.length > AUTO_CLIPBOARD_MAX_LENGTH) return;
+    if (value === input.value.trim()) return;
+    performSearch(value);
+}
+
 async function checkClipboard(fromEvent = false) {
     if (!state.autoClipboard || clipboardReadBusy) return;
     const now = performance.now();
     if (fromEvent && now - clipboardLastRead < CLIPBOARD_EVENT_GAP_MS) return;
+    // Touch: the paste bubble closing refocuses the page, which would trigger
+    // another read and another bubble. Wait out a cooldown after each read.
+    if (clipboardIsTouch && now - clipboardLastDone < CLIPBOARD_TOUCH_COOLDOWN_MS) return;
     clipboardLastRead = now;
     clipboardReadBusy = true;
     try {
@@ -475,17 +497,19 @@ async function checkClipboard(fromEvent = false) {
         // focus, visibility and copy still check. A later fast read clears
         // this again, so one slow read cannot switch the timer off for good.
         clipboardNeedsPrompt = performance.now() - now > CLIPBOARD_SLOW_READ_MS;
-        if (!value || value === lastClipboardText) return;
+        // Desktop skips text it has already seen. On touch the user just
+        // approved this read with the paste bubble, so an unchanged clipboard
+        // is still searched (unless it is already what is in the box).
+        if (!value || (!clipboardIsTouch && value === lastClipboardText)) return;
         lastClipboardText = value;
         if (performance.now() < clipboardSuppressUntil) return;
-        if (value.length > AUTO_CLIPBOARD_MAX_LENGTH) return;
-        if (value === input.value.trim()) return;
-        performSearch(value);
+        searchClipboardValue(value);
     } catch (error) {
         // Not focused, permission denied or clipboard unavailable: try again
         // on the next trigger.
     } finally {
         clipboardReadBusy = false;
+        clipboardLastDone = performance.now();
     }
 }
 
@@ -499,6 +523,8 @@ function pollClipboard() {
 function startClipboardWatch() {
     stopClipboardWatch();
     clipboardNeedsPrompt = false;
+    // Touch devices have no timer: it would raise the paste bubble nonstop.
+    if (clipboardIsTouch) return;
     // A worker's timers are not throttled like a background tab's are.
     try {
         const code = `setInterval(() => postMessage(0), ${CLIPBOARD_TICK_MS});`;
@@ -540,6 +566,10 @@ if (autoClipboardToggle) {
         if (autoClipboardToggle.checked) {
             try {
                 lastClipboardText = await readClipboardText();
+                // Turning the switch on searches the clipboard right away,
+                // on every device, so the first paste does not need a change.
+                searchClipboardValue(lastClipboardText);
+                clipboardLastDone = performance.now();
             } catch (error) {
                 autoClipboardToggle.checked = false;
                 state.autoClipboard = false;
@@ -566,29 +596,46 @@ if (autoClipboardToggle) {
     const checkNow = () => checkClipboard(false);
     window.addEventListener("focus", checkNow);
     window.addEventListener("pageshow", checkNow);
-    document.addEventListener("focusin", checkNow);
     document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") checkNow();
     });
-    // Any sign of life from the page. Passive and rate-limited by the gap.
-    for (const type of [
-        "pointerdown", "pointermove", "mouseover", "keydown", "keyup",
-        "touchstart", "wheel", "scroll", "resize", "online",
-    ]) {
-        window.addEventListener(type, pollClipboard, { passive: true, capture: true });
-    }
-    // Copying on this page: the clipboard updates just after the event, so
-    // check a few times right away instead of waiting for the next tick.
-    for (const type of ["copy", "cut"]) {
-        document.addEventListener(
-            type,
-            () => {
-                for (const delay of [0, 40, 120, 300]) {
-                    window.setTimeout(checkNow, delay);
-                }
-            },
-            true
-        );
+    if (clipboardIsTouch) {
+        // Copying on this page: read the selection directly, no paste bubble.
+        for (const type of ["copy", "cut"]) {
+            document.addEventListener(
+                type,
+                () => {
+                    if (!state.autoClipboard) return;
+                    const text = (window.getSelection()?.toString() || "").trim();
+                    if (!text) return;
+                    lastClipboardText = text;
+                    searchClipboardValue(text);
+                },
+                true
+            );
+        }
+    } else {
+        document.addEventListener("focusin", checkNow);
+        // Any sign of life from the page. Passive and rate-limited by the gap.
+        for (const type of [
+            "pointerdown", "pointermove", "mouseover", "keydown", "keyup",
+            "touchstart", "wheel", "scroll", "resize", "online",
+        ]) {
+            window.addEventListener(type, pollClipboard, { passive: true, capture: true });
+        }
+        // Copying on this page: the clipboard updates just after the event, so
+        // check a few times right away instead of waiting for the next tick.
+        for (const type of ["copy", "cut"]) {
+            document.addEventListener(
+                type,
+                () => {
+                    for (const delay of [0, 40, 120, 300]) {
+                        window.setTimeout(checkNow, delay);
+                    }
+                },
+                true
+            );
+        }
     }
     // Where the browser has a real clipboard-change event, use it.
     try {
@@ -4720,6 +4767,8 @@ function loadPrefs() {
         state.taiwan = localStorage.getItem("yabai-search-taiwan") === "true";
         state.customDicts = localStorage.getItem("yabai-search-custom-dicts") === "true";
         state.compact = localStorage.getItem("yabai-search-compact") === "true";
+        // Auto Clipboard is remembered across page loads. The watcher only
+        // reads when the switch is on, so turning it off stops all access.
         state.autoClipboard = localStorage.getItem("yabai-search-auto-clipboard") === "true";
         // The Compact/Detailed switch is inside the custom dictionary panel,
         // so without custom dictionaries the app always uses compact mode.
@@ -4728,7 +4777,8 @@ function loadPrefs() {
         loadDictOrder();
         const stored = JSON.parse(localStorage.getItem("yabai-search-dicts") || "null");
         // Without custom dictionaries, ignore saved choices and use the
-        // language's defaults (EN -> cedict only). A custom order belongs to
+        // language's defaults (EN -> every English dictionary). A custom order
+        // belongs to
         // the custom setup, so drop it too.
         state.dicts =
             stored === null || !state.customDicts
@@ -5240,10 +5290,14 @@ function defaultDictsForLanguage(lang) {
 // the others (see yabai_search/default_dictionaries.py).
 function applyDictDefaults(value) {
     if (!(value in langDefaults)) return;
+    // Start from a clean slate: every dictionary in the new language category,
+    // and compact mode (one definition per language).
     state.dicts = defaultDictsForLanguage(value);
     for (const toggle of dictToggles) {
         toggle.checked = state.dicts.has(toggle.dataset.anchor);
     }
+    state.compact = true;
+    updateDictMode();
     syncGroups();
     entryDictState.clear();
 }
@@ -5271,9 +5325,9 @@ langMenu.addEventListener("click", (event) => {
     const item = event.target.closest("[role='option']");
     if (!item) return;
     applyLang(item.dataset.value);
-    // In custom-dictionary mode the user controls the dictionary selection;
-    // changing the search language must not toggle any dictionaries.
-    if (!state.customDicts) applyDictDefaults(item.dataset.value);
+    // Every language switch resets the dictionary selection to that language's
+    // defaults (all dictionaries in the category) and turns compact mode on.
+    applyDictDefaults(item.dataset.value);
     savePrefs();
     setLangOpen(false);
     redraw(); // the selected language or default dictionaries may have changed

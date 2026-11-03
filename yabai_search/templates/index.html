@@ -88,6 +88,10 @@
             <div class="menu-dropdown">
                 <div class="menu-account">
                     {% if account_name %}
+                    <form method="post" action="/accounts/logout/" class="menu-account-form">
+                        {{ csrf_input }}
+                        <button type="submit" class="menu-account-link">Log out</button>
+                    </form>
                     <span class="menu-account-left">
                         <span class="menu-avatar" aria-hidden="true">
                             <svg viewBox="0 0 24 24" focusable="false">
@@ -97,10 +101,6 @@
                         </span>
                         <span class="menu-account-name">{{ account_name }}</span>
                     </span>
-                    <form method="post" action="/accounts/logout/" class="menu-account-form">
-                        {{ csrf_input }}
-                        <button type="submit" class="menu-account-link">Log out</button>
-                    </form>
                     {% else %}
                     <a class="menu-account-link" href="/accounts/login/">Log in</a>
                     <a class="menu-avatar" href="/accounts/login/" aria-label="Log in">

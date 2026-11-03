@@ -842,6 +842,9 @@ def api_search(
     (a definition in a selected dictionary first) before it is paged, so the
     category order holds across pages and not only inside one page.
     """
+    # Normalize CJK punctuation once, so every tier (exact, prefix, wildcard,
+    # definitions) matches the same spelling of the query.
+    q = db.normalize_cjk_punct(q)
     pd.mark("handler_start")
     db.start_log()  # capture the SQL this search runs (for data/search.log)
     started = time.perf_counter()
