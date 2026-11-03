@@ -99,6 +99,23 @@
                     <span>Host</span>
                     <strong>{{ served_by }}</strong>
                 </div>
+                <!-- Auto Clipboard: search the clipboard contents on focus. -->
+                <button type="button" id="auto-clipboard-button" class="menu-item"
+                    title="Toggle automatic clipboard search.">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M9 3h6a1 1 0 0 1 1 1v1H8V4a1 1 0 0 1 1-1Z" fill="none"
+                            stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                        <path d="M7 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"
+                            fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                        <path d="M9 9h6M9 13h6M9 17h4" fill="none" stroke="currentColor"
+                            stroke-width="1.4" stroke-linecap="round"/>
+                    </svg>
+                    <span class="menu-item-label">Auto Clipboard</span>
+                    <span class="dict-mode-info" tabindex="0" role="button" aria-expanded="false"
+                        aria-label="Auto Clipboard information"
+                        aria-describedby="auto-clipboard-help">i<span id="auto-clipboard-help"
+                            class="dict-mode-help" role="tooltip">Automatically searches the contents of your clipboard.</span></span>
+                </button>
                 {% if show_debug %}
                 <!-- Debug log download, available to every client. -->
                 <button type="button" id="download-log-button" class="menu-item"

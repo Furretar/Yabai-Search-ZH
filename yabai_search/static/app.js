@@ -106,6 +106,7 @@ const state = {
     dicts: new Set(), // selected dictionary anchors
     compact: false,
     lang: "EN",
+    autoClipboard: false,
 };
 
 // True when this page was opened with display settings in the URL. Developer
@@ -343,7 +344,7 @@ function debugSnapshot(serverSearchLog = null) {
         phonetic: state.phonetic,
         taiwan: state.taiwan,
         customDicts: state.customDicts,
-        selectedDictionaries: [...state.dicts].sort(),
+        selectedDictionaries: selectedAnchorsParam().split(",").filter(Boolean),
         compact: state.compact,
         lang: state.lang,
         currentQuery,
@@ -419,6 +420,39 @@ async function downloadDebugLog() {
 
 const downloadLogButton = document.getElementById("download-log-button");
 if (downloadLogButton) downloadLogButton.addEventListener("click", downloadDebugLog);
+
+// Auto Clipboard: search the clipboard contents when the page gains focus.
+const autoClipboardButton = document.getElementById("auto-clipboard-button");
+let lastClipboardText = "";
+if (autoClipboardButton) {
+    const updateAutoClipboardLabel = () => {
+        const label = autoClipboardButton.querySelector(".menu-item-label");
+        if (label) label.textContent = state.autoClipboard ? "Auto Clipboard: On" : "Auto Clipboard";
+        autoClipboardButton.setAttribute("aria-pressed", String(state.autoClipboard));
+        autoClipboardButton.classList.toggle("active", state.autoClipboard);
+    };
+    updateAutoClipboardLabel();
+    autoClipboardButton.addEventListener("click", (event) => {
+        // Ignore clicks on the info bubble.
+        if (event.target.closest(".dict-mode-info")) return;
+        state.autoClipboard = !state.autoClipboard;
+        savePrefs();
+        updateAutoClipboardLabel();
+    });
+    window.addEventListener("focus", async () => {
+        if (!state.autoClipboard) return;
+        try {
+            const text = await navigator.clipboard.readText();
+            const value = (text || "").trim();
+            if (value && value !== lastClipboardText) {
+                lastClipboardText = value;
+                performSearch(value);
+            }
+        } catch (error) {
+            // Clipboard access may be denied; ignore.
+        }
+    });
+}
 
 // Tone-marked forms for each base vowel (index 0 = tone 1 ... 3 = tone 4).
 const TONE_MARKS = {
@@ -2463,7 +2497,7 @@ function currentReportSettings() {
         customDicts: state.customDicts,
         compact: state.compact,
         lang: state.lang,
-        selectedDictionaries: [...state.dicts].sort(),
+        selectedDictionaries: selectedAnchorsParam().split(",").filter(Boolean),
     };
 }
 
@@ -3334,14 +3368,13 @@ function completeInOneResponse(query) {
 // Wiktionary, not only CC-CEDICT). Browser-imported dictionaries have no server
 // anchor and are left out; they are merged on the client.
 function selectedAnchorsParam() {
-    let anchors;
-    if (state.customDicts) {
-        anchors = [...state.dicts];
-    } else {
-        const group = selectedLangGroup();
-        anchors = [...anchorLang].filter(([, lang]) => lang === group).map(([anchor]) => anchor);
-    }
-    return anchors.filter((anchor) => anchorLang.has(anchor)).sort().join(",");
+    // The drag handle moves the row in the DOM, so the checked rows there are
+    // the order the user sees. Do not sort: the server uses this order for the
+    // fast preview and it is part of any shared/report URL.
+    return [...document.querySelectorAll(".dict-toggle")]
+        .filter((toggle) => toggle.checked && anchorLang.has(toggle.dataset.anchor))
+        .map((toggle) => toggle.dataset.anchor)
+        .join(",");
 }
 
 // Build an /api/search URL, including the cache version when the page has one.
@@ -4540,6 +4573,7 @@ function loadPrefs() {
         state.taiwan = localStorage.getItem("yabai-search-taiwan") === "true";
         state.customDicts = localStorage.getItem("yabai-search-custom-dicts") === "true";
         state.compact = localStorage.getItem("yabai-search-compact") === "true";
+        state.autoClipboard = localStorage.getItem("yabai-search-auto-clipboard") === "true";
         // The Compact/Detailed switch is inside the custom dictionary panel,
         // so without custom dictionaries the app always uses compact mode.
         if (!state.customDicts) state.compact = true;
@@ -4584,6 +4618,7 @@ function savePrefs() {
         localStorage.setItem("yabai-search-taiwan", String(state.taiwan));
         localStorage.setItem("yabai-search-custom-dicts", String(state.customDicts));
         localStorage.setItem("yabai-search-compact", String(state.compact));
+        localStorage.setItem("yabai-search-auto-clipboard", String(state.autoClipboard));
         localStorage.setItem("yabai-search-dicts", JSON.stringify([...state.dicts]));
         localStorage.setItem("yabai-search-lang", state.lang);
     } catch (e) {
@@ -4632,12 +4667,22 @@ function applySettingsFromUrl() {
         }
     }
     if (params.has("dicts")) {
-        state.dicts = new Set(
-            (params.get("dicts") || "")
-                .split(",")
-                .map((anchor) => anchor.trim())
-                .filter(Boolean)
-        );
+        const anchors = (params.get("dicts") || "")
+            .split(",")
+            .map((anchor) => anchor.trim())
+            .filter((anchor) => anchor && anchorLang.has(anchor));
+        state.dicts = new Set(anchors);
+        // A shared/report URL carries the drag order. Apply it to this page
+        // only; settingsFromUrl keeps it out of localStorage.
+        if (state.customDicts) {
+            dictOrder = {};
+            for (const anchor of anchors) {
+                const lang = anchorLang.get(anchor);
+                if (!lang) continue;
+                if (!dictOrder[lang]) dictOrder[lang] = [];
+                dictOrder[lang].push(anchor);
+            }
+        }
         changed = true;
     }
     // Report links can carry dictionary choices, but they are ignored unless
@@ -5063,6 +5108,11 @@ function resetDictSettings() {
     entryDictState.clear();
     dictOrder = {};
     saveDictOrder();
+    // Put the rows back in the server's language order; otherwise the next
+    // search would still send the old drag order.
+    for (const container of document.querySelectorAll(".dict-items")) {
+        applyDictOrder(container);
+    }
     syncGroups();
 }
 
@@ -5551,8 +5601,7 @@ for (const button of dictModeButtons) {
 
 // Tap/click support for the compact-mode info bubble. Desktop hover and
 // keyboard focus are handled by CSS; touch devices need an explicit toggle.
-const dictModeInfo = document.querySelector(".dict-mode-info");
-if (dictModeInfo) {
+for (const dictModeInfo of document.querySelectorAll(".dict-mode-info")) {
     const setInfoOpen = (open) => {
         dictModeInfo.classList.toggle("open", open);
         dictModeInfo.setAttribute("aria-expanded", String(open));
@@ -5669,6 +5718,8 @@ function attachHandlePointerDrag(handle, label, container) {
         }
         entryDictState.clear();
         redraw();
+        // The server chooses its preview dictionary from this order too.
+        rerunSearch();
     }
 
     handle.addEventListener(
@@ -5789,6 +5840,8 @@ function setupDictionaryDrag(container) {
         }
         entryDictState.clear();
         redraw();
+        // The server chooses its preview dictionary from this order too.
+        rerunSearch();
     });
 }
 
