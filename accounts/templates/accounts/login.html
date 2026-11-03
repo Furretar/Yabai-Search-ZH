@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in - Yabai Search</title>
+<script>try{if(localStorage.getItem("yabai-theme")==="light")document.documentElement.classList.add("theme-light")}catch(e){}</script>
+<link rel="stylesheet" href="/static/variables.css?v={{ asset_version }}">
+<link rel="stylesheet" href="/static/auth.css?v={{ asset_version }}">
+</head>
+<body>
+<main>
+<a class="back" href="/">&larr; Yabai Search</a>
+<h1>Log in</h1>
+<p class="subtitle">Sign in to keep your settings and reports with your account.</p>
+<div class="card">
+<form method="post">
+{% csrf_token %}
+{{ form.non_field_errors }}
+{% for field in form %}
+<div class="field">
+<label for="{{ field.id_for_label }}">{{ field.label }}</label>
+{{ field }}
+{{ field.errors }}
+{% if field.help_text %}<div class="helptext">{{ field.help_text|safe }}</div>{% endif %}
+</div>
+{% endfor %}
+{% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+<button type="submit">Log in</button>
+</form>
+</div>
+{% if signups_open %}<p class="muted">No account? <a href="/accounts/signup/">Sign up</a></p>{% endif %}
+</main>
+<script src="/static/auth.js?v={{ asset_version }}" defer></script>
+</body>
+</html>

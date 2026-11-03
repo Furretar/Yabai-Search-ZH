@@ -12,7 +12,7 @@ import time
 import unicodedata
 from bisect import bisect_left
 from collections import OrderedDict, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterable
 from functools import lru_cache
 from pathlib import Path
 
@@ -168,6 +168,37 @@ def to_simplified(text: str) -> str:
     """Convert Chinese text to simplified characters (traditional -> simplified)."""
     return _opencc("t2s").convert(text) if text else text
 
+
+def script_variants(words: Iterable[str]) -> set[str]:
+    """`words` plus their OpenCC simplified and traditional spellings.
+
+    Used when one list must answer both scripts: the MOE dictionaries store
+    縮頭縮腦, but jieba/token input usually arrives as 缩头缩脑. Converting the
+    whole batch in one call matters: OpenCC per headword on the full dictionary
+    is far slower than one newline-joined conversion.
+    """
+    variants = {word for word in words if word}
+    if not variants:
+        return variants
+    convertible = [
+        word for word in variants if "\n" not in word and "\r" not in word
+    ]
+    if convertible:
+        joined = "\n".join(convertible)
+        for config in ("t2s", "s2t"):
+            converted = _opencc(config).convert(joined).split("\n")
+            if len(converted) == len(convertible):
+                variants.update(converted)
+            else:
+                # A line break inside a headword would shift the batch result;
+                # convert those few one by one instead of losing alignment.
+                variants.update(_opencc(config).convert(word) for word in convertible)
+    for word in variants - set(convertible):
+        for config in ("t2s", "s2t"):
+            variants.add(_opencc(config).convert(word))
+    return variants
+
+
 # Every database lives in <project root>/data. Tests and optimisation runs can
 # point every reader at a small generated set instead with YABAI_DATA_DIR (see
 # scripts/build_test_dbs.py), so they do not need the full ~1.4 GB of sources.
@@ -253,9 +284,40 @@ _gram_words_ok_cache: bool | None = None
 # Path to the prebuilt search index (scripts/build_search_index.py): the "*"
 # headword list and the source pinyin rows, so a small host does not rebuild
 # them (and does not call OpenCC hundreds of thousands of times) at startup.
+# It is derived data, so it lives with the other generated indexes. The old
+# top-level data/search_index.sqlite is moved here on first use.
 # Set YABAI_SEARCH_INDEX=0 to force the old in-memory path.
-SEARCH_INDEX_DB_PATH = DATA_DIR / "search_index.sqlite"
+SEARCH_INDEX_DB_PATH = GENERATED_DIR / "search_index.sqlite"
+LEGACY_SEARCH_INDEX_DB_PATH = DATA_DIR / "search_index.sqlite"
 _search_index_ok_cache: bool | None = None
+_search_index_migrated = False
+
+
+def _migrate_search_index() -> None:
+    """Move a pre-generated-indexes search index to its new home, once."""
+    global _search_index_migrated
+    if _search_index_migrated:
+        return
+    _search_index_migrated = True
+    if not LEGACY_SEARCH_INDEX_DB_PATH.exists():
+        return
+    # Both copies can exist because older builds wrote the top-level file while
+    # an experimental build already used the generated folder. The top-level
+    # one is the file the previous release actually served, so it wins unless
+    # the generated copy is newer.
+    try:
+        if (
+            SEARCH_INDEX_DB_PATH.exists()
+            and SEARCH_INDEX_DB_PATH.stat().st_mtime
+            >= LEGACY_SEARCH_INDEX_DB_PATH.stat().st_mtime
+        ):
+            return
+        SEARCH_INDEX_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(LEGACY_SEARCH_INDEX_DB_PATH, SEARCH_INDEX_DB_PATH)
+    except OSError:
+        # A read-only data directory just means the live fallback is used.
+        pass
+
 
 # --- exact, uncapped result sets -------------------------------------------
 # The owner requires every result list and total to be exact over ALL matches.
@@ -489,6 +551,11 @@ def _chunks(values: list[str], size: int | None = None):
 #   database   its SQLite file
 #   sql        returns one column of headwords; the `IN (...)` word list appears
 #              "repeat" times, so a query over two columns sets repeat=2
+#   all_sql    returns every headword (used by the segmenter when a source has
+#              no segment_sql, and by the "*" listing)
+#   segment_sql  optional; like all_sql, but returns every script variant the
+#              source stores (word/traditional/simplified). The segmenter reads
+#              this so a word that search can find is never split apart.
 #   sense_sql  returns (word, position, text) numbered senses for the headword
 #   cls_sql    returns (word, traditional, simplified, codes, note) classifiers
 # Every source database has `senses` and `classifiers` tables of the same shape
@@ -527,6 +594,8 @@ _SOURCE_QUERIES = [
         "database": DB_PATH,
         "sql": "SELECT DISTINCT traditional AS word FROM entries WHERE traditional IN ({ph})"
                " UNION SELECT DISTINCT simplified FROM entries WHERE simplified IN ({ph})",
+        "segment_sql": "SELECT traditional FROM entries "
+                       "UNION SELECT simplified FROM entries",
         "repeat": 2,
         "sense_sql": _CEDICT_SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
@@ -654,6 +723,9 @@ _SOURCE_QUERIES = [
         "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
                         "WHERE word LIKE ? ORDER BY word",
         "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "segment_sql": "SELECT word FROM headwords "
+                       "UNION SELECT traditional FROM headwords "
+                       "UNION SELECT simplified FROM headwords",
         "repeat": 1,
         "sense_sql": _SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
@@ -680,6 +752,9 @@ _SOURCE_QUERIES = [
         "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
                         "WHERE word LIKE ? ORDER BY word",
         "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "segment_sql": "SELECT word FROM headwords "
+                       "UNION SELECT traditional FROM headwords "
+                       "UNION SELECT simplified FROM headwords",
         "repeat": 1,
         "sense_sql": _JP_SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
@@ -693,7 +768,7 @@ _SOURCE_QUERIES = [
         "count_sql": "SELECT COUNT(*) FROM headwords",
     },
     {
-        "label": "Baidu",
+        "label": "百度汉语",
         "anchor": "baidu",
         "lang": "mainland",
         "database": BAIDU_DB_PATH,
@@ -718,6 +793,50 @@ _SOURCE_QUERIES = [
         "count_sql": "SELECT COUNT(*) FROM headwords",
     },
 ]
+
+# --- headword export for the segmenter -------------------------------------
+# The segmenter (segment.py) must know every word search can find, otherwise
+# "it's 缩头缩脑" splits a word that "缩头缩脑" alone finds. Rather than keep a
+# second list of dictionaries there, it asks this registry: each source
+# contributes the headwords from its `segment_sql` (when it has one) or else its
+# `all_sql`. A new dictionary added to _SOURCE_QUERIES is therefore segmented
+# automatically; give it a `segment_sql` only when `all_sql` misses script
+# variants it stores in separate columns.
+
+
+def source_database_paths() -> list[Path]:
+    """Database file of every registered dictionary (existing or not)."""
+    return [Path(source["database"]) for source in _SOURCE_QUERIES]
+
+
+def source_headwords(min_length: int = 2) -> set[str]:
+    """Every headword of every registered dictionary that exists on disk.
+
+    Both scripts are returned. A source that stores only one form (MOE stores
+    縮頭縮腦, Baidu stores 缩头缩脑) still contributes the other through OpenCC,
+    so the segmenter never misses a word just because the input uses the other
+    script. A missing database, an unreadable file or a failing query is
+    skipped, so a half-built data directory still segments with what is there.
+    """
+    words: set[str] = set()
+    for source in _SOURCE_QUERIES:
+        sql = source.get("segment_sql") or source.get("all_sql")
+        path = Path(source["database"])
+        if not sql or not path.exists():
+            continue
+        try:
+            connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+        except sqlite3.Error:
+            continue
+        try:
+            for (value,) in connection.execute(sql):
+                if value:
+                    words.add(value)
+        except sqlite3.Error:
+            continue
+        finally:
+            connection.close()
+    return {word for word in script_variants(words) if len(word) >= min_length}
 
 # --- data version ----------------------------------------------------------
 def data_version() -> str:
@@ -754,8 +873,9 @@ def data_version() -> str:
 # --- prebuilt search index -------------------------------------------------
 # The two expensive startup caches (the "*" headword list and the source pinyin
 # rows) are pure functions of the dictionary files. scripts/build_search_index.py
-# stores them in data/search_index.sqlite, and this module reads them back with
-# plain SQL. On the tablet that replaces ~90 s of pure-Python OpenCC work.
+# stores them in data/generated-indexes-optimizations/search_index.sqlite, and
+# this module reads them back with plain SQL. On the tablet that replaces ~90 s
+# of pure-Python OpenCC work.
 _SEARCH_INDEX_VERSION = 1
 # The dialect early-out tables have their own version so adding them does not
 # invalidate the headword/pinyin index (which would force a 110 s rebuild on the
@@ -782,8 +902,9 @@ def _search_index_signature() -> str:
 
 
 def _search_index_ok() -> bool:
-    """True when data/search_index.sqlite was built from the current sources."""
+    """True when the prebuilt search index was built from the current sources."""
     global _search_index_ok_cache
+    _migrate_search_index()
     if _search_index_ok_cache is not None:
         return _search_index_ok_cache
     if not _search_index_enabled() or not SEARCH_INDEX_DB_PATH.exists():
@@ -900,12 +1021,14 @@ def _dialect_index_rows() -> tuple[list[str], list[str]]:
 
 
 def build_search_index(path: Path | None = None) -> dict[str, int]:
-    """Write data/search_index.sqlite from the current source databases.
+    """Write the prebuilt search index from the current source databases.
 
     Called by scripts/build_search_index.py. The live builders are the same
     functions a request would use, so the file can never disagree with them.
     The write is atomic: a temporary file is renamed over the old index.
     """
+    if path is None:
+        _migrate_search_index()
     target = Path(path) if path is not None else SEARCH_INDEX_DB_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_name(target.name + ".part")
@@ -5974,7 +6097,7 @@ def _match_tier_context(
 
 def rank_by_category(
     entries: list[dict],
-    selected: set[str],
+    selected: Collection[str],
     query: str = "",
     taiwan: bool = False,
     definition_search: bool = False,
@@ -6006,6 +6129,9 @@ def rank_by_category(
     """
     if not entries:
         return entries
+    # The caller keeps the user's drag order for the fast preview. Ranking only
+    # needs membership, so use a set here and keep `selected` ordered outside.
+    selected = set(selected)
     words = sorted(
         {entry["traditional"] for entry in entries if entry.get("traditional")}
         | {entry["simplified"] for entry in entries if entry.get("simplified")}

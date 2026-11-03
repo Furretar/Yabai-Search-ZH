@@ -48,6 +48,10 @@ requires_all_sources = pytest.mark.skipif(
     reason="not all dictionary databases are built",
 )
 
+requires_baidu = pytest.mark.skipif(
+    not (DATA / "baidu.sqlite").exists(), reason="Baidu database not built"
+)
+
 
 def _anchors(entry):
     return [source["anchor"] for source in entry.get("sources", [])]
@@ -166,6 +170,14 @@ def test_jpwiktionary_source(search, find_result):
     assert "jpwiktionary" in _definition_anchors(entry)
 
 
+@requires_baidu
+def test_baidu_source_chip(search, find_result):
+    """The Baidu headword list contributes a source chip."""
+    entry = find_result(search("AA制"), "AA制")
+    assert entry is not None
+    assert "baidu" in _anchors(entry)
+
+
 @requires_wiktionary
 def test_dialect_reading_is_kept_untinted(search, find_result):
     """A Wu/Xiang-only reading is shown but marked as non-Mandarin."""
@@ -230,8 +242,9 @@ def test_source_chips_are_unique_and_in_registry_order(search, find_result):
 def test_sources_metadata_reports_all_built_dictionaries():
     """The About-page metadata includes every built dictionary and its count."""
     sources = {source["anchor"]: source for source in db.sources()}
-    for anchor in ("cedict", "moe", "moe_revised", "wiktionary", "zhwiktionary", "jpwiktionary"):
-        assert anchor in sources
+    for source in db._SOURCE_QUERIES:
+        if source["database"].exists():
+            assert source["anchor"] in sources
     assert sources["moe_revised"]["entries"] > 100_000
     assert sources["moe_revised"]["updated"]
 

@@ -1,4 +1,6 @@
-"""Build data/search_index.sqlite from the current dictionary files.
+"""Build the prebuilt search index from the current dictionary files.
+
+The default output is data/generated-indexes-optimizations/search_index.sqlite.
 
 The index holds the two lists that are expensive to rebuild at startup:
 

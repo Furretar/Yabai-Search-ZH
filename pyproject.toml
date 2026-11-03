@@ -7,9 +7,12 @@ version = "0.1.0"
 description = "A CC-CEDICT Chinese-English dictionary web app"
 requires-python = ">=3.12"       # minimum interpreter version
 dependencies = [                  # runtime dependencies
-    "fastapi>=0.115",             # web framework
-    "uvicorn>=0.34",              # ASGI server that serves the app
-    "jinja2>=3.1",                # HTML templating
+    "django>=5.2,<6",             # web framework (accounts, sessions, admin, CSRF)
+    "gunicorn>=23",               # WSGI server; threads keep searches concurrent
+    "whitenoise>=6.7",            # serves yabai_search/static/
+    "argon2-cffi>=23.1",          # Argon2 password hashing
+    "psycopg[binary]>=3.2",       # only used when DJANGO_DB_ENGINE=postgres
+    "jinja2>=3.1",                # the existing HTML templates (Django's Jinja2 backend)
     "jieba>=0.42",                # Chinese word segmentation
     "opencc>=1.4.2",
     "markdown>=3.11.2",           # renders README.md on the About page
@@ -19,13 +22,14 @@ dependencies = [                  # runtime dependencies
 [dependency-groups]
 dev = [
     "pytest>=8",                  # test runner
-    "httpx>=0.28",                # HTTP client used by FastAPI's test tools
+    "pytest-django>=4.9",         # Django settings + database fixtures for pytest
 ]
 
 [tool.uv]
 package = false                   # this is an app, not an installable library
 
 [tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "yabai_site.settings"
 # `uv run pytest` starts the pytest console script, which does not add the
 # working directory to sys.path; the tests import the yabai_search package.
 pythonpath = ["."]

@@ -10,7 +10,7 @@ import pytest
 
 from yabai_search import db
 from yabai_search.default_dictionaries import DEFAULTS
-from yabai_search.main import _clean_report_settings, _report_search_url
+from yabai_search.services import _clean_report_settings, _report_search_url
 from yabai_search.overrides import normalize_english
 from yabai_search.pinyin import numeric_to_marked, to_numeric, to_toneless
 from scripts.import_cedict import see_target
@@ -419,7 +419,7 @@ def test_lookup_many_uses_one_query_for_a_batch(monkeypatch):
 
 def test_expand_variants_batch_matches_per_target(monkeypatch):
     """Batching the redirect lookups does not change the expanded list."""
-    from yabai_search import main as app_main
+    from yabai_search import services as app_main
 
     cases = {}
     for query in ("gan", "tian", "shan"):

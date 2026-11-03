@@ -1,0 +1,152 @@
+/* Login and signup pages: same palette as the dictionary pages. */
+:root {
+    color-scheme: dark;
+    --error: #ff3823;
+}
+
+html.theme-light {
+    color-scheme: light;
+    --accent: #d97706;
+    --bg: #ffffff;
+    --surface-bg: #ffffff;
+    --chip-bg: #ffffff;
+    --border: #c9c9c9;
+    --options-divider: #d8d8d8;
+    --reading: #222222;
+    --muted: color-mix(in srgb, #222222 75%, transparent);
+    --control: color-mix(in srgb, #222222 85%, transparent);
+    --on-accent: #000000;
+    --error: #c0392b;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    min-height: 100vh;
+    margin: 0;
+    padding: 2rem 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--reading);
+    font: 16px/1.5 system-ui, sans-serif;
+}
+
+main {
+    width: 100%;
+    max-width: 24rem;
+}
+
+/* Back link and page heading. */
+.back {
+    color: var(--muted);
+    font-size: .9rem;
+    text-decoration: none;
+}
+
+.back:hover {
+    color: var(--accent);
+}
+
+h1 {
+    margin: 1.25rem 0 .25rem;
+    color: var(--accent);
+    font-size: 1.6rem;
+}
+
+.subtitle {
+    margin: 0 0 1.25rem;
+    color: var(--muted);
+    font-size: .9rem;
+}
+
+/* The form itself sits on the same surface colour as the search panel. */
+.card {
+    padding: 1.25rem;
+    background: var(--surface-bg);
+    border: 1px solid var(--border);
+    border-radius: .6rem;
+}
+
+label {
+    display: block;
+    margin-top: 1rem;
+    font-weight: 600;
+}
+
+.field:first-of-type label {
+    margin-top: 0;
+}
+
+input {
+    width: 100%;
+    margin-top: .35rem;
+    padding: .65rem .7rem;
+    color: var(--reading);
+    background: var(--chip-bg);
+    border: 1px solid var(--border);
+    border-radius: .4rem;
+    font: inherit;
+}
+
+input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+button {
+    width: 100%;
+    margin-top: 1.4rem;
+    padding: .7rem 1rem;
+    color: var(--on-accent);
+    background: var(--accent);
+    border: 0;
+    border-radius: .4rem;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+button:hover {
+    filter: brightness(1.05);
+}
+
+/* Validation: errors are always visible; requirements appear on demand. */
+.errorlist {
+    margin: .35rem 0 0;
+    padding-left: 1.1rem;
+    color: var(--error);
+    font-size: .9rem;
+}
+
+.errorlist.nonfield {
+    margin: 0 0 .75rem;
+}
+
+.helptext {
+    display: none;
+    margin-top: .35rem;
+    color: var(--muted);
+    font-size: .85rem;
+}
+
+.helptext.show {
+    display: block;
+}
+
+.field-invalid input {
+    border-color: var(--error);
+}
+
+.muted {
+    color: var(--muted);
+    font-size: .9rem;
+}
+
+a {
+    color: var(--accent);
+}

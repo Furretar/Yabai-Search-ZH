@@ -70,7 +70,7 @@ def main() -> None:
     if not hits:
         print("  -> never matched. Compare the query with pinyin_toneless above.")
 
-    from yabai_search.main import _expand_variants  # imports the web app
+    from yabai_search.services import _expand_variants
 
     expanded = _expand_variants(entries)
     positions = [

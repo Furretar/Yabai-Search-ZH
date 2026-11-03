@@ -1,4 +1,4 @@
-"""Tests for the prebuilt search index (data/search_index.sqlite).
+"""Tests for the prebuilt search index (generated-indexes-optimizations).
 
 The index replaces the two lists that were rebuilt at every startup: the "*"
 headword order and the source pinyin rows. These tests build one in a temporary
@@ -7,6 +7,7 @@ directory and check it agrees with the live builders it is derived from.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 
 import pytest
@@ -44,7 +45,36 @@ def _reset_index_cache():
 
 def _use_index(monkeypatch, path):
     monkeypatch.setattr(db, "SEARCH_INDEX_DB_PATH", path)
+    # Never let a test move the real data/search_index.sqlite on this machine.
+    monkeypatch.setattr(
+        db, "LEGACY_SEARCH_INDEX_DB_PATH", path.with_name("legacy-missing.sqlite")
+    )
+    monkeypatch.setattr(db, "_search_index_migrated", False)
     db._search_index_ok_cache = None
+
+
+def test_legacy_index_is_moved_once(tmp_path, monkeypatch):
+    """The pre-move top-level index replaces an older generated copy."""
+    legacy = tmp_path / "data" / "search_index.sqlite"
+    target = tmp_path / "generated-indexes-optimizations" / "search_index.sqlite"
+    legacy.parent.mkdir()
+    target.parent.mkdir()
+    target.write_bytes(b"stale")
+    legacy.write_bytes(b"index")
+    # The top-level file is the one the previous release served; make it newer.
+    os.utime(target, (1_000_000, 1_000_000))
+
+    monkeypatch.setattr(db, "SEARCH_INDEX_DB_PATH", target)
+    monkeypatch.setattr(db, "LEGACY_SEARCH_INDEX_DB_PATH", legacy)
+    monkeypatch.setattr(db, "_search_index_migrated", False)
+
+    db._migrate_search_index()
+
+    assert target.read_bytes() == b"index"
+    assert not legacy.exists()
+    # The flag keeps a second startup from looking for the old file again.
+    db._migrate_search_index()
+    assert target.read_bytes() == b"index"
 
 
 def test_index_round_trips_the_live_lists(index_file, monkeypatch):

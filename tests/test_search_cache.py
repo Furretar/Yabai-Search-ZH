@@ -28,7 +28,7 @@ def test_data_version_is_a_short_stable_fingerprint():
 
 def test_search_version_is_data_plus_code_fingerprint():
     """The version is stable across restarts but changes with code or flags."""
-    from yabai_search import main as app_main
+    from yabai_search import services as app_main
 
     first = app_main.search_version()
     assert re.fullmatch(r"[0-9a-f]{10}-[0-9a-f]{8}", first)
@@ -37,7 +37,7 @@ def test_search_version_is_data_plus_code_fingerprint():
 
 def test_code_fingerprint_tracks_files_and_env(tmp_path, monkeypatch):
     """Editing a module or a result-affecting flag changes the fingerprint."""
-    from yabai_search import main as app_main
+    from yabai_search import services as app_main
 
     module = tmp_path / "search.py"
     module.write_text("x = 1\n", encoding="utf-8")
@@ -55,7 +55,7 @@ def test_code_fingerprint_tracks_files_and_env(tmp_path, monkeypatch):
 
 def test_page_groups_copy_does_not_mutate_cached_rows():
     """Paging a cached list must not add `group` to the cached rows."""
-    from yabai_search import main as app_main
+    from yabai_search import services as app_main
 
     rows = [
         {"simplified": "了", "traditional": "了"},
@@ -70,7 +70,7 @@ def test_page_groups_copy_does_not_mutate_cached_rows():
 
 def test_rank_cache_single_flight(monkeypatch):
     """Eight threads asking for the same key compute it exactly once."""
-    from yabai_search import main as app_main
+    from yabai_search import services as app_main
 
     monkeypatch.setattr(app_main, "_RANK_CACHE_MAX_ROWS", 1000)
     monkeypatch.setattr(app_main, "_RANK_CACHE_STORE_ROWS", 500)
@@ -105,7 +105,7 @@ def test_rank_cache_single_flight(monkeypatch):
 
 def test_rank_cache_skips_oversized_lists(monkeypatch):
     """A list larger than half the budget is returned but not stored."""
-    from yabai_search import main as app_main
+    from yabai_search import services as app_main
 
     monkeypatch.setattr(app_main, "_RANK_CACHE_MAX_ROWS", 10)
     monkeypatch.setattr(app_main, "_RANK_CACHE_STORE_ROWS", 5)
@@ -119,7 +119,7 @@ def test_rank_cache_skips_oversized_lists(monkeypatch):
 
 def test_rank_cache_evicts_least_recently_used(monkeypatch):
     """The row budget, not the entry count, decides what is evicted."""
-    from yabai_search import main as app_main
+    from yabai_search import services as app_main
 
     monkeypatch.setattr(app_main, "_RANK_CACHE_MAX_ROWS", 6)
     monkeypatch.setattr(app_main, "_RANK_CACHE_STORE_ROWS", 6)
@@ -135,7 +135,7 @@ def test_rank_cache_evicts_least_recently_used(monkeypatch):
 
 def test_search_results_are_identical_with_the_rank_cache_off(client, monkeypatch):
     """Turning the cache off changes timing only, never the rows."""
-    from yabai_search import main as app_main
+    from yabai_search import services as app_main
 
     app_main._rank_cache.clear()
     on = client.get(
@@ -153,7 +153,7 @@ def test_wildcard_results_are_identical_with_the_rank_cache_off(
     client, monkeypatch
 ):
     """The Chinese-wildcard cache also changes timing only."""
-    from yabai_search import main as app_main
+    from yabai_search import services as app_main
 
     app_main._rank_cache.clear()
     params = {"q": "?后", "limit": 25, "offset": 0}

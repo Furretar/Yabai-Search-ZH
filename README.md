@@ -64,39 +64,46 @@ The language code will still decide which language appears at the top of each en
 
 When making a search, two requests are sent. The first request is meant to populate results quickly by getting all tier 1 results first. The second request takes longer, but gets all matching entries. When searching with a wildcard (`?`, `*`), only 1 request is sent.
 
-1. Searches containing Chinese characters or valid pinyin will first query the all selected dictionaries for headwords that start with the query string. This is a very fast search and usually only takes a few milliseconds. 
+#### CJK Searches
+1. Searches containing Chinese characters or valid pinyin will first query all selected dictionaries for headwords that start with the query string. This is a very fast search and usually only takes a few milliseconds. 
 2. The second request will find all headwords in all dictionaries that contain the query string anywhere inside.
 
 If a search contains a Chinese character, and is more than 40 characters long, search will be skipped and the text will be parsed instead. If the CJK-containing search has no results, it will fallback to parsing. 
 
-You can also search for English words and phrases in the search bar. A search will match dictionary definitions if it doesn't match any pinyin readings, or if the query was surrounded by quotes `""`. 
-
-Searches have 3 categories and 6 tiers of priority. Results within the same category are sorted by tier, and tiers are sorted by frequency. Locally imported dictionaries will mess up the sorting because the server cannot see their results.
+CJK Searches have 3 categories and 6 tiers of priority. Results within the same category are sorted by tier, and tiers are sorted by frequency. Locally imported dictionaries will mess up the sorting because the server cannot see their results.
 
 The 3 categories in order are:
 
-1. Results with at least 1 definition in any dictionary in the currently selected language.
-    - When Custom Dictionaries is enabled, this includes all selected dictionaries.
+1. Results with at least 1 definition in any dictionary in the currently selected language
+    - When Custom Dictionaries is enabled, this includes all selected dictionaries
 
-2. Results with matches only in dictionaries in other languages.
-    - When Custom Dictionaries is enabled, this includes all unselected dictionaries.
+2. Results with matches only in dictionaries in other languages
+    - When Custom Dictionaries is enabled, this includes all unselected dictionaries
 
-3. Fuzzy matches when searching with tones and pinyin (`shi2shi4`).
+3. Fuzzy matches when searching with tones and pinyin (`shi2shi4`)
 
 The 6 tiers are:
 
-1. Exact matches for your search query.
-2. Results that start with your search query.
-3. Results that contain your query somewhere inside.
-4. Matches with the only listed reading in another language (i.e. Shanghainese, Wu, Xiang).
-5. All words from Wiktionary with a reading but no definition.
-6. All words with no reading and no definition.
+1. Exact matches for your search query
+2. Results that start with your search query
+3. Results that contain your query somewhere inside
+4. Matches with the only listed reading in another language (i.e. Shanghainese, Wu, Xiang)
+5. All words from Wiktionary with a reading but no definition
+6. All words with no reading and no definition
 
 The separator line below each entry will glow a certain color when hovered according to which tier it is. I implemented this to help debug but I thought it looked nice so I kept it. The colors in order are red, yellow, green, blue, purple, pink. Wildcard searches with Chinese characters use the same colors (see Wildcard below); pinyin wildcard searches are all red.
 
-By default, searches will attempt to match headwords or readings. Definitions will be searched as a fallback if there are no matching headwords or readings for your search.
+#### English / Definition Searches
 
-Definitions can be searched explicitly by using quotes `""`.
+You can also search for English words and phrases in the search bar. A search will match dictionary definitions if it doesn't match any pinyin readings, or if the query was surrounded by quotes `""`.
+
+Definition searches have 6 tiers:
+1. Entries with Latin text inside a Chinese headword (e.g. `word姐` for `word`)
+2. Entries with an exact matching definition (articles stripped, so `speak` still matches `to speak` etc)
+3. Entries containing the query in their definitions, excluding notes
+4. Entries containing the query in their definitions, only inside notes/parentheses
+5. Entries containing the substring (e.g. `word` matches `sword`)
+6. Entries containing the query in a reference (`variant of...`)
 
 #### Pinyin
 
@@ -226,4 +233,11 @@ This method is mostly accurate, but the Taiwanese readings displayed are not gua
 
 ---
 
+### Todo
+- Add character search and stroke order in the details page, mainland and taiwan
+- check for security issues
+- add audio to details page
+- add example sentences
+- ai generate missing definitions for jp
 
+---

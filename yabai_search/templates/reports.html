@@ -36,6 +36,7 @@
                     href="{{ report.get('search_url', '/?q=' ~ report.get('word')) }}">{{ report.get('word') }}</a>{% endif %}
             </h2>
             <form method="post" action="/reports/delete?received_at={{ report.get('received_at', '') | urlencode }}" class="report-delete-form">
+                {{ csrf_input }}
                 <button type="submit" class="report-delete">Delete</button>
             </form>
             <p class="report-meta">

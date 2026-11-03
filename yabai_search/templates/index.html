@@ -86,6 +86,31 @@
                 <span class="menu-line"></span>
             </button>
             <div class="menu-dropdown">
+                <div class="menu-account">
+                    {% if account_name %}
+                    <span class="menu-account-left">
+                        <span class="menu-avatar" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" focusable="false">
+                                <circle cx="12" cy="8" r="4"></circle>
+                                <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8v1H4z"></path>
+                            </svg>
+                        </span>
+                        <span class="menu-account-name">{{ account_name }}</span>
+                    </span>
+                    <form method="post" action="/accounts/logout/" class="menu-account-form">
+                        {{ csrf_input }}
+                        <button type="submit" class="menu-account-link">Log out</button>
+                    </form>
+                    {% else %}
+                    <a class="menu-account-link" href="/accounts/login/">Log in</a>
+                    <a class="menu-avatar" href="/accounts/login/" aria-label="Log in">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <circle cx="12" cy="8" r="4"></circle>
+                            <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8v1H4z"></path>
+                        </svg>
+                    </a>
+                    {% endif %}
+                </div>
                 <div class="theme-toggle" role="group" aria-label="Theme">
                     <div class="quick-pair">
                         <button type="button" class="quick-square" data-theme="light" title="Light"
@@ -96,12 +121,11 @@
                     <span class="theme-label">Theme</span>
                 </div>
                 <div class="menu-host" title="Which machine served this page">
-                    <span>Host</span>
+                    <span>Host:</span>
                     <strong>{{ served_by }}</strong>
                 </div>
                 <!-- Auto Clipboard: search the clipboard contents on focus. -->
-                <button type="button" id="auto-clipboard-button" class="menu-item"
-                    title="Toggle automatic clipboard search.">
+                <label class="menu-item menu-switch" for="auto-clipboard-toggle">
                     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                         <path d="M9 3h6a1 1 0 0 1 1 1v1H8V4a1 1 0 0 1 1-1Z" fill="none"
                             stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
@@ -115,7 +139,8 @@
                         aria-label="Auto Clipboard information"
                         aria-describedby="auto-clipboard-help">i<span id="auto-clipboard-help"
                             class="dict-mode-help" role="tooltip">Automatically searches the contents of your clipboard.</span></span>
-                </button>
+                    <input type="checkbox" id="auto-clipboard-toggle" role="switch">
+                </label>
                 {% if show_debug %}
                 <!-- Debug log download, available to every client. -->
                 <button type="button" id="download-log-button" class="menu-item"
@@ -132,7 +157,7 @@
                         <path d="M17 14.3v1M14.8 15.4l-1.4-1.1M19.2 15.4l1.4-1.1M14.6 17.2h-1.7M19.4 17.2h1.6M14.8 19l-1.4 1.1M19.2 19l1.4 1.1"
                             fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
                     </svg>
-                    <span class="menu-item-label">Download debug log</span>
+                    <span class="menu-item-label">Debug Log</span>
                 </button>
                 {% endif %}
             </div>

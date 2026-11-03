@@ -414,44 +414,190 @@ async function downloadDebugLog() {
     if (!label) return;
     label.textContent = "Downloaded";
     window.setTimeout(() => {
-        label.textContent = "Download debug log";
+        label.textContent = "Debug Log";
     }, 1500);
 }
 
 const downloadLogButton = document.getElementById("download-log-button");
 if (downloadLogButton) downloadLogButton.addEventListener("click", downloadDebugLog);
 
-// Auto Clipboard: search the clipboard contents when the page gains focus.
-const autoClipboardButton = document.getElementById("auto-clipboard-button");
+// Auto Clipboard: search the clipboard text as soon as it changes. Browsers
+// have no reliable "clipboard changed" event, so this uses every trigger there
+// is: a fast timer that runs off the main thread (so background tabs are not
+// throttled), the clipboardchange event where it exists, and any sign of life
+// from the page (focus, visibility, pointer, key, touch). Each one just asks
+// "did the clipboard change?", and duplicates are dropped.
+//
+// Reading the clipboard needs a secure context and permission. Chromium also
+// needs the page focused, so unfocused reads only work where the browser
+// allows them (Firefox with dom.events.testing.asyncClipboard). Turning the
+// switch on reads the clipboard once from the tap itself: that asks for
+// permission and records the current text, so old text is not searched.
+const autoClipboardToggle = document.getElementById("auto-clipboard-toggle");
+const AUTO_CLIPBOARD_MAX_LENGTH = 200;
+const CLIPBOARD_TICK_MS = 200; // timer period
+const CLIPBOARD_EVENT_GAP_MS = 80; // minimum gap between event-driven reads
+const CLIPBOARD_SLOW_READ_MS = 1500; // a read this slow was waiting on a prompt
 let lastClipboardText = "";
-if (autoClipboardButton) {
-    const updateAutoClipboardLabel = () => {
-        const label = autoClipboardButton.querySelector(".menu-item-label");
-        if (label) label.textContent = state.autoClipboard ? "Auto Clipboard: On" : "Auto Clipboard";
-        autoClipboardButton.setAttribute("aria-pressed", String(state.autoClipboard));
-        autoClipboardButton.classList.toggle("active", state.autoClipboard);
-    };
-    updateAutoClipboardLabel();
-    autoClipboardButton.addEventListener("click", (event) => {
-        // Ignore clicks on the info bubble.
-        if (event.target.closest(".dict-mode-info")) return;
-        state.autoClipboard = !state.autoClipboard;
-        savePrefs();
-        updateAutoClipboardLabel();
-    });
-    window.addEventListener("focus", async () => {
-        if (!state.autoClipboard) return;
-        try {
-            const text = await navigator.clipboard.readText();
-            const value = (text || "").trim();
-            if (value && value !== lastClipboardText) {
-                lastClipboardText = value;
-                performSearch(value);
+let clipboardReadBusy = false;
+let clipboardLastRead = 0;
+let clipboardSuppressUntil = 0;
+let clipboardNeedsPrompt = false;
+let clipboardWorker = null;
+let clipboardWorkerUrl = "";
+let clipboardTimer = 0;
+
+async function readClipboardText() {
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+        throw new Error("Clipboard reading is not available");
+    }
+    return ((await navigator.clipboard.readText()) || "").trim();
+}
+
+// Call just before the page puts text on the clipboard for its own copy
+// buttons, so a copied definition is not searched. Selecting text on the page
+// and copying it is not suppressed: that is searched like any other copy.
+function ignoreNextClipboardChange() {
+    clipboardSuppressUntil = performance.now() + 1500;
+}
+
+async function checkClipboard(fromEvent = false) {
+    if (!state.autoClipboard || clipboardReadBusy) return;
+    const now = performance.now();
+    if (fromEvent && now - clipboardLastRead < CLIPBOARD_EVENT_GAP_MS) return;
+    clipboardLastRead = now;
+    clipboardReadBusy = true;
+    try {
+        const value = await readClipboardText();
+        // A read that waited on a paste prompt means the browser needs a tap
+        // for every read (Firefox without the testing pref). Stop reading on
+        // every timer tick and pointer move, so the prompt is not spammed;
+        // focus, visibility and copy still check. A later fast read clears
+        // this again, so one slow read cannot switch the timer off for good.
+        clipboardNeedsPrompt = performance.now() - now > CLIPBOARD_SLOW_READ_MS;
+        if (!value || value === lastClipboardText) return;
+        lastClipboardText = value;
+        if (performance.now() < clipboardSuppressUntil) return;
+        if (value.length > AUTO_CLIPBOARD_MAX_LENGTH) return;
+        if (value === input.value.trim()) return;
+        performSearch(value);
+    } catch (error) {
+        // Not focused, permission denied or clipboard unavailable: try again
+        // on the next trigger.
+    } finally {
+        clipboardReadBusy = false;
+    }
+}
+
+// Triggers that fire constantly (timer, pointer move) are skipped once the
+// browser has shown it needs a tap per read.
+function pollClipboard() {
+    if (clipboardNeedsPrompt) return;
+    checkClipboard(true);
+}
+
+function startClipboardWatch() {
+    stopClipboardWatch();
+    clipboardNeedsPrompt = false;
+    // A worker's timers are not throttled like a background tab's are.
+    try {
+        const code = `setInterval(() => postMessage(0), ${CLIPBOARD_TICK_MS});`;
+        clipboardWorkerUrl = URL.createObjectURL(
+            new Blob([code], { type: "text/javascript" })
+        );
+        clipboardWorker = new Worker(clipboardWorkerUrl);
+        clipboardWorker.onmessage = pollClipboard;
+        clipboardWorker.onerror = () => {
+            // Workers blocked: fall back to a plain timer.
+            stopClipboardWatch();
+            clipboardTimer = window.setInterval(pollClipboard, CLIPBOARD_TICK_MS);
+        };
+    } catch (error) {
+        clipboardTimer = window.setInterval(pollClipboard, CLIPBOARD_TICK_MS);
+    }
+}
+
+function stopClipboardWatch() {
+    if (clipboardWorker) clipboardWorker.terminate();
+    if (clipboardWorkerUrl) URL.revokeObjectURL(clipboardWorkerUrl);
+    if (clipboardTimer) window.clearInterval(clipboardTimer);
+    clipboardWorker = null;
+    clipboardWorkerUrl = "";
+    clipboardTimer = 0;
+}
+
+// Run the timer only while the switch is on. loadPrefs() calls this too, once
+// the saved setting is known.
+function syncClipboardWatch() {
+    if (state.autoClipboard) startClipboardWatch();
+    else stopClipboardWatch();
+}
+
+if (autoClipboardToggle) {
+    autoClipboardToggle.checked = state.autoClipboard;
+    syncClipboardWatch();
+    autoClipboardToggle.addEventListener("change", async () => {
+        if (autoClipboardToggle.checked) {
+            try {
+                lastClipboardText = await readClipboardText();
+            } catch (error) {
+                autoClipboardToggle.checked = false;
+                state.autoClipboard = false;
+                savePrefs();
+                syncClipboardWatch();
+                const label = autoClipboardToggle
+                    .closest(".menu-item")
+                    .querySelector(".menu-item-label");
+                if (label) {
+                    label.textContent = "Clipboard blocked";
+                    window.setTimeout(() => {
+                        label.textContent = "Auto Clipboard";
+                    }, 2500);
+                }
+                return;
             }
-        } catch (error) {
-            // Clipboard access may be denied; ignore.
         }
+        state.autoClipboard = autoClipboardToggle.checked;
+        savePrefs();
+        syncClipboardWatch();
     });
+
+    // Always check on these, even after a prompt-per-read browser is detected.
+    const checkNow = () => checkClipboard(false);
+    window.addEventListener("focus", checkNow);
+    window.addEventListener("pageshow", checkNow);
+    document.addEventListener("focusin", checkNow);
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") checkNow();
+    });
+    // Any sign of life from the page. Passive and rate-limited by the gap.
+    for (const type of [
+        "pointerdown", "pointermove", "mouseover", "keydown", "keyup",
+        "touchstart", "wheel", "scroll", "resize", "online",
+    ]) {
+        window.addEventListener(type, pollClipboard, { passive: true, capture: true });
+    }
+    // Copying on this page: the clipboard updates just after the event, so
+    // check a few times right away instead of waiting for the next tick.
+    for (const type of ["copy", "cut"]) {
+        document.addEventListener(
+            type,
+            () => {
+                for (const delay of [0, 40, 120, 300]) {
+                    window.setTimeout(checkNow, delay);
+                }
+            },
+            true
+        );
+    }
+    // Where the browser has a real clipboard-change event, use it.
+    try {
+        if (navigator.clipboard && navigator.clipboard.addEventListener) {
+            navigator.clipboard.addEventListener("clipboardchange", checkNow);
+        }
+    } catch (error) {
+        // Not supported.
+    }
 }
 
 // Tone-marked forms for each base vowel (index 0 = tone 1 ... 3 = tone 4).
@@ -1503,6 +1649,7 @@ function copyDefinitionButton(reading, word, definition, pinyin = "") {
     button.addEventListener("click", async (event) => {
         event.preventDefault();
         event.stopPropagation();
+        ignoreNextClipboardChange();
         try {
             await navigator.clipboard.writeText(text);
         } catch (error) {
@@ -4599,6 +4746,8 @@ function loadPrefs() {
     phoneticToggle.checked = state.phonetic === "zhuyin";
     taiwanToggle.checked = state.taiwan;
     customDictsToggle.checked = state.customDicts;
+    if (autoClipboardToggle) autoClipboardToggle.checked = state.autoClipboard;
+    syncClipboardWatch();
     for (const input of dictToggles) input.checked = state.dicts.has(input.dataset.anchor);
     updateQuickToggles();
     syncGroups();
@@ -4704,6 +4853,7 @@ function applySettingsFromUrl() {
     phoneticToggle.checked = state.phonetic === "zhuyin";
     taiwanToggle.checked = state.taiwan;
     customDictsToggle.checked = state.customDicts;
+    if (autoClipboardToggle) autoClipboardToggle.checked = state.autoClipboard;
     for (const input of dictToggles) input.checked = state.dicts.has(input.dataset.anchor);
     updateQuickToggles();
     syncGroups();
@@ -5602,12 +5752,33 @@ for (const button of dictModeButtons) {
 // Tap/click support for the compact-mode info bubble. Desktop hover and
 // keyboard focus are handled by CSS; touch devices need an explicit toggle.
 for (const dictModeInfo of document.querySelectorAll(".dict-mode-info")) {
+    const help = dictModeInfo.querySelector(".dict-mode-help");
+    const inMenu = Boolean(dictModeInfo.closest(".menu-dropdown"));
     const setInfoOpen = (open) => {
         dictModeInfo.classList.toggle("open", open);
         dictModeInfo.setAttribute("aria-expanded", String(open));
+        if (open) placeInfoHelp(dictModeInfo);
     };
+    // Inside the menu the bubble is position: fixed (the menu clips anything
+    // that overflows it). Put it under `target` (the icon or the switch),
+    // right-aligned and kept on screen, so it never covers what it hangs from.
+    const placeInfoHelp = (target) => {
+        if (!help || !inMenu) return;
+        // Measure it while shown; it may still be display: none here.
+        help.style.display = "block";
+        const rect = target.getBoundingClientRect();
+        const margin = 8;
+        const left = rect.right - help.offsetWidth + 4;
+        const maxLeft = window.innerWidth - help.offsetWidth - margin;
+        help.style.left = `${Math.max(margin, Math.min(left, maxLeft))}px`;
+        help.style.top = `${rect.bottom + 6}px`;
+        help.style.display = "";
+    };
+    dictModeInfo.addEventListener("mouseenter", () => placeInfoHelp(dictModeInfo));
     dictModeInfo.addEventListener("click", (event) => {
         event.stopPropagation();
+        // The icon can sit inside a <label>; do not let the tap flip its switch.
+        event.preventDefault();
         setInfoOpen(!dictModeInfo.classList.contains("open"));
     });
     dictModeInfo.addEventListener("keydown", (event) => {

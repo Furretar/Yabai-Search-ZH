@@ -21,3 +21,11 @@ deploy/env.local
 deploy/release.env
 deploy/worker/.wrangler/
 run/
+
+# Django: accounts database, collected static files.
+data/accounts.sqlite3
+staticfiles/
+
+# Django account database (generated) and the zip tool's history snapshot.
+/accounts.sqlite3
+/GIT_HISTORY.txt

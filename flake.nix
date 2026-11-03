@@ -41,7 +41,7 @@
           echo "Yabai Search dev shell"
           echo "  first run:   uv sync"
           echo "  import data: uv run python -m scripts.import_cedict"
-          echo "  run server:  uv run uvicorn yabai_search.main:app --reload"
+          echo "  run server:  uv run python manage.py runserver  (DJANGO_DEBUG=1 DJANGO_SECRET_KEY=dev)"
           echo "  spec-kit:    specify init --here"
         '';
       };

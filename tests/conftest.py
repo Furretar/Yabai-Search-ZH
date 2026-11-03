@@ -32,15 +32,76 @@ def _preload_libstdcpp() -> None:
 
 _preload_libstdcpp()
 
-from fastapi.testclient import TestClient  # noqa: E402
-from yabai_search.main import app  # noqa: E402
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "yabai_site.settings")
+os.environ.setdefault("DJANGO_SECRET_KEY", "test-only-secret-key")
+os.environ.setdefault("DJANGO_DEBUG", "1")
+
+import django  # noqa: E402
+
+django.setup()
+
+import json as _json  # noqa: E402
+from urllib.parse import urlencode  # noqa: E402
+
+from django.test import Client  # noqa: E402
+
+from yabai_search import services  # noqa: E402
+
+
+class _Response:
+    """The few response attributes the tests use, matching the old TestClient."""
+
+    def __init__(self, response):
+        self._response = response
+        self.status_code = response.status_code
+        self.headers = response.headers
+
+    @property
+    def content(self) -> bytes:
+        if getattr(self._response, "streaming", False):
+            return b"".join(self._response.streaming_content)
+        return self._response.content
+
+    @property
+    def text(self) -> str:
+        return self.content.decode("utf-8")
+
+    def json(self):
+        return _json.loads(self.content)
+
+
+class ApiClient:
+    """get(url, params=...) and post(url, json=...), like FastAPI's TestClient."""
+
+    def __init__(self) -> None:
+        self._client = Client()
+
+    @staticmethod
+    def _url(url, params):
+        if not params:
+            return url
+        return f"{url}{'&' if '?' in url else '?'}{urlencode(params)}"
+
+    def get(self, url, params=None, headers=None, follow_redirects=False):
+        return _Response(self._client.get(self._url(url, params), headers=headers or {}))
+
+    def post(self, url, json=None, params=None, data=None, headers=None):
+        body = _json.dumps(json) if json is not None else (data or "")
+        return _Response(
+            self._client.post(
+                self._url(url, params),
+                data=body,
+                content_type="application/json" if json is not None else "text/plain",
+                headers=headers or {},
+            )
+        )
 
 
 @pytest.fixture(scope="session")
 def client():
-    """A FastAPI test client, with the app's startup caches built once."""
-    with TestClient(app) as test_client:
-        yield test_client
+    """A test client, with the search caches built once (as wsgi.py does)."""
+    services.warm_caches()
+    return ApiClient()
 
 
 @pytest.fixture(scope="session")

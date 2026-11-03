@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -13,6 +14,12 @@ DATA = Path(__file__).resolve().parents[1] / "data"
 
 pytestmark = pytest.mark.skipif(
     not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
+)
+
+requires_zh_sources = pytest.mark.skipif(
+    not (DATA / "baidu.sqlite").exists()
+    or not (DATA / "zhwiktionary.sqlite").exists(),
+    reason="Baidu and Chinese Wiktionary databases not built",
 )
 
 
@@ -582,6 +589,30 @@ def test_part_primary_is_cedict_only_and_a_subset(search):
     assert primary["pinyin_match"] is True
     assert len(primary["results"]) < len(full["results"])
     assert set(_words(primary)) <= set(_words(full))
+
+
+@requires_zh_sources
+@pytest.mark.parametrize(
+    ("dicts", "expected"),
+    [
+        ("baidu,zhwiktionary", "baidu"),
+        ("zhwiktionary,baidu", "zhwiktionary"),
+    ],
+)
+def test_primary_preview_follows_dictionary_drag_order(client, dicts, expected):
+    """The first selected dictionary in the chosen language previews the query."""
+    response = client.get(
+        "/api/search",
+        params={
+            "q": "档",
+            "part": "primary",
+            "lang": "ZH",
+            "dicts": dicts,
+        },
+    )
+    assert response.status_code == 200
+    debug = json.loads(response.headers["x-yabai-debug"])
+    assert debug["primary_anchor"] == expected
 
 
 def test_pinyin_match_flag(search):

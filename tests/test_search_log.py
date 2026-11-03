@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from yabai_search import db, main
+from yabai_search import db, services as main
 
 @pytest.fixture(autouse=True)
 def _clean_recent_searches():

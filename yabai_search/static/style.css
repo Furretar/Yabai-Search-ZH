@@ -1063,7 +1063,8 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
 
 /* Render the checkboxes as slider switches. */
 .toggles input[type="checkbox"],
-.dict-column input[type="checkbox"] {
+.dict-column input[type="checkbox"],
+.menu-switch input[type="checkbox"] {
     appearance: none;
     -webkit-appearance: none;
     /* Reset the global `input { flex: 1; padding; border; font-size }` rule, so
@@ -1083,7 +1084,8 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
 }
 
 .toggles input[type="checkbox"]::before,
-.dict-column input[type="checkbox"]::before {
+.dict-column input[type="checkbox"]::before,
+.menu-switch input[type="checkbox"]::before {
     content: "";
     position: absolute;
     top: 0.18em;
@@ -1096,12 +1098,14 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
 }
 
 .toggles input[type="checkbox"]:checked,
-.dict-column input[type="checkbox"]:checked {
+.dict-column input[type="checkbox"]:checked,
+.menu-switch input[type="checkbox"]:checked {
     background: var(--accent);
 }
 
 .toggles input[type="checkbox"]:checked::before,
-.dict-column input[type="checkbox"]:checked::before {
+.dict-column input[type="checkbox"]:checked::before,
+.menu-switch input[type="checkbox"]:checked::before {
     transform: translateX(1.05em);
 }
 
@@ -3139,7 +3143,7 @@ footer {
 
 /* Dropdown panel shown when the menu is open. */
 .menu-dropdown {
-    min-width: 8rem;
+    min-width: 11rem;
     padding: .5rem;
     border: 1px solid var(--border);
     border-radius: .35rem;
@@ -3156,22 +3160,115 @@ footer {
 }
 
 .menu-dropdown.open {
-    max-height: 12rem;
+    max-height: 20rem;
     opacity: 1;
     padding-top: .5rem;
     padding-bottom: .5rem;
     border-width: 1px;
 }
 
+/* Account row at the top of the menu, above the theme control. */
+.menu-account {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .55rem;
+    margin: 0 .25rem .5rem;
+    padding-bottom: .5rem;
+    border-bottom: 1px solid var(--options-divider);
+}
+
+.menu-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    flex: none;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--chip-bg);
+    color: var(--control);
+    text-decoration: none;
+    transition: color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.menu-avatar[href] {
+    cursor: pointer;
+}
+
+.menu-avatar svg {
+    width: 1rem;
+    height: 1rem;
+    fill: currentColor;
+    opacity: .55;
+    transition: opacity 150ms ease;
+}
+
+.menu-avatar:hover,
+.menu-avatar:focus-visible {
+    color: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 .55rem var(--accent);
+    outline: none;
+}
+
+.menu-avatar:hover svg,
+.menu-avatar:focus-visible svg {
+    opacity: 1;
+}
+
+.menu-account-left {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    min-width: 0;
+}
+
+.menu-account-name {
+    max-width: 7rem;
+    overflow: hidden;
+    color: var(--reading);
+    font-size: .85rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.menu-account-form {
+    margin: 0;
+    flex: none;
+}
+
+.menu-account-link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--control);
+    font: inherit;
+    font-size: .85rem;
+    text-align: right;
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.menu-account-link:hover {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
 .menu-dropdown .theme-toggle {
     position: static;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
-    gap: .25rem;
+    justify-content: space-between;
+    gap: .5rem;
+    margin: 0 .25rem .5rem;
 }
 
 .menu-dropdown .theme-label {
+    order: -1;
     font-size: .75rem;
     color: var(--control);
 }
@@ -3193,10 +3290,60 @@ footer {
     font-weight: 600;
 }
 
+/* The Auto Clipboard row: label on the left, info icon, then the switch. The
+   whole row toggles the switch, so it is not underlined like a link. */
+.menu-switch {
+    cursor: pointer;
+    text-decoration: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.menu-switch:hover,
+.menu-switch:focus-within {
+    text-decoration: none;
+}
+
+.menu-switch .menu-item-label {
+    flex: 1;
+    white-space: nowrap;
+}
+
+.menu-switch input[type="checkbox"] {
+    font-size: .8rem;
+}
+
+/* The menu clips its contents (it animates open and closed), so the info
+   bubble inside it is fixed to the viewport instead of the menu. app.js sets
+   its top/left from the icon's position. */
+.menu-dropdown .dict-mode-help {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: auto;
+    z-index: 60;
+}
+
+/* In the menu the bubble shows while hovering the icon (the base hover rule)
+   or after tapping it. Hovering the switch or the label does not show it. */
+.menu-dropdown .dict-mode-info.open .dict-mode-help {
+    display: block;
+}
+
+/* The icon's "i" is never underlined, even though the row's other text is
+   underlined on hover for ordinary menu items. */
+.menu-switch .dict-mode-info,
+.menu-switch:hover .dict-mode-info,
+.menu-switch .dict-mode-info:hover,
+.menu-switch .dict-mode-info:focus-visible {
+    text-decoration: none;
+}
+
 /* Debug-log download, sitting under the theme control in the menu. */
 .menu-item {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: .45rem;
     width: 100%;
     margin-top: .45rem;
@@ -3221,6 +3368,14 @@ footer {
     height: 1.25rem;
     flex: none;
     fill: none;
+    color: var(--control);
+    transition: color 150ms ease, filter 150ms ease;
+}
+
+.menu-item:hover svg,
+.menu-item:focus-visible svg {
+    color: var(--accent);
+    filter: drop-shadow(0 0 4px var(--accent));
 }
 
 /* Light theme: override the dark defaults when <html> has .theme-light. */

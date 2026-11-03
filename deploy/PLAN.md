@@ -38,7 +38,7 @@ The serving copies are never edited. They only receive code from GitHub.
 | File | Job |
 |---|---|
 | `worker/worker.js`, `wrangler.toml` | Cloudflare Worker: failover and hedging |
-| `guard.py` | makes the apps refuse requests that skipped the Worker |
+| `yabai_site/middleware.py` (OriginSecretMiddleware) | makes the apps refuse requests that skipped the Worker |
 | `run.sh <role>` | keeps the app running, restarts it if it exits |
 | `tunnel.sh <role>` | keeps cloudflared running |
 | `update.sh <role>` | pull, restart, health check, roll back on failure |
@@ -253,3 +253,53 @@ lines once the separate tablet tunnel is live.
   `deploy/guard.py`: it uses only plain ASGI, so it should not.
 - The 800 ms hedge is a guess; tune `HEDGE_MS` in `wrangler.toml` after
   watching `X-Origin` for a few days.
+
+## 11. Accounts database replication (laptop <-> tablet)
+
+Accounts, sessions and settings live in `data/accounts.sqlite3` on each machine.
+`accounts/replication.py` (standard library only) keeps them in step. Only one
+machine takes writes at a time: the Worker sends them to the laptop and uses the
+tablet only when the laptop is unreachable. There is nothing to merge.
+
+### How it behaves
+- Every write bumps a counter that belongs to the machine that made it (SQLite
+  triggers, so admin edits and raw SQL count). The pair of counters is a version
+  vector. Clocks are never compared.
+- Each machine runs a small server (port 8765, secret + private-address check) and
+  a pull loop (every 10 s). It installs the peer's copy only when the peer has
+  every write it has plus more. A returning machine with an older copy therefore
+  can never overwrite newer data, and never serves before catching up
+  (`run.sh` runs `catch-up` before gunicorn, on every restart).
+- Installs happen in one exclusive transaction, so the running app is never
+  handed a half-copied database.
+- If both machines took writes (a tunnel dropped while the process ran, or a crash
+  before replication), the side with more writes wins and the other's database is
+  saved in `data/replication-archive/`. Recover its accounts with:
+  `python -m accounts.replication salvage data/replication-archive/<file> [--dry-run]`.
+  Taken usernames are skipped and listed; sessions are not copied.
+- A machine whose peer is unreachable at boot waits up to `YABAI_REPL_WAIT`
+  seconds, then serves its own copy.
+- Schemas: a machine will not install a peer database that is newer than its own
+  code. Release with `release.sh` so both update within a minute; `run.sh` runs
+  `migrate` after catch-up on every start.
+- A signup POST that the Worker delivers twice logs the person in instead of
+  showing "username taken" (same username and password within 2 minutes).
+
+### Setup
+1. In `deploy/env.local` on both machines set the `YABAI_REPL_*` values from
+   `env.local.example` (PEER_URL points at the other machine's Tailscale address;
+   the secret is identical). Keep `DJANGO_SECRET_KEY` identical too.
+2. Make sure each machine can reach the other's port 8765 over Tailscale.
+3. Restart `run.sh`. The first start of the first machine creates the database
+   (`migrate`); the other one downloads it.
+
+### Check and drills
+- `python -m accounts.replication status` prints both vectors and the verdict
+  (`noop`, `keep`, `install`, `install_conflict`).
+- Stop the laptop tunnel, sign up on the tablet, start the laptop: the laptop log
+  should say `installed` and the account exists on both.
+- Stop the laptop's pull process only (keep it serving), sign up on the tablet,
+  then restart: no data is overwritten.
+- Known limits: a crash within one pull interval of a write can lose it (it is
+  recoverable only if the crashed machine's file survives and is archived by the
+  next conflict). The snapshot travels over Tailscale; it contains session keys.

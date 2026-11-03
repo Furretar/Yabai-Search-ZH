@@ -38,11 +38,17 @@ for arg in "$@"; do
     esac
 done
 
-# The native opencc wheel needs libstdc++ outside `nix develop`.
-if [ -z "${LD_LIBRARY_PATH:-}" ] && [ -d /nix/store ]; then
+# The native opencc wheel needs libstdc++ outside `nix develop`. Check the
+# import instead of trusting a non-empty LD_LIBRARY_PATH: a desktop session may
+# set one that has nothing to do with libstdc++.
+PYTHON=python3
+[ -x .venv/bin/python ] && PYTHON=.venv/bin/python
+if [ -d /nix/store ] && ! "$PYTHON" -c "import opencc" >/dev/null 2>&1; then
     for lib_dir in /nix/store/*-gcc-*-lib/lib; do
-        if [ -e "$lib_dir/libstdc++.so.6" ]; then
-            export LD_LIBRARY_PATH="$lib_dir"
+        [ -e "$lib_dir/libstdc++.so.6" ] || continue
+        if LD_LIBRARY_PATH="$lib_dir:${LD_LIBRARY_PATH:-}"             "$PYTHON" -c "import opencc" >/dev/null 2>&1
+        then
+            export LD_LIBRARY_PATH="$lib_dir:${LD_LIBRARY_PATH:-}"
             break
         fi
     done
@@ -92,7 +98,7 @@ if [ "$SYNC_DATA" = 1 ]; then
         data/*.sqlite "$TABLET_SSH:$TABLET_DIR/data/"
 fi
 ssh -p "$TABLET_PORT" -i "$TABLET_KEY" -o StrictHostKeyChecking=no \
-    "$TABLET_SSH" "pgrep -f '[u]vicorn deploy.guard' | xargs -r kill"
+    "$TABLET_SSH" "pgrep -f '[g]unicorn yabai_site' | xargs -r kill"
 
 wait_for() {
     local name="$1"

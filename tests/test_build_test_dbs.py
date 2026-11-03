@@ -97,11 +97,12 @@ def test_build_all_skips_derived_and_empty_databases(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
     _make_source(data / "cedict.sqlite")
-    (data / "search_index.sqlite").write_bytes(b"")  # derived, never copied
+    (data / "search_index.sqlite").write_bytes(b"")  # legacy leftover
     (data / "wikt.sqlite").write_bytes(b"")  # truncated leftover file
     # A derived index that remembers the CEDICT it was built from.
     source_generated = data / "generated-indexes-optimizations"
     source_generated.mkdir(parents=True, exist_ok=True)
+    (source_generated / "search_index.sqlite").write_bytes(b"")  # derived
     derived = sqlite3.connect(source_generated / "head_grams.sqlite")
     derived.executescript(
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
@@ -170,4 +171,6 @@ def test_yabai_data_dir_points_the_app_at_the_dummy_folder(tmp_path: Path) -> No
     assert lines[0] == str(tmp_path)
     assert lines[1] == str(tmp_path / "cedict.sqlite")
     assert lines[2] == str(tmp_path / "moe-taiwan" / "moe.sqlite")
-    assert lines[3] == str(tmp_path / "search_index.sqlite")
+    assert lines[3] == str(
+        tmp_path / "generated-indexes-optimizations" / "search_index.sqlite"
+    )

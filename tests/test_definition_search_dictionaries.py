@@ -198,7 +198,7 @@ def test_api_taiwan_definition_search_lists_everything_under_other(
         "_anchor_defined_words",
         lambda anchor, words: set(words) if anchor in TAIWAN else real(anchor, words),
     )
-    import yabai_search.main as _main
+    import yabai_search.services as _main
 
     monkeypatch.setattr(_main, "_RANK_CACHE_ENABLED", False)
     monkeypatch.setattr(_main, "_rank_cache_get_or_compute", lambda key, compute: (compute(), "skipped"))

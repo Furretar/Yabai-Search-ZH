@@ -17,7 +17,7 @@ JS_FILES = ("app.js", "custom_dicts.js", "glyphs.js")
 
 def test_about_page_renders_readme_live(client, monkeypatch, tmp_path):
     """The About page is the README as HTML and re-reads it on every request."""
-    import yabai_search.main as app_main
+    from yabai_search import services as app_main
 
     html = client.get("/about").text
     assert "Sources &amp; Licenses" in html
@@ -40,7 +40,7 @@ def test_home_page_has_search_title_and_debug_download(client):
     assert 'class="site-subtitle"' in html
     # The debug log download lives in the hamburger menu for every client.
     assert 'id="download-log-button"' in html
-    assert "Download debug log" in html
+    assert "Debug Log" in html
     assert 'class="menu-item"' in html
     assert 'id="copy-log-button"' not in html
     assert "Copy debug log" not in html
@@ -60,36 +60,78 @@ def test_home_page_shows_which_machine_is_serving(client, monkeypatch):
     assert "<strong>tablet</strong>" in html
 
 
+def _origin_gate(monkeypatch, secret="test-secret"):
+    """The gate as a plain callable: it answers 200 "ok" when a request gets through."""
+    from django.http import HttpResponse
+
+    from yabai_site.middleware import OriginSecretMiddleware
+
+    monkeypatch.setenv("YABAI_ORIGIN_SECRET", secret)
+    return OriginSecretMiddleware(lambda request: HttpResponse("ok"))
+
+
 def test_origin_guard_redirects_public_browsers_to_the_public_site(monkeypatch):
     """A public browser on an origin hostname lands on the main site."""
-    from fastapi.testclient import TestClient
+    from django.test import RequestFactory
 
-    import deploy.guard as guard
-
-    monkeypatch.setattr(guard, "_SECRET", "test-secret")
-    origin = TestClient(guard.app)
-    response = origin.get(
-        "/about",
-        headers={"accept": "text/html"},
-        follow_redirects=False,
+    gate = _origin_gate(monkeypatch)
+    factory = RequestFactory()
+    response = gate(
+        factory.get("/about", HTTP_ACCEPT="text/html", REMOTE_ADDR="203.0.113.9")
     )
     assert response.status_code == 302
-    assert response.headers["location"] == "https://yabaisearch.org/about"
+    assert response["Location"] == "https://yabaisearch.org/about"
 
-    api = origin.get("/api/search", headers={"accept": "application/json"})
+    api = gate(
+        factory.get(
+            "/api/search", HTTP_ACCEPT="application/json", REMOTE_ADDR="203.0.113.9"
+        )
+    )
     assert api.status_code == 403
 
 
 def test_origin_guard_allows_private_clients(monkeypatch):
     """The LAN and Tailscale may open the origin directly for debugging."""
-    from fastapi.testclient import TestClient
+    from django.test import RequestFactory
 
-    import deploy.guard as guard
-
-    monkeypatch.setattr(guard, "_SECRET", "test-secret")
-    origin = TestClient(guard.app, client=("100.100.100.100", 12345))
-    response = origin.get("/__ping", follow_redirects=False)
+    gate = _origin_gate(monkeypatch)
+    response = gate(RequestFactory().get("/__ping", REMOTE_ADDR="100.100.100.100"))
     assert response.status_code == 200
+
+
+def test_origin_guard_accepts_the_worker_secret(monkeypatch):
+    from django.test import RequestFactory
+
+    gate = _origin_gate(monkeypatch)
+    request = RequestFactory().get(
+        "/api/search", REMOTE_ADDR="203.0.113.9", HTTP_X_ORIGIN_SECRET="test-secret"
+    )
+    assert gate(request).status_code == 200
+
+
+def test_origin_guard_cannot_be_bypassed_with_a_forged_forwarded_for(monkeypatch):
+    """cloudflared is the TCP peer (loopback); the visitor's address comes from
+    the right-hand end of X-Forwarded-For, so a forged left-hand value is ignored."""
+    from django.test import RequestFactory
+
+    gate = _origin_gate(monkeypatch)
+    request = RequestFactory().get(
+        "/api/search",
+        REMOTE_ADDR="127.0.0.1",
+        HTTP_X_FORWARDED_FOR="10.0.0.5, 203.0.113.9",
+    )
+    assert gate(request).status_code == 403
+
+
+def test_origin_guard_is_off_without_a_secret(monkeypatch):
+    from django.http import HttpResponse
+    from django.test import RequestFactory
+
+    from yabai_site.middleware import OriginSecretMiddleware
+
+    monkeypatch.delenv("YABAI_ORIGIN_SECRET", raising=False)
+    gate = OriginSecretMiddleware(lambda request: HttpResponse("ok"))
+    assert gate(RequestFactory().get("/", REMOTE_ADDR="203.0.113.9")).status_code == 200
 
 
 def test_secondary_pages_keep_the_site_title_and_byline(client):
@@ -235,6 +277,18 @@ def test_search_url_carries_selected_dictionaries():
     assert "function rerunSearch()" in js
     assert "rerunSearch(); // the effective selected dictionaries just changed" in js
     assert "rerunSearch(); // the server picks the preview dictionary and the categories" in js
+
+
+def test_selected_dictionaries_keep_the_drag_order():
+    """The dicts parameter follows the visible row order, not an alphabetical sort."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    start = js.index("function selectedAnchorsParam()")
+    end = js.index("\n}", start)
+    body = js[start:end]
+    assert 'document.querySelectorAll(".dict-toggle")' in body
+    assert ".sort()" not in body
+    # Both the mouse drop and the touch/pen drag must refetch with the new order.
+    assert js.count("// The server chooses its preview dictionary from this order too.") == 2
 
 
 def test_clear_button_keeps_scroll_in_pulled_mode():
@@ -466,3 +520,14 @@ def test_pager_puts_buttons_below_page_text():
     assert "flex-wrap: wrap;" in css
     assert ".pagination .page-info" in css
     assert "flex-basis: 100%;" in css
+
+
+def test_empty_avatar_links_to_login_and_icons_glow(client):
+    """The blank avatar is a login link; both menu icons glow only on hover."""
+    html = client.get("/").text
+    assert 'class="menu-avatar" href="/accounts/login/" aria-label="Log in"' in html
+    css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
+    assert ".menu-avatar:hover" in css
+    assert "box-shadow: 0 0 .55rem var(--accent)" in css
+    assert ".menu-item:hover svg" in css
+    assert "drop-shadow(0 0 4px var(--accent))" in css

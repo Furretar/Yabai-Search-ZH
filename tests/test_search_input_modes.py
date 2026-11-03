@@ -15,6 +15,11 @@ pytestmark = pytest.mark.skipif(
     not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
 )
 
+requires_moe = pytest.mark.skipif(
+    not (DATA / "moe-taiwan" / "moe.sqlite").exists(),
+    reason="MOE database not built",
+)
+
 
 def _words(data):
     return [entry["simplified"] for entry in data["results"]]
@@ -176,6 +181,19 @@ def test_annotate_normalizes_variant_characters(client):
     assert tokens[0]["text"] == "什麽"
     assert tokens[0]["entries"]
     assert tokens[0]["entries"][0]["pinyin"] == "shén me"
+
+
+@requires_moe
+def test_annotate_keeps_a_traditional_headword_together(client):
+    """A traditional-only dictionary entry is not split in simplified input.
+
+    MOE lists 縮頭縮腦. The space sends the simplified query to /api/annotate,
+    so the segmenter must know that entry and convert it to 缩头缩脑.
+    """
+    response = client.post("/api/annotate", json={"text": "it's 缩头缩脑"})
+    assert response.status_code == 200
+    tokens = response.json()["tokens"]
+    assert any(token["text"] == "缩头缩脑" for token in tokens)
 
 
 def test_annotate_caches_the_text(client):

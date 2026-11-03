@@ -140,7 +140,7 @@ def test_page_layouts_sends_both_when_a_group_splits():
 
 def test_page_layout_cache_reuses_identical_requests():
     """The server builds a page's two layouts once per request key."""
-    from yabai_search.main import _page_layout_cache, _page_layouts_cached
+    from yabai_search.services import _page_layout_cache, _page_layouts_cached
 
     rows = [row("和", "和", "hé", ["and"])]
     key = ("q", 0, 25, "EN", ("cedict",), False, "all", "data-v1")

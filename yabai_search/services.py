@@ -1,38 +1,47 @@
-"""FastAPI app for Yabai Search."""
+"""Search logic for Yabai Search, independent of any web framework.
+
+This is the former yabai_search/main.py with the FastAPI routing removed. The
+functions keep their original names and behaviour; the Django views in
+dictionary/views.py call them. Nothing in here imports Django or FastAPI.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import collections
 import copy
 import hashlib
-import ipaddress
 import json
 import os
-import re
-import shutil
-import sqlite3
-import subprocess
+
+
 import threading
 import time
-import uuid
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlencode
-
-import markdown
-from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
 
 from yabai_search import db, merge as merge_results, segment
 from yabai_search import perf_debug as pd
 from yabai_search.default_dictionaries import DEFAULTS
 from yabai_search.overrides import PREFERRED_READINGS
 from yabai_search.pinyin import to_numeric, to_toneless
+
+# Search-language dropdown value -> the source's `lang` field. The fast preview
+# picks the first selected dictionary in this group, so drag order matters.
+_LANG_GROUP = {
+    "EN": "english",
+    "ZH": "mainland",
+    "TW": "taiwan",
+    "JP": "japanese",
+}
+
+
+class HeaderBag:
+    """Collects response headers a handler wants set; the view copies them over."""
+
+    def __init__(self) -> None:
+        self.headers: dict[str, str] = {}
+
 
 # Directory of this file (the yabai_search package). Used to locate assets
 # regardless of the directory the server is launched from.
@@ -229,7 +238,7 @@ def _page_groups_copy(
 
 
 def _normal_search_state(
-    q: str, limit: int, taiwan: bool, selected_dicts: set[str]
+    q: str, limit: int, taiwan: bool, selected_dicts: list[str]
 ) -> tuple[list[dict], list[dict], bool, bool, dict, dict]:
     """Everything a normal search computes before paging, ready to cache."""
     timings: dict[str, float] = {}
@@ -336,7 +345,7 @@ def _normal_search_state(
                 definition_search=not pinyin_match,
             )
         mark("category_rank", at)
-        counters["selected_dicts"] = ",".join(sorted(selected_dicts))
+        counters["selected_dicts"] = ",".join(selected_dicts)
     return results, fuzzy, pinyin_match, english_match, counters, timings
 
 
@@ -352,7 +361,7 @@ def _is_chinese_wildcard(q: str) -> bool:
 
 
 def _wildcard_search_state(
-    q: str, taiwan: bool, selected_dicts: set[str]
+    q: str, taiwan: bool, selected_dicts: list[str]
 ) -> tuple[list[dict], list[dict], bool, bool, dict, dict]:
     """Ranked rows for a Chinese wildcard pattern, ready to cache."""
     timings: dict[str, float] = {}
@@ -378,69 +387,8 @@ def _wildcard_search_state(
         with pd.stage("category_rank"):
             results = db.rank_by_category(results, selected_dicts, q, taiwan)
         mark("category_rank", at)
-        counters["selected_dicts"] = ",".join(sorted(selected_dicts))
+        counters["selected_dicts"] = ",".join(selected_dicts)
     return results, [], False, False, counters, timings
-
-# Cache of the local device's Tailscale IPs, used to decide whether a report
-# request came from this machine.
-_local_ips_cache: tuple[float, set[str]] | None = None
-
-
-def _local_tailscale_ips() -> set[str]:
-    """Return this machine's own Tailscale IPs, refreshed once a minute."""
-    global _local_ips_cache
-    now = time.monotonic()
-    if _local_ips_cache and now - _local_ips_cache[0] < 60:
-        return _local_ips_cache[1]
-    ips: set[str] = set()
-    tailscale = shutil.which("tailscale") or "/run/current-system/sw/bin/tailscale"
-    try:
-        result = subprocess.run(
-            [tailscale, "status", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            ips = set(data.get("Self", {}).get("TailscaleIPs", []))
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        pass
-    _local_ips_cache = (now, ips)
-    return ips
-
-
-def _ip_is_local(host: str) -> bool:
-    """True for loopback or one of this device's Tailscale addresses."""
-    host = (host or "").strip().strip("[]")
-    if not host:
-        return False
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return host.lower() == "localhost"
-    if address.is_loopback:
-        return True
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        address = address.ipv4_mapped
-    for candidate in _local_tailscale_ips():
-        try:
-            if address == ipaddress.ip_address(candidate):
-                return True
-        except ValueError:
-            continue
-    return False
-
-
-def _request_is_local(request: Request) -> bool:
-    """Whether the request came from this machine, directly or via Serve."""
-    client = request.client.host if request.client else ""
-    forwarded = request.headers.get("x-forwarded-for", "")
-    # Only trust a forwarded address when the immediate peer is local (the
-    # Tailscale Serve proxy runs on this machine).
-    if forwarded and _ip_is_local(client):
-        return _ip_is_local(forwarded.split(",")[0])
-    return _ip_is_local(client)
 
 
 def _load_reports(limit: int = 200) -> list[dict]:
@@ -571,163 +519,10 @@ def asset_version() -> str:
         return "0"
     return str(int(newest))
 
-# The application object that uvicorn imports and runs.
-app = FastAPI(title="Yabai Search")
-
-# Counts requests that have arrived but not finished. A high value explains a
-# slow first byte (the threadpool was busy) without guessing.
-_inflight = 0
-_inflight_lock = threading.Lock()
-# Optional load shedder: when this many search requests are already running,
-# answer new ones with 503 + Retry-After instead of queueing them. Off by
-# default (0), so the protected path is unchanged.
-_ADMISSION_LIMIT = int(os.environ.get("YABAI_ADMISSION", "0") or 0)
 
 
-@app.middleware("http")
-async def _debug_stamp(request, call_next):
-    """Record arrival time (to measure threadpool wait) and in-flight count.
-
-    When YABAI_TRACE=1, also start a perf_debug trace, add its Server-Timing
-    and X-Debug-ID headers, and append the request record to the trace file.
-    With tracing off this is the original lightweight middleware.
-    """
-    global _inflight
-    request.state.arrived = time.perf_counter()
-    # Lag: client send time to this middleware receiving the request. The
-    # frontend sends X-Client-Sent (epoch milliseconds) with each API request.
-    client_sent = request.headers.get("x-client-sent")
-    lag_ms = None
-    if client_sent:
-        try:
-            lag_ms = max(0, round(time.time() * 1000 - float(client_sent)))
-        except ValueError:
-            pass
-    trace = None
-    debug_id = None
-    if pd.ENABLED:
-        debug_id = request.headers.get("cf-ray") or uuid.uuid4().hex[:12]
-        trace = pd.start(debug_id, str(request.url.query))
-        if client_sent and trace is not None:
-            try:
-                trace.client_sent_ms = float(client_sent)
-            except ValueError:
-                pass
-        pd.mark("arrived")
-    if (
-        _ADMISSION_LIMIT > 0
-        and request.url.path == "/api/search"
-        and _inflight >= _ADMISSION_LIMIT
-    ):
-        headers = {"Retry-After": "1"}
-        if lag_ms is not None:
-            headers["X-Yabai-Lag"] = str(lag_ms)
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "busy", "retry_after": 1},
-            headers=headers,
-        )
-    with _inflight_lock:
-        _inflight += 1
-        seen = _inflight
-    try:
-        response = await call_next(request)
-    except BaseException:
-        if trace is not None:
-            pd.finish(
-                trace,
-                {
-                    "path": request.url.path,
-                    "status": 500,
-                    "error": "unhandled",
-                },
-            )
-        raise
-    finally:
-        with _inflight_lock:
-            _inflight -= 1
-    response.headers["X-Yabai-Inflight"] = str(seen)
-    response.headers["X-Served-By"] = served_by()
-    if lag_ms is not None:
-        response.headers["X-Yabai-Lag"] = str(lag_ms)
-    if trace is not None:
-        timing = pd.server_timing(trace)
-        if timing:
-            old = response.headers.get("server-timing", "")
-            response.headers["Server-Timing"] = ", ".join(
-                value for value in (old, timing) if value
-            )
-        if debug_id:
-            response.headers["X-Debug-ID"] = debug_id
-        pd.finish(
-            trace,
-            {
-                "path": request.url.path,
-                "status": response.status_code,
-                "inflight_seen": seen,
-            },
-        )
-    return response
-
-
-@app.middleware("http")
-async def cache_headers(request, call_next):
-    """Set cache headers so static assets reload only when they change.
-
-    HTML pages and the service worker are never cached (the app must re-read
-    them, and the theme must apply before paint). Versioned static assets are
-    immutable, because asset_version() changes every ?v= URL on any edit.
-    """
-    response = await call_next(request)
-    path = request.url.path
-    if response.headers.get("content-type", "").startswith("text/html"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-    elif (
-        path == "/api/search"
-        and response.status_code == 200
-        and "dv" in request.query_params
-    ):
-        # Results are immutable for a given data version + query + page, so the
-        # browser (and an edge cache) may reuse them. Requests without `dv`
-        # stay uncached and errors above never reach this branch.
-        response.headers["Cache-Control"] = (
-            "public, max-age=86400, stale-while-revalidate=604800"
-        )
-    elif path == "/sw.js":
-        response.headers["Cache-Control"] = "no-cache"
-    elif path.startswith("/static/") and response.status_code in (200, 304):
-        if "v" in request.query_params or path.startswith("/static/ids_images/"):
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        elif path.startswith("/static/vendor/"):
-            response.headers["Cache-Control"] = "public, max-age=604800"
-        else:
-            response.headers["Cache-Control"] = "no-cache"
-    elif path.startswith("/moe-glyphs/") and response.status_code == 200:
-        response.headers["Cache-Control"] = "public, max-age=604800"
-    return response
-
-
-# Level 6 is ~3x faster than the Starlette default (9) for a nearly identical
-# size; the tablet re-compresses every API response and asset.
-app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
-
-
-@app.on_event("startup")
-def _warm_caches() -> None:
+def warm_caches() -> None:
     """Build the SQL and segmenter caches now, not during the first search."""
-    # Starlette runs sync endpoints in AnyIO's thread pool. The default is 40;
-    # on a small host a lower cap keeps memory/queueing predictable. The default
-    # preserves the previous behaviour.
-    thread_limit = os.environ.get("YABAI_THREADS", "").strip()
-    if thread_limit:
-        try:
-            limit = int(thread_limit)
-        except ValueError:
-            limit = 0
-        if limit > 0:
-            import anyio.to_thread
-
-            anyio.to_thread.current_default_thread_limiter().total_tokens = limit
     # warm_caches starts the page-cache read in a daemon thread (default);
     # YABAI_WARM_PAGE_CACHE=legacy restores the old synchronous warm-up.
     db.warm_caches()
@@ -754,235 +549,6 @@ def _warm_caches() -> None:
         )
 
 
-@app.on_event("startup")
-async def _start_debug_trace() -> None:
-    """Start the optional event-loop sampler and write the startup snapshot."""
-    if not pd.ENABLED:
-        return
-    app.state.trace_task = asyncio.create_task(pd.loop_lag_sampler())
-    pragmas = {}
-    attached = {}
-    try:
-        connection = db.connect()
-        for name in ("cache_size", "mmap_size", "journal_mode", "temp_store"):
-            pragmas[name] = connection.execute(f"PRAGMA {name}").fetchone()[0]
-        for row in connection.execute("PRAGMA database_list"):
-            attached[row[1]] = str(row[2])
-    except sqlite3.Error as exc:
-        pragmas["error"] = str(exc)
-    info = {
-        "sqlite_version": sqlite3.sqlite_version,
-        "python_version": os.sys.version.split()[0],
-        "pid": os.getpid(),
-        "cwd": os.getcwd(),
-        "db_path": str(db.DB_PATH),
-        "db_bytes": db.DB_PATH.stat().st_size if db.DB_PATH.exists() else 0,
-        "moe_bytes": db.MOE_DB_PATH.stat().st_size if db.MOE_DB_PATH.exists() else 0,
-        "freq_path": str(db.FREQ_DB_PATH),
-        "freq_bytes": db.FREQ_DB_PATH.stat().st_size if db.FREQ_DB_PATH.exists() else 0,
-        "source_gloss_path": str(db.SOURCE_GLOSS_DB_PATH),
-        "source_gloss_bytes": (
-            db.SOURCE_GLOSS_DB_PATH.stat().st_size
-            if db.SOURCE_GLOSS_DB_PATH.exists()
-            else 0
-        ),
-        "head_grams_path": str(db.HEAD_GRAMS_DB_PATH),
-        "head_grams_bytes": (
-            db.HEAD_GRAMS_DB_PATH.stat().st_size
-            if db.HEAD_GRAMS_DB_PATH.exists()
-            else 0
-        ),
-        "pragmas": pragmas,
-        "attached": attached,
-        "threads": threading.active_count(),
-        "cpu_count": os.cpu_count(),
-        "web_concurrency": os.environ.get("WEB_CONCURRENCY"),
-        "uvicorn_workers": os.environ.get("UVICORN_WORKERS"),
-        "trace_file": pd.TRACE_FILE,
-        "plan_ms": pd.SLOW_PLAN_MS,
-        "always_plan": pd.ALWAYS_PLAN,
-        "connection_model": "one read-only connection per worker thread",
-    }
-    pd.startup(info)
-
-# Serve files from yabai_search/static/ at the URL prefix /static/...
-# (e.g. /static/style.css, /static/app.js). Read-only, served verbatim.
-app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
-
-
-@app.get("/__ping", include_in_schema=False)
-def debug_ping(response: Response) -> dict:
-    """A no-database liveness probe for measuring edge/tunnel/queue latency."""
-    response.headers["Cache-Control"] = "no-store"
-    return {"t": time.time(), "pid": os.getpid()}
-
-
-@app.get("/__debug/status", include_in_schema=False)
-def debug_status(request: Request) -> dict:
-    """Return the active/fallback state of each derived fast path."""
-    token = os.environ.get("YABAI_DEBUG_TOKEN")
-    if token:
-        if request.headers.get("x-debug-token") != token:
-            raise HTTPException(status_code=404)
-    elif not _ip_is_local(request.client.host if request.client else ""):
-        raise HTTPException(status_code=404)
-    # Keep the established flat fast-path keys; page_cache is additive.
-    status = db.fast_path_status()
-    status["page_cache"] = db.page_cache_status()
-    status["search_index"] = db.search_index_status()
-    return status
-
-
-@app.get("/__debug/lag", include_in_schema=False)
-def debug_lag(request: Request) -> dict:
-    """Return recent event-loop lag samples; local or token protected."""
-    if not pd.ENABLED:
-        raise HTTPException(status_code=404)
-    token = os.environ.get("YABAI_DEBUG_TOKEN")
-    if token:
-        if request.headers.get("x-debug-token") != token:
-            raise HTTPException(status_code=404)
-    elif not _ip_is_local(request.client.host if request.client else ""):
-        raise HTTPException(status_code=404)
-    return {
-        "now": time.time(),
-        "lag": list(pd.LOOP_LAG),
-        "trace_file": pd.TRACE_FILE,
-    }
-
-
-# Serve the web app manifest at the root so its scope covers the whole site.
-@app.get("/manifest.webmanifest", include_in_schema=False)
-def pwa_manifest() -> FileResponse:
-    """Return the manifest used when installing Yabai Search as an app."""
-    return FileResponse(
-        _STATIC_DIR / "manifest.webmanifest",
-        media_type="application/manifest+json",
-    )
-
-
-# Serve the service worker at the root so it can control every page. The
-# Service-Worker-Allowed header permits the root scope even without this route.
-@app.get("/sw.js", include_in_schema=False)
-def pwa_service_worker() -> FileResponse:
-    """Return the service worker used for installable web-app behaviour."""
-    return FileResponse(
-        _STATIC_DIR / "sw.js",
-        media_type="text/javascript",
-        headers={"Service-Worker-Allowed": "/"},
-    )
-
-
-# MOE glyph pictures (data/moe_glyphs/, unpacked by scripts/import_moe.py from
-# the 字圖 zip). Definitions reference them as "&8ff0._104_0.gif;", which the
-# frontend swaps for one of these images so the rare character shows inline.
-_GLYPH_DIR = BASE.parent / "data" / "moe-taiwan" / "moe_glyphs"
-# Names are MOE's own hex codes, e.g. "8ff0._104_0.gif" or "f4ff2_.png" - no
-# path separators, so they cannot escape the directory.
-_GLYPH_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:gif|png)$")
-
-
-@app.get("/moe-glyphs/{name}")
-def moe_glyph(name: str):
-    """Serve one MOE glyph picture, or 404 when the name or file is unknown."""
-    if not _GLYPH_NAME_RE.match(name):
-        raise HTTPException(status_code=404)
-    path = _GLYPH_DIR / name
-    if not path.is_file():
-        raise HTTPException(status_code=404)
-    return FileResponse(path)
-
-# Tell Jinja2 where to find HTML templates.
-templates = Jinja2Templates(directory=str(BASE / "templates"))
-
-
-def _index_page(
-    request: Request,
-    q: str = "",
-    page: str = "",
-    lang: str = "EN",
-    word_query: str = "",
-    exact: bool = False,
-):
-    """Render index.html, optionally in exact-word mode for /word/<word>."""
-    lang = (lang or "EN").strip().upper()
-    if lang not in DEFAULTS:
-        lang = "EN"
-    try:
-        page_number = int(page) if page else 1
-    except ValueError:
-        # app.js treats an invalid ?page= as page 1; mirror that here.
-        page_number = 1
-    initial_page = page_number <= 1
-    initial_primary = None
-    # Only the first page embeds the fast tier: later pages ask for an offset,
-    # so the embedded payload would be unused and only add HTML weight. Exact
-    # word pages fetch their entries from the exact API instead.
-    if q and initial_page and not exact:
-        try:
-            # FastAPI's Query() defaults are not resolved when the route is
-            # called directly, so pass every parameter explicitly.
-            from fastapi.responses import Response as _Resp
-
-            initial_primary = api_search(
-                _Resp(),
-                q=q,
-                limit=25,
-                taiwan=False,
-                offset=0,
-                part="primary",
-                lang=lang,
-            )
-        except Exception:
-            # The page still works without the embedded tier: app.js fetches it.
-            initial_primary = None
-    return templates.TemplateResponse(
-        request,
-        "index.html",
-        {
-            "asset_version": asset_version(),
-            "sources": db.sources(),
-            "dictionaries": db.dictionaries(),
-            "defaults": DEFAULTS,
-            "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
-            "q": q,
-            "lang": lang,
-            "initial_page": initial_page,
-            "initial_primary": initial_primary,
-            "word_query": word_query,
-            "exact": exact,
-            "data_version": search_version(),
-            "show_reports": _request_is_local(request),
-            # The debug log button is useful for every client, not just local.
-            "show_debug": True,
-            # Which machine is serving this page (see deploy/run.sh).
-            "served_by": served_by(),
-        },
-    )
-
-
-@app.get("/", response_class=HTMLResponse)
-def index(request: Request, q: str = "", page: str = "", lang: str = "EN"):
-    """Home page: render the index.html template."""
-    return _index_page(request, q=q, page=page, lang=lang)
-
-
-@app.get("/about", response_class=HTMLResponse)
-def about(request: Request):
-    """About page: the README rendered on every request."""
-    content = markdown.markdown(
-        _README_PATH.read_text(encoding="utf-8"),
-        extensions=["tables", "fenced_code", "sane_lists"],
-    )
-    return templates.TemplateResponse(
-        request,
-        "about.html",
-        {
-            "asset_version": asset_version(),
-            "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
-            "content": content,
-        },
-    )
 
 
 # CC0 male-voice MP3s from github.com/cjhoward/cedict-tts, served by jsDelivr
@@ -1037,73 +603,6 @@ def _audio_slug(traditional: str, pinyin: str) -> str | None:
     return slug or None
 
 
-@app.get("/word/{word:path}", response_class=HTMLResponse)
-def word_page(request: Request, word: str):
-    """Open the exact-word view inside the normal search page."""
-    entries = db.lookup(word)
-    if not entries:
-        # Words that only a secondary dictionary has do not live in CEDICT.
-        entries = db.source_entries(word)
-    if not entries:
-        raise HTTPException(status_code=404)
-    return _index_page(request, word_query=word, exact=True)
-
-
-@app.get("/reports", response_class=HTMLResponse)
-def reports_page(request: Request):
-    """Show locally stored bug reports. Only this device may open this page."""
-    if not _request_is_local(request):
-        raise HTTPException(status_code=404)
-    reports = _load_reports()
-    # The template links each reported word to a search using that reporter's
-    # language, script, phonetic, and dictionary choices.
-    for report in reports:
-        report["search_url"] = _report_search_url(report)
-    return templates.TemplateResponse(
-        request,
-        "reports.html",
-        {
-            "asset_version": asset_version(),
-            "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
-            "reports": reports,
-            "labels": {
-                "incorrect": "Incorrect information",
-                "bug": "Bug report",
-                "suggestion": "Suggestions/Requests",
-            },
-        },
-    )
-
-
-@app.post("/reports/delete", response_class=RedirectResponse, status_code=303)
-def delete_report(request: Request, received_at: str = Query(...)):
-    """Delete one locally stored report. Only this device may do it."""
-    if not _request_is_local(request):
-        raise HTTPException(status_code=404)
-    path = BASE.parent / "data" / "bug_reports.jsonl"
-    if path.exists():
-        try:
-            kept = []
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    kept.append(line)
-                    continue
-                if record.get("received_at") == received_at:
-                    continue
-                kept.append(line)
-            path.write_text(
-                "".join(line + "\n" for line in kept), encoding="utf-8"
-            )
-        except OSError as error:
-            raise HTTPException(
-                status_code=500, detail="Could not delete the report."
-            ) from error
-    return RedirectResponse(url="/reports", status_code=303)
 
 def _reading_count(entry: dict) -> int:
     """How many CEDICT definitions this entry's own reading has.
@@ -1302,25 +801,24 @@ def _record_search(
             pass  # logging must never break a search
 
 
-@app.get("/api/search-log")
-def api_search_log():
+
+def recent_searches() -> dict:
     """The last few searches with their SQL timings (for the debug log)."""
     with _recent_searches_lock:
         return {"entries": [dict(entry) for entry in _recent_searches]}
 
 
-@app.get("/api/search")
 def api_search(
-    response: Response,
+    response: HeaderBag,
     q: str = "",
-    limit: int = Query(25, ge=1, le=25),
+    limit: int = 25,
     taiwan: bool = False,
-    offset: int = Query(0, ge=0),
-    part: str = Query("all"),
+    offset: int = 0,
+    part: str = "all",
     lang: str = "EN",
     exact: bool = False,
     dicts: str = "",
-    script: str = Query("simplified"),
+    script: str = "simplified",
     merge: bool = False,
 ):
     """JSON search endpoint. `q` is the term; `limit` is clamped to 1..25.
@@ -1355,12 +853,16 @@ def api_search(
     if lang not in DEFAULTS:
         lang = "EN"
     # Only anchors this server knows; local imported dictionaries are ignored.
-    known_anchors = {item["anchor"] for item in db._SOURCE_QUERIES}
-    selected_dicts = {
-        anchor.strip()
-        for anchor in (dicts or "").split(",")
-        if anchor.strip() in known_anchors
-    }
+    # Keep the user's drag order: the fast preview uses the first selected
+    # dictionary in the chosen language.
+    known_anchors = {item["anchor"]: item["lang"] for item in db._SOURCE_QUERIES}
+    selected_dicts = list(
+        dict.fromkeys(
+            anchor.strip()
+            for anchor in (dicts or "").split(",")
+            if anchor.strip() in known_anchors
+        )
+    )
 
     def mark(name: str, at: float) -> None:
         """Add one debug phase duration without changing the search itself."""
@@ -1487,7 +989,18 @@ def api_search(
             # search language (EN -> CEDICT, TW -> MOE, ...). Only words that
             # start with the query are fetched; the full tier adds the rest.
             quoted = len(q) >= 2 and q.startswith('"') and q.endswith('"')
-            anchor = DEFAULTS[lang][0]
+            # Use the first selected dictionary in this language. In custom
+            # mode that is the row the user dragged to the top; otherwise it
+            # matches the language default.
+            group = _LANG_GROUP.get(lang, "")
+            anchor = next(
+                (
+                    item
+                    for item in selected_dicts
+                    if known_anchors.get(item) == group
+                ),
+                DEFAULTS[lang][0],
+            )
             counters["primary_anchor"] = anchor
             entries = []
             pinyin_match = False
@@ -1525,7 +1038,7 @@ def api_search(
                     taiwan,
                     definition_search=not pinyin_match,
                 )
-                counters["selected_dicts"] = ",".join(sorted(selected_dicts))
+                counters["selected_dicts"] = ",".join(selected_dicts)
             if os.environ.get("YABAI_SERVER_ORDER", "1") != "0":
                 results, _ = db.page_groups(results, 0, limit)
             # D4 limitation: this preview is not yet a prefix of the full list.
@@ -1661,92 +1174,6 @@ def api_search(
     }
 
 
-class AnnotateRequest(BaseModel):
-    text: str = ""
-
-
-class ConvertBatchRequest(BaseModel):
-    texts: list[str] = []
-
-
-class BugReportRequest(BaseModel):
-    kind: str = "Incorrect information"
-    word: str = ""
-    message: str = ""
-    url: str = ""
-    user_agent: str = ""
-    log: str = ""
-    settings: dict = Field(default_factory=dict)
-
-
-@app.get("/api/convert")
-def api_convert(text: str = Query("", max_length=128)):
-    """Return OpenCC simplified/traditional forms for a word.
-
-    Used by the browser-side imported dictionaries, which only store one script
-    form, so their headwords can follow the front-end script toggle.
-    """
-    text = text.strip()
-    if not text:
-        return {"simplified": "", "traditional": ""}
-    return {
-        "simplified": db.to_simplified(text),
-        "traditional": db.to_traditional(text),
-    }
-
-
-@app.post("/api/convert-batch")
-def api_convert_batch(request: ConvertBatchRequest):
-    """Convert several imported-dictionary headwords in one request.
-
-    A custom dictionary search can surface dozens of headwords at once; doing
-    one /api/convert round-trip per headword made those searches wait on many
-    small requests. Keep the batch bounded so a stray client cannot send an
-    unbounded body.
-    """
-    texts = [text.strip()[:128] for text in request.texts[:200]]
-    return {
-        "results": [
-            {
-                "simplified": db.to_simplified(text),
-                "traditional": db.to_traditional(text),
-            }
-            if text
-            else {"simplified": "", "traditional": ""}
-            for text in texts
-        ]
-    }
-
-
-
-@app.post("/api/report")
-def api_report(report: BugReportRequest):
-    """Append a bug report, including the client's debug log, to a JSONL file.
-
-    Reports are local data, not part of the dictionary. They are written under
-    data/ so a re-import of CEDICT never touches them.
-    """
-    record = {
-        "received_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "kind": report.kind[:80],
-        "word": report.word[:200],
-        "message": report.message[:10000],
-        "url": report.url[:2000],
-        "user_agent": report.user_agent[:1000],
-        "log": report.log[:200000],
-        "settings": _clean_report_settings(report.settings),
-    }
-    path = BASE.parent / "data" / "bug_reports.jsonl"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except OSError as error:
-        raise HTTPException(
-            status_code=500, detail="Could not save the report."
-        ) from error
-    return {"ok": True}
-
 
 def _tok(text: str, trad: str, simp: str, entries: list[dict]) -> dict:
     """One parsed token; drop script fields that equal the text itself.
@@ -1876,36 +1303,3 @@ def _annotate_text(text: str) -> tuple[bytes, dict, dict]:
     return body, stats, counters
 
 
-@app.post("/api/annotate")
-def api_annotate(payload: AnnotateRequest, request: Request):
-    """Segment pasted Chinese text and attach dictionary matches to each word.
-
-    The whole sentence is converted to traditional and simplified up front, so
-    each word carries both forms for the front-end script toggle. Converting the
-    full sentence (not each word) lets OpenCC use the phrase context, e.g.
-    "一只" -> "一隻". A segmented word with no dictionary entry is split into
-    single characters so something still matches (e.g. 这是 -> 这 + 是).
-    """
-    started = time.perf_counter()
-    pd.mark("handler_start")
-    queue_ms = round((started - getattr(request.state, "arrived", started)) * 1000, 2)
-    before = _annotate_text.cache_info()
-    with pd.stage("annotate"):
-        body, stats, counters = _annotate_text(payload.text)
-    cache_hit = _annotate_text.cache_info().hits > before.hits
-    pd.mark("handler_end")
-
-    total_ms = round((time.perf_counter() - started) * 1000, 2)
-    parts = [f"queue;dur={queue_ms}"]
-    if not cache_hit:  # cached stats describe the original computation
-        parts += [f"{name};dur={value}" for name, value in stats.items()]
-    parts.append(f"total;dur={total_ms}")
-    headers = {
-        "Server-Timing": ", ".join(parts),
-        "X-Yabai-Debug": json.dumps(
-            {**counters, "cache_hit": cache_hit, "thread": threading.current_thread().name},
-            separators=(",", ":"),
-            ensure_ascii=True,
-        ),
-    }
-    return Response(content=body, media_type="application/json", headers=headers)

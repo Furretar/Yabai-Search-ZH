@@ -8,17 +8,21 @@ from pathlib import Path
 
 import jieba
 
-from yabai_search.db import (
-    DB_PATH,
-    MOE_DB_PATH,
-    MOE_REVISED_DB_PATH,
-    SUBTLEX_DB_PATH,
-    WIKTIONARY_DB_PATH,
-    has_cjk,
-)
+from yabai_search import db
+from yabai_search.db import SUBTLEX_DB_PATH, has_cjk
 
 # The jieba user-dictionary we generate from the dictionary headwords.
 USERDICT_PATH = Path(__file__).resolve().parents[1] / "data" / "dl-base-dictionaries" / "cedict_userdict.txt"
+# Bump when the exported headword set or file format changes. Without this, an
+# old user-dict with the same source databases would never be rebuilt.
+USERDICT_VERSION = 2
+USERDICT_VERSION_PATH = USERDICT_PATH.with_suffix(".version")
+
+# Word lists that are not dictionaries in the db.py registry: (database, SQL
+# returning one headword per row).
+EXTRA_HEADWORD_SOURCES: list[tuple[Path, str]] = [
+    (SUBTLEX_DB_PATH, "SELECT word FROM freq WHERE length(word) > 1"),
+]
 
 _loaded = False
 _headword_cache: set[str] | None = None
@@ -40,34 +44,19 @@ def _headwords_from(db_path: Path, sql: str) -> set[str]:
 
 
 def _headwords() -> set[str]:
-    """Every multi-character headword across all sources, cached.
+    """Every multi-character headword across all dictionaries, cached.
 
-    CEDICT is the main list; MOE, Wiktionary and SUBTLEX add words jieba would
-    otherwise split (e.g. 一償宿願 from MOE). Both scripts are included, and
-    single characters are skipped.
+    The dictionaries come from the registry in db.py (db.source_headwords), so
+    adding one there is enough for the segmenter to keep its words together.
+    SUBTLEX is a frequency list, not a dictionary, so it is listed here.
     """
     global _headword_cache
     if _headword_cache is None:
-        words: set[str] = set()
-        words |= _headwords_from(
-            DB_PATH, "SELECT traditional FROM entries WHERE length(traditional) > 1"
-        )
-        words |= _headwords_from(
-            DB_PATH, "SELECT simplified FROM entries WHERE length(simplified) > 1"
-        )
-        words |= _headwords_from(
-            MOE_DB_PATH, "SELECT word FROM moe WHERE length(word) > 1"
-        )
-        words |= _headwords_from(
-            MOE_REVISED_DB_PATH, "SELECT word FROM moe WHERE length(word) > 1"
-        )
-        words |= _headwords_from(
-            WIKTIONARY_DB_PATH,
-            "SELECT DISTINCT word FROM wiktionary WHERE length(word) > 1",
-        )
-        words |= _headwords_from(
-            SUBTLEX_DB_PATH, "SELECT word FROM freq WHERE length(word) > 1"
-        )
+        words = db.source_headwords()
+        for path, sql in EXTRA_HEADWORD_SOURCES:
+            # Extra lists (SUBTLEX) are not in the db.py registry, so give
+            # their words both scripts here too.
+            words |= db.script_variants(_headwords_from(path, sql))
         _headword_cache = words
     return _headword_cache
 
@@ -79,19 +68,39 @@ def build_userdict() -> int:
     frequency (observed: 1) that jieba then prefers to split. Returns the number
     of words written.
     """
-    words = _headwords()
+    # jieba reads each line as "word frequency [tag]", so a headword with
+    # whitespace (e.g. Wiktionary's "bi bu车") would be split into fake entries.
+    words = sorted(
+        word for word in _headwords() if not any(ch.isspace() for ch in word)
+    )
     USERDICT_PATH.parent.mkdir(parents=True, exist_ok=True)
     USERDICT_PATH.write_text(
-        "\n".join(f"{word} 20000" for word in sorted(words)) + "\n", encoding="utf-8"
+        "\n".join(f"{word} 20000" for word in words) + "\n", encoding="utf-8"
     )
+    USERDICT_VERSION_PATH.write_text(f"{USERDICT_VERSION}\n", encoding="utf-8")
     return len(words)
+
+
+def _userdict_is_stale() -> bool:
+    """True when the user dict is missing, outdated or older than its sources."""
+    if not USERDICT_PATH.exists() or not USERDICT_VERSION_PATH.exists():
+        return True
+    try:
+        version = USERDICT_VERSION_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return True
+    if version != str(USERDICT_VERSION):
+        return True
+    built = USERDICT_PATH.stat().st_mtime
+    sources = [*db.source_database_paths(), *(path for path, _ in EXTRA_HEADWORD_SOURCES)]
+    return any(p.exists() and p.stat().st_mtime > built for p in sources)
 
 
 def _ensure_loaded() -> None:
     """Load the user dictionary into jieba once (building it if needed)."""
     global _loaded
     if not _loaded:
-        if not USERDICT_PATH.exists():
+        if _userdict_is_stale():
             build_userdict()
         jieba.load_userdict(str(USERDICT_PATH))
         _loaded = True
