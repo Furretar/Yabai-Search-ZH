@@ -10,6 +10,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 JS_FILES = ("app.js", "custom_dicts.js", "glyphs.js")
@@ -180,6 +182,50 @@ def test_origin_guard_cannot_be_bypassed_with_a_forged_forwarded_for(monkeypatch
         HTTP_X_FORWARDED_FOR="10.0.0.5, 203.0.113.9",
     )
     assert gate(request).status_code == 403
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("node", ["laptop", "pc", "tabs", "tabs2"])
+def test_public_host_domains_serve_the_page_and_api(node, monkeypatch):
+    """https://<node>.yabaisearch.org/?q=直 loads that host's read-only page."""
+    from django.test import Client
+
+    monkeypatch.setenv("YABAI_ORIGIN_SECRET", "test-secret")
+    monkeypatch.setenv("YABAI_REPL_NODE", node)
+    host = f"{node}.yabaisearch.org"
+    client = Client()
+    common = {"HTTP_HOST": host, "REMOTE_ADDR": "203.0.113.9"}
+
+    page = client.get("/", {"q": "直"}, HTTP_ACCEPT="text/html", **common)
+    assert page.status_code == 200
+    assert "Yabai Search" in page.content.decode("utf-8")
+
+    api = client.get(
+        "/api/search",
+        {"q": "直"},
+        HTTP_ACCEPT="application/json",
+        **common,
+    )
+    assert api.status_code == 200
+    assert api.json()["query"] == "直"
+
+
+@pytest.mark.parametrize("node", ["laptop", "pc", "tabs", "tabs2"])
+def test_public_host_domains_do_not_open_another_host(node, monkeypatch):
+    """A host's public name still only works on that host."""
+    from django.test import Client
+
+    monkeypatch.setenv("YABAI_ORIGIN_SECRET", "test-secret")
+    monkeypatch.setenv("YABAI_REPL_NODE", node)
+    other = "tabs2" if node != "tabs2" else "laptop"
+    response = Client().get(
+        "/",
+        HTTP_HOST=f"{other}.yabaisearch.org",
+        HTTP_ACCEPT="text/html",
+        REMOTE_ADDR="203.0.113.9",
+    )
+    assert response.status_code == 302
+    assert response["Location"] == "https://yabaisearch.org/"
 
 
 def test_origin_guard_is_off_without_a_secret(monkeypatch):
