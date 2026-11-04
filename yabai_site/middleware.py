@@ -64,13 +64,32 @@ def _is_private(address: str) -> bool:
     return ip is not None and any(ip in net for net in _PRIVATE_NETS)
 
 
+_PUBLIC_DOMAIN = "yabaisearch.org"
+
+
+def _is_own_host_page(request) -> bool:
+    """True for a read of this machine's own <node>.yabaisearch.org name.
+
+    YABAI_REPL_NODE is the role from deploy/run.sh (laptop, pc, tabs, tabs2).
+    Each host tunnel is reachable directly at that name, but it has no Worker
+    secret. Allowing GET/HEAD lets you open and pin a host page directly;
+    everything else still needs the Worker or a private-network connection.
+    """
+    node = os.environ.get("YABAI_REPL_NODE", "").strip().lower()
+    if not node:
+        return False
+    host = request.get_host().split(":", 1)[0].strip().lower().rstrip(".")
+    return host == f"{node}.{_PUBLIC_DOMAIN}"
+
+
 class OriginSecretMiddleware:
     """Turn away requests that skipped the Cloudflare Worker.
 
     Active only when YABAI_ORIGIN_SECRET is set. The Worker adds the matching
     X-Origin-Secret header. Visitors on the LAN or Tailscale may connect directly.
-    A public visitor without the secret is redirected to the main site (HTML
-    page loads) or gets a 403 (everything else).
+    A host's own public name may serve GET/HEAD without the secret, so a host page
+    can be opened directly. Other public requests without the secret are redirected
+    to the main site (HTML page loads) or get a 403 (everything else).
     """
 
     def __init__(self, get_response):
@@ -81,8 +100,11 @@ class OriginSecretMiddleware:
     def __call__(self, request):
         if self.secret:
             sent = request.META.get("HTTP_X_ORIGIN_SECRET", "")
-            if not hmac.compare_digest(sent, self.secret) and not _is_private(
-                client_ip(request)
+            own_page = request.method in ("GET", "HEAD") and _is_own_host_page(request)
+            if not (
+                hmac.compare_digest(sent, self.secret)
+                or _is_private(client_ip(request))
+                or own_page
             ):
                 accept = request.META.get("HTTP_ACCEPT", "")
                 if request.method in ("GET", "HEAD") and "text/html" in accept:

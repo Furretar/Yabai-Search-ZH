@@ -90,6 +90,65 @@ def test_origin_guard_redirects_public_browsers_to_the_public_site(monkeypatch):
     assert api.status_code == 403
 
 
+def test_origin_guard_allows_the_hosts_own_read_only_page(monkeypatch):
+    """A visitor can open <node>.yabaisearch.org and its relative API calls."""
+    from django.test import RequestFactory
+
+    monkeypatch.setenv("YABAI_REPL_NODE", "tabs2")
+    gate = _origin_gate(monkeypatch)
+    factory = RequestFactory()
+
+    page = gate(
+        factory.get(
+            "/?q=%E7%9B%B4",
+            HTTP_HOST="tabs2.yabaisearch.org",
+            HTTP_ACCEPT="text/html",
+            REMOTE_ADDR="203.0.113.9",
+        )
+    )
+    assert page.status_code == 200
+
+    api = gate(
+        factory.get(
+            "/api/search?q=test",
+            HTTP_HOST="tabs2.yabaisearch.org",
+            HTTP_ACCEPT="application/json",
+            REMOTE_ADDR="203.0.113.9",
+        )
+    )
+    assert api.status_code == 200
+
+
+def test_origin_guard_keeps_other_hosts_and_writes_gated(monkeypatch):
+    """Only the machine's own name is opened, and only for GET/HEAD."""
+    from django.test import RequestFactory
+
+    monkeypatch.setenv("YABAI_REPL_NODE", "tabs2")
+    gate = _origin_gate(monkeypatch)
+    factory = RequestFactory()
+
+    other = gate(
+        factory.get(
+            "/?q=test",
+            HTTP_HOST="tabs.yabaisearch.org",
+            HTTP_ACCEPT="text/html",
+            REMOTE_ADDR="203.0.113.9",
+        )
+    )
+    assert other.status_code == 302
+    assert other["Location"] == "https://yabaisearch.org/?q=test"
+
+    write = gate(
+        factory.post(
+            "/accounts/login/",
+            HTTP_HOST="tabs2.yabaisearch.org",
+            HTTP_ACCEPT="text/html",
+            REMOTE_ADDR="203.0.113.9",
+        )
+    )
+    assert write.status_code == 403
+
+
 def test_origin_guard_allows_private_clients(monkeypatch):
     """The LAN and Tailscale may open the origin directly for debugging."""
     from django.test import RequestFactory
