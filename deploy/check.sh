@@ -38,5 +38,4 @@ echo "writer/timings: $(curl -sS -m 10 https://yabaisearch.org/__probe 2>&1)"
 probe yabaisearch.org
 probe www.yabaisearch.org
 probe laptop.yabaisearch.org
-probe tablet.yabaisearch.org
 probe dev.yabaisearch.org

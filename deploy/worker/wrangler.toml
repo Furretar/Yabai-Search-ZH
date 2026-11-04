@@ -24,7 +24,7 @@ new_sqlite_classes = ["Coordinator"]
 # Every machine that can host. Each needs a tunnel named <name>.<HOST_DOMAIN>
 # (laptop.yabaisearch.org, ...) and the same name as its deploy/run.sh role.
 # The first one is the writer on a brand new install.
-HOSTS = "laptop,tabs,tabs2"
+HOSTS = "laptop,tabs,tabs2,pc"
 HOST_DOMAIN = "yabaisearch.org"
 # Unsafe requests under these paths are writes (the admin path must match
 # DJANGO_ADMIN_PATH if you changed it).

@@ -5,20 +5,12 @@ Chromium because furigana selection depends on the browser's Range and
 Selection APIs, and the traditional-row merge depends on the rendered result
 rows.
 
-The app runs in a separate process. Starting it in a thread inside pytest left
-uvicorn's event loop and the app's caches alive for the rest of the session,
+The app runs in a separate gunicorn process. Starting it in a thread inside
+pytest left the app's caches and server loop alive for the rest of the session,
 which made the later in-process TestClient hang.
 """
 
 from __future__ import annotations
-
-import pytest
-
-pytest.skip(
-    "Not ported to Django yet: this harness mounts the old FastAPI app and starts "
-    "it with uvicorn. Port WRAPPER to a Django urls module served by gunicorn.",
-    allow_module_level=True,
-)
 
 import json
 import os
@@ -231,42 +223,56 @@ tick();
 </script>
 """
 
-# The wrapper adds the same-origin harness page to the real app, then mounts the
-# app at /. It lives in a temporary file only while the browser test runs.
+# The wrapper adds the same-origin harness pages ahead of the Django app. It is
+# a WSGI application so gunicorn can serve it exactly like yabai_site.wsgi. It
+# lives in a temporary file only while the browser tests run.
 WRAPPER = """\
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
-
-from yabai_search.main import app as real_app  # FastAPI-only; see skip below
+from yabai_site.wsgi import application as django_app
 
 HARNESS = {harness}
 MERGE_HARNESS = {merge_harness}
 COPY_HARNESS = {copy_harness}
 
-app = FastAPI()
+PAGES = {{
+    "/__furigana_test__": HARNESS,
+    "/__merge_test__": MERGE_HARNESS,
+    "/__copy_test__": COPY_HARNESS,
+}}
 
 
-@app.get("/__furigana_test__")
-def harness() -> HTMLResponse:
-    return HTMLResponse(HARNESS)
+def html_page(environ, start_response, page):
+    body = page.encode("utf-8")
+    start_response(
+        "200 OK",
+        [
+            ("Content-Type", "text/html; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+        ],
+    )
+    return [body]
 
 
-@app.get("/__merge_test__")
-def merge_harness() -> HTMLResponse:
-    return HTMLResponse(MERGE_HARNESS)
+def application(environ, start_response):
+    page = PAGES.get(environ.get("PATH_INFO", ""))
+    if page is not None:
+        return html_page(environ, start_response, page)
 
+    # The app sends X-Frame-Options: DENY in production. The harness embeds it
+    # in a same-origin iframe, so drop that one header for the test server only.
+    def allow_frame(status, headers, exc_info=None):
+        headers = [
+            (name, value)
+            for name, value in headers
+            if name.lower() != "x-frame-options"
+        ]
+        return start_response(status, headers, exc_info)
 
-@app.get("/__copy_test__")
-def copy_harness() -> HTMLResponse:
-    return HTMLResponse(COPY_HARNESS)
-
-
-app.mount("/", real_app)
+    return django_app(environ, allow_frame)
 """
 
 
 def _free_port() -> int:
-    """Ask the OS for a free localhost port, then release it for uvicorn."""
+    """Ask the OS for a free localhost port, then release it for gunicorn."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
@@ -295,16 +301,24 @@ def search_server():
     env["PYTHONPATH"] = os.pathsep.join(
         part for part in (str(BASE), env.get("PYTHONPATH")) if part
     )
+    # The harness only needs the app to answer; building every search cache on
+    # import would make start-up slower than the readiness deadline. The first
+    # search builds what it needs, as it does for any cold production worker.
+    env["YABAI_WARM_ON_START"] = "0"
     process = subprocess.Popen(
         [
             sys.executable,
             "-m",
-            "uvicorn",
-            "harness_app:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
+            "gunicorn",
+            "harness_app:application",
+            "--bind",
+            f"127.0.0.1:{port}",
+            "--workers",
+            "1",
+            "--threads",
+            "4",
+            "--timeout",
+            "30",
             "--log-level",
             "warning",
         ],

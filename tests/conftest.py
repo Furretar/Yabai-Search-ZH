@@ -15,7 +15,7 @@ os.environ.setdefault("YABAI_SQL_LOG", "0")
 # selection test timing-flaky. The app's own tests do not need it.
 os.environ.setdefault("YABAI_WARM_LOOKUPS", "0")
 # Keep the test client's startup fast and deterministic; the page-cache warm-up
-# is measured separately against a real uvicorn process.
+# is measured separately against a real gunicorn process.
 os.environ.setdefault("YABAI_WARM_PAGE_CACHE", "0")
 
 

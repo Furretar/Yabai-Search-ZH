@@ -1,4 +1,4 @@
-"""Request middleware ported from the FastAPI app and deploy/guard.py."""
+"""Request middleware: the Django replacement for the old FastAPI guard."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from accounts import writer
 from yabai_search import perf_debug as pd
 
 # Private ranges that may reach the origin without the shared secret: the home
-# LAN and Tailscale (same list as the old deploy/guard.py).
+# LAN and Tailscale.
 _PRIVATE_NETS = tuple(
     ipaddress.ip_network(net)
     for net in (

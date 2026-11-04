@@ -233,6 +233,13 @@ This method is mostly accurate, but the Taiwanese readings displayed are not gua
 
 ---
 
+## Hosting
+Yabai Search is currently hosted locally on various devices, including a laptop, desktop, and android tablets. You can view the current host in the hamburger menu in the top-right. The host with lowest latency is chosen as the global host. Each user will probe each host and be redirected to the fastest host from their location, the local host. To avoid conflicts when making accounts, users will be redirected to the global host when signing up.
+
+The local host will change if another host is at least 20% faster for longer than 30 seconds. The global host wil change if another host is at least 20% faster for longer than 5 minutes, with a cooldown of 30 minutes. The cooldowns will be ignored if the global host takes longer than 3 seconds to respond. The global host will be switched immediately if it doesn't respond for 10 seconds. The hosts must be synced before switching.
+
+---
+
 ### Todo
 - Add character search and stroke order in the details page, mainland and taiwan
 - check for security issues

@@ -249,8 +249,8 @@ lines once the separate tablet tunnel is live.
 
 - Termux `cloudflared` result (section 4.4) decides whether the tablet can
   join at all.
-- Whether the tablet's pinned older fastapi needs any change for
-  `deploy/guard.py`: it uses only plain ASGI, so it should not.
+- Whether the tablet's older dependencies need any change: the shared-secret
+  guard is now Django middleware, so they should not.
 - The 800 ms hedge is a guess; tune `HEDGE_MS` in `wrangler.toml` after
   watching `X-Origin` for a few days.
 

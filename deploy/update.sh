@@ -33,8 +33,8 @@ fi
 
 # Ask the supervisor loop (run.sh) to restart by stopping the app process.
 restart() {
-    if [ -f deploy/run/uvicorn.pid ] && kill -0 "$(cat deploy/run/uvicorn.pid)" 2>/dev/null; then
-        kill "$(cat deploy/run/uvicorn.pid)"
+    if [ -f deploy/run/gunicorn.pid ] && kill -0 "$(cat deploy/run/gunicorn.pid)" 2>/dev/null; then
+        kill "$(cat deploy/run/gunicorn.pid)"
     fi
 }
 

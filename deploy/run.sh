@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Keep the app running, restarting it whenever it exits.
 #
-# Usage: deploy/run.sh <role>      role = laptop | tablet | tabs | tabs2 | galaxy-tab-s | galaxy-tab-s2 | dev
+# Usage: deploy/run.sh <role>      role = laptop | tablet | tabs | tabs2 | tabs5e | galaxy-tab-s | galaxy-tab-s2 | dev
 #
 # laptop and the tablets run behind the shared-secret gate
 # (OriginSecretMiddleware, active when YABAI_ORIGIN_SECRET is set) on port 8000.
@@ -10,7 +10,7 @@
 # DJANGO_SECRET_KEY is required.
 set -u
 
-ROLE="${1:?usage: run.sh laptop|tablet|tabs|tabs2|galaxy-tab-s|galaxy-tab-s2|dev}"
+ROLE="${1:?usage: run.sh laptop|tablet|tabs|tabs2|tabs5e|galaxy-tab-s|galaxy-tab-s2|dev}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -27,7 +27,7 @@ case "$ROLE" in
         # The dev copy sits behind Cloudflare Access, not the Worker's secret.
         unset YABAI_ORIGIN_SECRET
         ;;
-    laptop | tablet | tabs | tabs2 | galaxy-tab-s | galaxy-tab-s2)
+    laptop | tablet | tabs | tabs2 | tabs5e | galaxy-tab-s | galaxy-tab-s2)
         PORT="${PORT:-8000}"
         ;;
     *)
@@ -39,6 +39,8 @@ esac
 # gunicorn runs the Django app; threads (not async) keep searches concurrent.
 APP="yabai_site.wsgi:application"
 THREADS="${YABAI_THREADS:-8}"
+# Slow 32-bit tablets need a longer worker timeout for the pure-Python OpenCC.
+TIMEOUT="${YABAI_TIMEOUT:-60}"
 # A tablet can expose the app on its LAN/Tailscale address with YABAI_BIND=0.0.0.0.
 BIND="${YABAI_BIND:-127.0.0.1}"
 
@@ -59,6 +61,7 @@ if [ -z "${YABAI_SERVED_BY:-}" ]; then
         tablet) YABAI_SERVED_BY="galaxy tab s5e" ;;
         tabs | galaxy-tab-s) YABAI_SERVED_BY="galaxy tab s" ;;
         tabs2 | galaxy-tab-s2) YABAI_SERVED_BY="galaxy tab s2" ;;
+        tabs5e) YABAI_SERVED_BY="galaxy tab s5e" ;;
         *) YABAI_SERVED_BY="$ROLE" ;;
     esac
 fi
@@ -138,9 +141,9 @@ while true; do
 
     # Bind to localhost only: cloudflared runs on the same machine.
     "${LAUNCH[@]}" "$APP" --bind "$BIND:$PORT" --workers 1 \
-        --worker-class gthread --threads "$THREADS" --timeout 60 &
+        --worker-class gthread --threads "$THREADS" --timeout "$TIMEOUT" &
     CHILD=$!
-    echo "$CHILD" > deploy/run/uvicorn.pid
+    echo "$CHILD" > deploy/run/gunicorn.pid
     wait "$CHILD"
     echo "app exited, restarting in 2s" >&2
     sleep 2
