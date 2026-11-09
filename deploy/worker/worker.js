@@ -43,10 +43,18 @@ async function coordinator(env, path, body) {
   return res.json();
 }
 
-// Reads may use a copy up to 10 seconds old (kept per Worker instance).
+// Reads may use a copy up to 30 seconds old (kept per Worker instance). The
+// value only picks a host and names the writer, and a read sent to a host that
+// has just stopped being the writer still works, so 30 s is safe. It matters
+// because every miss is one billed Durable Object request.
+const STATE_MS = 30000;
 let cached = null;
+// Test-only: forget the cached state (a real Worker instance keeps it in memory).
+export function resetStateCache() {
+  cached = null;
+}
 async function readState(env) {
-  if (cached && Date.now() - cached.at < 10000) return cached.value;
+  if (cached && Date.now() - cached.at < STATE_MS) return cached.value;
   try {
     const value = await coordinator(env, "/state");
     cached = { at: Date.now(), value };
@@ -238,12 +246,14 @@ async function controlState(request, env, cfg) {
   if (!safeEqual(request.headers.get("X-Origin-Secret"), env.ORIGIN_SECRET)) {
     return new Response("Forbidden", { status: 403 });
   }
-  try {
-    const s = await coordinator(env, "/state");
-    return json({ writer: s.writer, epoch: s.epoch, url: hostUrl(cfg, s.writer) });
-  } catch {
-    return unavailable("coordinator unavailable", "5");
-  }
+  // Use the cached copy: every host polls this route every few seconds just to
+  // learn who the writer is, and a direct call here bills one Durable Object
+  // request per poll. A few seconds of staleness is harmless because a host
+  // only raises its epoch from this answer (it never lowers it) and a pull from
+  // the previous writer still carries valid data.
+  const s = await readState(env);
+  if (!s) return unavailable("coordinator unavailable", "5");
+  return json({ writer: s.writer, epoch: s.epoch, url: hostUrl(cfg, s.writer) });
 }
 
 export default {

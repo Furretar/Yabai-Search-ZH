@@ -2,7 +2,7 @@
 // Run: node --test deploy/worker/test/
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker from "../worker.js";
+import worker, { resetStateCache } from "../worker.js";
 import { Coordinator } from "../coordinator.js";
 
 const SECRET = "origin-secret";
@@ -13,6 +13,7 @@ const env0 = {
 
 // A fake Durable Object platform: one Coordinator, in-memory storage.
 function makeEnv(overrides = {}) {
+  resetStateCache(); // each test starts with an empty per-instance /state cache
   const store = new Map();
   let alarm = null;
   const ctx = {
@@ -25,6 +26,7 @@ function makeEnv(overrides = {}) {
   const env = { ...env0, ...overrides };
   const dobj = new Coordinator(ctx, env);
   env.COORDINATOR = { idFromName: () => "id", get: () => ({ fetch: (u, i) => dobj.fetch(new Request(u, i)) }) };
+  env.__dobj = dobj; // so a test can call tick() and alarmDelay() directly
   return env;
 }
 
@@ -119,6 +121,17 @@ test("/__repl/ is never reachable on the public domain; /__control/state needs t
   assert.equal((await worker.fetch(req("/__control/state"), env)).status, 403);
   const ok = await worker.fetch(req("/__control/state", { headers: { "X-Origin-Secret": SECRET } }), env);
   assert.deepEqual(await ok.json(), { writer: "laptop", epoch: 1, url: "https://laptop.yabaisearch.org" });
+});
+
+test("an offline non-writer host does not shorten the probe delay, but a failing writer does", async () => {
+  const net = fakeNet();
+  const env = makeEnv({ PROBE_MS: "15000", FAILING_PROBE_MS: "10000" });
+  net.down.add("tablet"); // a second host is switched off; the writer is healthy
+  await worker.fetch(req("/"), env);
+  assert.equal(env.__dobj.alarmDelay(), 15000);
+  net.down.add("laptop"); // now the writer itself is failing
+  await env.__dobj.tick();
+  assert.equal(env.__dobj.alarmDelay(), 10000);
 });
 
 test("/__probe times each host and names the writer", async () => {

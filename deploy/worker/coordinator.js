@@ -154,11 +154,21 @@ export class Coordinator {
     return new Response("Not found", { status: 404 });
   }
 
-  // Keep probing while the site is in use; faster while a host is failing.
+  // How long to wait before the next probe round. One round is one billed
+  // Durable Object request, and the free plan allows 100,000 a day, so it is
+  // deliberately unhurried: a round already probes every host, so a host that
+  // is merely switched off (a PC or tablet) costs nothing extra beyond being
+  // in that round. Only a failing WRITER earns faster probing, because that is
+  // the one failure that has to fail over within DEAD_MS.
+  alarmDelay() {
+    const w = this.health[this.s.writer];
+    return w && w.failSince !== null ? this.cfg.failingProbeMs : this.cfg.probeMs;
+  }
+
+  // Keep probing while the site is in use; faster while the writer is failing.
   async alarm() {
     await this.tick();
     if (Date.now() - this.lastTouch > ACTIVE_MS) return; // idle: the next request re-arms
-    const failing = this.cfg.hosts.some((n) => this.health[n] && this.health[n].failSince !== null);
-    await this.ctx.storage.setAlarm(Date.now() + (failing ? 1000 : this.cfg.probeMs));
+    await this.ctx.storage.setAlarm(Date.now() + this.alarmDelay());
   }
 }

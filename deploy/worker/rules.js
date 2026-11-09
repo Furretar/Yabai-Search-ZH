@@ -22,7 +22,8 @@ export function config(env = {}) {
     deadMs: num(env.DEAD_MS, 10000), // no answer for this long means dead
     margin: num(env.MARGIN, 0.2), // "faster" means at least this much faster
     holdMs: num(env.HOLD_MS, 25000), // a write waits this long for a writer
-    probeMs: num(env.PROBE_MS, 5000), // seconds between probes while active
+    probeMs: num(env.PROBE_MS, 15000), // ms between probe rounds while active
+    failingProbeMs: num(env.FAILING_PROBE_MS, 10000), // ... while the writer is failing
     hedgeMs: num(env.HEDGE_MS, 800), // read hedging delay
     writeTimeoutMs: num(env.WRITE_TIMEOUT_MS, 15000),
   };

@@ -31,6 +31,14 @@ test("median and probe recording", () => {
   assert.equal(h.failSince, null);
 });
 
+test("probe budget: a probe round is unhurried, because each one is a billed request", () => {
+  const d = config({});
+  assert.equal(d.probeMs, 15000);
+  assert.equal(d.failingProbeMs, 10000);
+  // One round every 15 s is 5,760 requests a day, well inside the free 100,000.
+  assert.ok(86_400_000 / d.probeMs < 7000);
+});
+
 test("isWrite: only unsafe methods on account paths", () => {
   const p = cfg.writePrefixes;
   assert.ok(isWrite("POST", "/accounts/signup/", p));

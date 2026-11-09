@@ -37,7 +37,8 @@ SLOW_MS = "3000"      # writer median above this ignores the lock
 DEAD_MS = "10000"     # no answer for this long: move at once
 MARGIN = "0.2"        # "faster" means at least 20% faster
 HOLD_MS = "25000"     # a write waits this long for a writer, then 503
-PROBE_MS = "5000"     # time between probes while the site is in use
+PROBE_MS = "15000"    # time between probe rounds while the site is in use
+FAILING_PROBE_MS = "10000"  # probe rounds while the writer is failing
 HEDGE_MS = "800"      # read hedging delay
 
 # Secrets are NOT stored here. Set them once with:

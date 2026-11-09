@@ -117,10 +117,14 @@ Limits to know about:
 - If the DO's storage is ever wiped its epoch restarts at 1 and hosts refuse
   writes. Delete `data/writer-epoch` on every host.
 - Free plan budget: 100k Worker requests/day, and the DO has 100k requests/day and
-  13,000 GB-s/day (alarms count as requests). Probing every 5 s only while the site
-  is in use is about 17k/day at the very most. Each open tab adds one `/__probe`
-  per 15 s; raise `EVERY_MS` in `hosts.js` if that matters.
-- Reads with the cookie set never wait on the DO (state is cached 10 s).
+  13,000 GB-s/day (alarms count as requests). A probe round is one DO request, so
+  rounds run every `PROBE_MS` (15 s = 5,760/day) and every `FAILING_PROBE_MS`
+  (10 s) only while the writer is failing. A host that is merely switched off is
+  still probed in each round but does not shorten the delay: with the old 1 s
+  "any host failing" delay, three offline hosts cost 86k requests a day by
+  themselves and nearly exhausted the free tier. Each open tab adds one
+  `/__probe` per 15 s; raise `EVERY_MS` in `hosts.js` if that matters.
+- Reads with the cookie set never wait on the DO (state is cached 30 s).
 
 ## 5. Cloudflare setup (once)
 
