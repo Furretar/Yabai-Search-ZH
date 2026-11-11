@@ -15,7 +15,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # Where the other copies live. Override in deploy/release.env.
-LAPTOP_DIR="$HOME/yabai-laptop"
+LAPTOP_DIR="$HOME/Desktop/projects/yabai-laptop"
 TABLET_SSH="u0_a249@127.0.0.1"
 TABLET_ADB="192.168.188.105:5555"
 TABLET_PORT=8022

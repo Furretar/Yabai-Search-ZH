@@ -1,13 +1,14 @@
 # Laptop only (the tablet has no systemd; start run.sh from Termux:Boot).
 # One template, two instances:
 #   systemctl --user enable --now yabai-app@laptop yabai-app@dev
-# %i is the role. yabai-app@laptop runs the ~/yabai-laptop clone; the dev
-# instance is pointed at ~/Documents/Yabai-Search by its .d/override.conf.
+# %i is the role. yabai-app@laptop runs the ~/Desktop/projects/yabai-laptop clone; the
+# dev instance is pointed at ~/Desktop/ai/yabai-dev by its .d/override.conf. On the NixOS
+# laptop the units come from /etc/nixos/programs/yabai-search instead of this file.
 [Unit]
 Description=Yabai Search app (%i)
 
 [Service]
-ExecStart=%h/yabai-%i/deploy/run.sh %i
+ExecStart=%h/Desktop/projects/yabai-%i/deploy/run.sh %i
 Restart=always
 RestartSec=3
 

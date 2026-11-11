@@ -12,7 +12,7 @@ visitor
   v
 Cloudflare Worker  (yabaisearch.org, www.yabaisearch.org)
   |  laptop first; tablet if laptop fails or is slow (GET/HEAD)
-  +--> laptop.yabaisearch.org --> tunnel "yabai-laptop" --> laptop  ~/yabai-laptop  :8000
+  +--> laptop.yabaisearch.org --> tunnel "yabai-laptop" --> laptop  ~/Desktop/projects/yabai-laptop  :8000
   +--> tablet.yabaisearch.org --> tunnel "yabai-tablet" --> tablet  ~/yabai-search  :8000
 
 you
@@ -28,7 +28,7 @@ Three copies of the code:
 | Copy | Machine | Folder | Port | Purpose |
 |---|---|---|---|---|
 | dev | laptop | `~/Documents/Yabai-Search` | 8001 | where you and Claude make changes |
-| laptop | laptop | `~/yabai-laptop` | 8000 | serves the public site |
+| laptop | laptop | `~/Desktop/projects/yabai-laptop` | 8000 | serves the public site |
 | tablet | tablet | `~/yabai-search` | 8000 | serves as backup |
 
 The serving copies are never edited. They only receive code from GitHub.
@@ -76,7 +76,7 @@ Do these in order. Each step has a check.
 
 ### 4.1 Secret
 Pick a long random string (`openssl rand -hex 32`). It goes in three places:
-the Worker, `~/yabai-laptop/deploy/env.local`, and the tablet's
+the Worker, `~/Desktop/projects/yabai-laptop/deploy/env.local`, and the tablet's
 `~/yabai-search/deploy/env.local`:
 
 ```
@@ -96,12 +96,12 @@ The working copy is the git checkout itself, kept in
 `~/Documents/Yabai-Search`; the dev unit serves it on :8001. Only the public
 site needs a separate clone:
 ```
-git clone <repo> ~/yabai-laptop
+git clone <repo> ~/Desktop/projects/yabai-laptop
 ```
 Then `uv sync` in both. Copy `data/` (it is gitignored), for example
-`cp -r ~/Documents/Yabai-Search/data ~/yabai-laptop/data`.
+`cp -r ~/Documents/Yabai-Search/data ~/Desktop/projects/yabai-laptop/data`.
 Add the `deploy/` folder from this kit to the repo, commit and push it from the
-working copy, then `git pull` in `~/yabai-laptop` and on the tablet.
+working copy, then `git pull` in `~/Desktop/projects/yabai-laptop` and on the tablet.
 
 ### 4.3 Laptop tunnels
 ```
@@ -143,10 +143,10 @@ the log.
 Laptop:
 ```
 mkdir -p ~/.config/systemd/user
-cp ~/yabai-laptop/deploy/systemd/*.service ~/.config/systemd/user/
+cp ~/Desktop/projects/yabai-laptop/deploy/systemd/*.service ~/.config/systemd/user/
 # The dev instance is pointed at the working copy by these drop-ins.
-cp -r ~/yabai-laptop/deploy/systemd/yabai-app@dev.service.d \
-      ~/yabai-laptop/deploy/systemd/yabai-tunnel@dev.service.d \
+cp -r ~/Desktop/projects/yabai-laptop/deploy/systemd/yabai-app@dev.service.d \
+      ~/Desktop/projects/yabai-laptop/deploy/systemd/yabai-tunnel@dev.service.d \
       ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now yabai-app@laptop yabai-app@dev yabai-tunnel@laptop yabai-tunnel@dev
@@ -237,7 +237,7 @@ other should be released together. If you change the schema, release with
 ```
 ## Hosting
 - Three copies: ~/Documents/Yabai-Search (edit here, :8001, dev.yabaisearch.org),
-  ~/yabai-laptop (:8000) and the tablet (:8000). Only ~/yabai-laptop and the
+  ~/Desktop/projects/yabai-laptop (:8000) and the tablet (:8000). Only ~/Desktop/projects/yabai-laptop and the
   tablet pull from GitHub; the working copy is the checkout itself.
 - Publish with deploy/release.sh [--data] after committing. See deploy/PLAN.md.
 ```

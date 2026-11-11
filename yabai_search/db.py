@@ -245,8 +245,17 @@ ZHWIKTIONARY_DB_PATH = DATA_DIR / "zhwiktionary.sqlite"
 JPWIKTIONARY_DB_PATH = DATA_DIR / "jpwiktionary.sqlite"
 
 # Path to the Baidu pinyin crawler headwords (300k, CC-CEDICT-unlicensed
-# scrape), built by scripts/import_baidu.py. Contributes a source chip only.
+# scrape), built by data/baidu/scripts/import_baidu.py. Contributes a source chip only.
 BAIDU_DB_PATH = DATA_DIR / "baidu.sqlite"
+
+# Path to the Chinese parts of the Unicode Han Database (Unihan: per-character readings,
+# English glosses, variants, strokes), built by scripts/import_unihan.py. Unicode License V3.
+UNIHAN_DB_PATH = DATA_DIR / "unihan.sqlite"
+
+# The usual Mandarin reading of a character: kMandarin lists the most common one first,
+# separated from the others by a space.
+_UNIHAN_PINYIN = ("CASE instr(mandarin, ' ') WHEN 0 THEN mandarin "
+                  "ELSE substr(mandarin, 1, instr(mandarin, ' ') - 1) END")
 
 # Path to the SUBTLEX-CH word frequencies (Cai & Brysbaert, 2010), built by
 # scripts/import_subtlex.py.
@@ -798,6 +807,38 @@ _SOURCE_QUERIES = [
                             "WHERE word IN ({ph})",
         "pinyin_rows_sql": "SELECT word, word, '' FROM headwords "
                            "WHERE word <> ''",
+        "split_pinyin": False,
+        "count_sql": "SELECT COUNT(*) FROM headwords",
+    },
+    {
+        # Single characters only: Unihan has no words. Senses are its short English glosses.
+        "label": "Unihan",
+        "anchor": "unihan",
+        "lang": "english",
+        "database": UNIHAN_DB_PATH,
+        "sql": "SELECT DISTINCT word FROM headwords WHERE word IN ({ph})",
+        "like_sql": "SELECT DISTINCT word FROM headwords "
+                    "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        # A character can have several variant forms; the first one listed is the usual one.
+        "prefix_sql": "SELECT h.word, COALESCE(substr(c.traditional, 1, 1), h.word) "
+                      "AS traditional, "
+                      "COALESCE(substr(c.simplified, 1, 1), h.word) AS simplified, "
+                      f"COALESCE({_UNIHAN_PINYIN}, '') AS pinyin "
+                      "FROM headwords h LEFT JOIN chars c ON c.word = h.word "
+                      "WHERE h.word LIKE ? ESCAPE '\\'",
+        "head_fts_sql": "SELECT DISTINCT word FROM headwords "
+                        "WHERE word LIKE ? ESCAPE '\\'",
+        "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "repeat": 1,
+        "sense_sql": _SENSES_SQL,
+        "cls_sql": _CLASSIFIERS_SQL,
+        "forms_sql": None,
+        "pinyin_sql": f"SELECT {_UNIHAN_PINYIN} FROM chars "
+                      "WHERE word = ? AND mandarin IS NOT NULL LIMIT 1",
+        "pinyin_batch_sql": f"SELECT word, {_UNIHAN_PINYIN} FROM chars "
+                            "WHERE word IN ({ph}) AND mandarin IS NOT NULL",
+        "pinyin_rows_sql": f"SELECT word, word, {_UNIHAN_PINYIN} FROM chars "
+                           "WHERE mandarin IS NOT NULL",
         "split_pinyin": False,
         "count_sql": "SELECT COUNT(*) FROM headwords",
     },

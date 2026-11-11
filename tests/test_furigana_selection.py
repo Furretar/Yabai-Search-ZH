@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -360,8 +361,13 @@ def search_server():
 
 
 def _dump_report(url: str, tmp_path: Path) -> dict:
-    """Run one harness in headless Chromium and return its JSON report."""
-    result = subprocess.run(
+    """Run one harness in headless Chromium and return its JSON report.
+
+    Some Chromium builds print the DOM and then never exit (seen on this NixOS host:
+    even a one-line page hangs until killed), so waiting for the process to end timed
+    every test out. Instead, read the output until the page is complete, then stop it.
+    """
+    process = subprocess.Popen(
         [
             CHROMIUM,
             "--headless=new",
@@ -374,15 +380,30 @@ def _dump_report(url: str, tmp_path: Path) -> dict:
             "--dump-dom",
             url,
         ],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         text=True,
-        timeout=14,
     )
+    # Hard limit even if Chromium prints nothing: killing it closes stdout, ending the loop.
+    timer = threading.Timer(14, process.kill)
+    timer.start()
+    chunks: list[str] = []
+    try:
+        assert process.stdout is not None
+        # --dump-dom writes the whole document at once, ending with </html>.
+        for line in process.stdout:
+            chunks.append(line)
+            if "</html>" in line:
+                break
+    finally:
+        timer.cancel()
+        process.kill()
+        process.wait(timeout=5)
 
-    dom = result.stdout
+    dom = "".join(chunks)
     marker = '<pre id="out">'
     start = dom.find(marker)
-    assert start != -1, result.stderr
+    assert start != -1, "Chromium returned no report page"
     end = dom.find("</pre>", start)
     payload = dom[start + len(marker) : end]
 

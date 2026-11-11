@@ -13,7 +13,7 @@ memory at runtime - no per-request disk access.
 
 # Search language -> every dictionary anchor in that language category.
 DEFAULTS: dict[str, list[str]] = {
-    "EN": ["cedict", "wiktionary"],
+    "EN": ["cedict", "wiktionary", "unihan"],
     "ZH": ["zhwiktionary", "baidu"],
     "TW": ["moe", "moe_revised"],
     "JP": ["jpwiktionary"],
