@@ -9,7 +9,7 @@ and then throw CEDICT rows away.
 
 Usage:
     nix develop ~/Documents/Yabai-Search -c .venv/bin/python \
-        scripts/build_source_gloss.py
+        scripts/generate-indexes-optimizations/build_source_gloss.py
 """
 from __future__ import annotations
 
@@ -19,15 +19,17 @@ import sqlite3
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from yabai_search.db import to_simplified  # noqa: E402
 
 CEDICT = ROOT / "data" / "cedict.sqlite"
 WIKTIONARY = ROOT / "data" / "wiktionary.sqlite"
-OUT = ROOT / "data" / "source_gloss.sqlite"
-TEMP_OUT = ROOT / "data" / "source_gloss.sqlite.tmp"
+# Derived indexes live in db.GENERATED_DIR, not in data/ itself.
+GENERATED = ROOT / "data" / "generated-indexes-optimizations"
+OUT = GENERATED / "source_gloss.sqlite"
+TEMP_OUT = GENERATED / "source_gloss.sqlite.tmp"
 
 
 def main() -> None:

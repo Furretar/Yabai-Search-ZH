@@ -14,7 +14,7 @@ Rebuild whenever a source database, overrides.py or the Taiwan-reading logic in
 db.py changes (see AGENTS.md). The stored signature makes the server report a
 stale table at startup.
 
-    python scripts/build_taiwan_readings.py [--output PATH] [--samples N]
+    python scripts/generate-indexes-optimizations/build_taiwan_readings.py [--output PATH] [--samples N]
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from yabai_search import db  # noqa: E402
 from yabai_search.overrides import TAIWAN_READINGS  # noqa: E402
@@ -51,29 +51,23 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 
 def moe_readings() -> dict[str, list[str]]:
-    """{word: [Taiwan readings]} from both MOE databases, in one pass."""
+    """{word: [Taiwan readings]} from both MOE dictionaries, in one pass."""
     by_word: dict[str, list[str]] = {}
-    for path in db._moe_db_paths():
-        connection = db._connect(path)
-        try:
-            for word, pinyin in connection.execute(
-                "SELECT DISTINCT word, pinyin FROM moe WHERE pinyin <> ''"
-            ):
-                options = by_word.setdefault(word, [])
-                if pinyin not in options:
-                    options.append(pinyin)
-        finally:
-            connection.close()
+    for word, pinyin in db._moe_query(
+        "SELECT DISTINCT word, pinyin FROM @moe WHERE pinyin <> ''"
+    ):
+        options = by_word.setdefault(word, [])
+        if pinyin not in options:
+            options.append(pinyin)
     return by_word
 
 
 def source_rows(anchor: str):
     """Yield (word, simplified, marked reading, english_normalized) for a source."""
     source = next(item for item in db._SOURCE_QUERIES if item["anchor"] == anchor)
-    path = source["database"]
-    if not path.exists():
+    if not db._source_present(source):
         return
-    connection = db._connect(path)
+    connection = db._connect(source["database"])
     try:
         if anchor == "cedict":
             sql = (

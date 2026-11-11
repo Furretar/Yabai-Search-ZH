@@ -15,7 +15,7 @@ lookup. The candidates are exact (they contain the query), and the app still
 re-checks with LIKE before including them, so results do not change.
 
 Usage (from the project root):
-    uv run python -m scripts.import_gram_words
+    uv run python scripts/generate-indexes-optimizations/import_gram_words.py
 """
 
 from __future__ import annotations
@@ -25,11 +25,14 @@ import os
 import sqlite3
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "data" / "gram_words.sqlite"
-TEMP_PATH = ROOT / "data" / "gram_words.sqlite.tmp"
-MOE_DB = ROOT / "data" / "moe.sqlite"
-MOE_REVISED_DB = ROOT / "data" / "moe_revised.sqlite"
+ROOT = Path(__file__).resolve().parents[2]
+# Derived indexes live in db.GENERATED_DIR, not in data/ itself.
+GENERATED = ROOT / "data" / "generated-indexes-optimizations"
+DB_PATH = GENERATED / "gram_words.sqlite"
+TEMP_PATH = GENERATED / "gram_words.sqlite.tmp"
+# One file holds both MOE dictionaries (concise: plain tables, comprehensive: rev_ tables).
+MOE_DB = ROOT / "data" / "moe-taiwan" / "moe.sqlite"
+MOE_REVISED_DB = MOE_DB
 WIKTIONARY_DB = ROOT / "data" / "wiktionary.sqlite"
 ZHWIKTIONARY_DB = ROOT / "data" / "zhwiktionary.sqlite"
 JPWIKTIONARY_DB = ROOT / "data" / "jpwiktionary.sqlite"
@@ -145,8 +148,14 @@ def build() -> None:
     if MOE_REVISED_DB.exists():
         source = sqlite3.connect(MOE_REVISED_DB)
         try:
-            for (word,) in source.execute("SELECT DISTINCT word FROM moe ORDER BY word"):
-                add_word("moe_revised_head", word)
+            has_revised = source.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rev_moe'"
+            ).fetchone()
+            if has_revised:
+                for (word,) in source.execute(
+                    "SELECT DISTINCT word FROM rev_moe ORDER BY word"
+                ):
+                    add_word("moe_revised_head", word)
         finally:
             source.close()
     if ZHWIKTIONARY_DB.exists():

@@ -3,11 +3,11 @@
 
 Unihan is Unicode's per-character data for about 103,000 CJK ideographs: readings,
 English glosses, variants, radicals and stroke counts. It holds no words, only single
-characters. scripts/import_unihan.py turns the Chinese parts of it into data/unihan.sqlite.
+characters. scripts/create-dict-db/import_unihan.py turns the Chinese parts of it into data/unihan.sqlite.
 
 Usage (from the project root):
-    uv run python -m scripts.download_unihan           # skip if already downloaded
-    uv run python -m scripts.download_unihan --force   # fetch the latest again
+    uv run python scripts/download-dictionaries/download_unihan.py           # skip if already downloaded
+    uv run python scripts/download-dictionaries/download_unihan.py --force   # fetch the latest again
 
 Licence: Unicode License V3 (https://www.unicode.org/license.txt). Redistribution is
 allowed as long as the copyright and permission notice goes with the data or its docs.
@@ -23,7 +23,7 @@ from pathlib import Path
 
 # "latest" always points at the newest Unicode version, so this keeps working across releases.
 URL = "https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip"
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "unihan" / "Unihan.zip"
 
 

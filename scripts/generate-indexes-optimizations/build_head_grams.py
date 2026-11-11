@@ -9,7 +9,7 @@ before applying the exact LIKE test.
 
 Usage:
     nix develop ~/Documents/Yabai-Search -c .venv/bin/python \
-        scripts/build_head_grams.py
+        scripts/generate-indexes-optimizations/build_head_grams.py
 """
 from __future__ import annotations
 
@@ -18,10 +18,12 @@ import os
 import sqlite3
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 CEDICT = ROOT / "data" / "cedict.sqlite"
-OUT = ROOT / "data" / "head_grams.sqlite"
-TEMP_OUT = ROOT / "data" / "head_grams.sqlite.tmp"
+# Derived indexes live here (db.GENERATED_DIR), not in data/ itself.
+GENERATED = ROOT / "data" / "generated-indexes-optimizations"
+OUT = GENERATED / "head_grams.sqlite"
+TEMP_OUT = GENERATED / "head_grams.sqlite.tmp"
 
 
 def main() -> None:

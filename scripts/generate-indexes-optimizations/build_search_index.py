@@ -14,7 +14,7 @@ index takes a second or two and uses much less memory.
 Run this after importing or changing any dictionary source. If it is missing
 or stale the app still works: it falls back to building the lists on first use.
 
-    uv run python scripts/build_search_index.py [--path FILE]
+    uv run python scripts/generate-indexes-optimizations/build_search_index.py [--path FILE]
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ import sys
 import time
 from pathlib import Path
 
-# Run as `python scripts/build_search_index.py`, so add the repository root.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Run as `python scripts/generate-indexes-optimizations/build_search_index.py`, so add the repository root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from yabai_search import db  # noqa: E402
 

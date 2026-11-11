@@ -6,11 +6,11 @@ This scrapes the current link from that page and downloads it, so it keeps
 working across version bumps.
 
 Usage (from the project root):
-    uv run python -m scripts.download_moe            # 國語辭典簡編本 (default)
-    uv run python -m scripts.download_moe revised    # 重編國語辭典修訂本
-    uv run python -m scripts.download_moe mini       # 國語小字典
-    uv run python -m scripts.download_moe idioms     # 成語典
-    uv run python -m scripts.download_moe revised --pics
+    uv run python scripts/download-dictionaries/download_moe.py            # 國語辭典簡編本 (default)
+    uv run python scripts/download-dictionaries/download_moe.py revised    # 重編國語辭典修訂本
+    uv run python scripts/download-dictionaries/download_moe.py mini       # 國語小字典
+    uv run python scripts/download-dictionaries/download_moe.py idioms     # 成語典
+    uv run python scripts/download-dictionaries/download_moe.py revised --pics
         # also fetch the 字圖 zip (glyph images for characters Unicode can't
         # represent, referenced in definitions as &8ff0._104_0.gif;)
 
@@ -33,8 +33,9 @@ PAGES = {
     "mini": "dict_mini_download.html",
     "idioms": "dict_idiomsdict_download.html",
 }
-ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / "data" / "moe-taiwan"
+ROOT = Path(__file__).resolve().parents[2]
+# Raw downloads only; scripts/create-dict-db/import_moe.py builds data/moe-taiwan/moe.sqlite from them.
+OUT_DIR = ROOT / "data" / "dl-base-dictionaries"
 
 # Links to downloadable zips on a dictionary's page, e.g. "download/..._2014_20260929.zip".
 ZIP_RE = re.compile(r'href="(download/[^"]+\.zip)"')

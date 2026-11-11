@@ -6,12 +6,12 @@ unigram (1-character query) or bigram (longer query) of a query is missing, the
 substring cannot occur, so the expensive scan is skipped. It never causes a
 false negative: a missing gram means the scan would have found nothing.
 
-Sources are MOE's and Chinese Wiktionary's sense texts and English
+Sources are both MOE dictionaries' and Chinese Wiktionary's sense texts and English
 Wiktionary's glosses, matching _source_definition_entries(). The output is one
 `grams` table; the app loads it as an in-memory set once per process.
 
 Usage (from the project root):
-    uv run python -m scripts.import_definition_grams
+    uv run python scripts/generate-indexes-optimizations/import_definition_grams.py
 """
 
 from __future__ import annotations
@@ -19,12 +19,20 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "data" / "definition_grams.sqlite"
-MOE_DB = ROOT / "data" / "moe.sqlite"
+ROOT = Path(__file__).resolve().parents[2]
+# Derived indexes live in db.GENERATED_DIR, not in data/ itself.
+DB_PATH = ROOT / "data" / "generated-indexes-optimizations" / "definition_grams.sqlite"
+MOE_DB = ROOT / "data" / "moe-taiwan" / "moe.sqlite"  # both MOE dictionaries
 WIKTIONARY_DB = ROOT / "data" / "wiktionary.sqlite"
 ZHWIKTIONARY_DB = ROOT / "data" / "zhwiktionary.sqlite"
 JPWIKTIONARY_DB = ROOT / "data" / "jpwiktionary.sqlite"
+
+
+
+def moe_sense_tables(source: sqlite3.Connection) -> list[str]:
+    """Sense tables of the merged MOE database: concise `senses`, comprehensive `rev_senses`."""
+    names = {row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    return [table for table in ("senses", "rev_senses") if table in names]
 
 
 def is_han(char: str) -> bool:
@@ -66,8 +74,9 @@ def build() -> None:
     if MOE_DB.exists():
         source = sqlite3.connect(MOE_DB)
         try:
-            for (text,) in source.execute("SELECT text FROM senses WHERE text <> ''"):
-                add_text(text, grams)
+            for table in moe_sense_tables(source):
+                for (text,) in source.execute(f"SELECT text FROM {table} WHERE text <> ''"):
+                    add_text(text, grams)
         finally:
             source.close()
     if WIKTIONARY_DB.exists():

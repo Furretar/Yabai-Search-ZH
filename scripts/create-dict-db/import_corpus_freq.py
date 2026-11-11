@@ -17,8 +17,8 @@ so setting YABAI_FREQ_SOURCE=subtlex restores the SUBTLEX-CH behaviour without
 rebuilding anything.
 
 Usage:
-    uv run python -m scripts.import_corpus_freq
-    uv run python -m scripts.import_corpus_freq --input path/to/combined_merged_all.tsv
+    uv run python scripts/create-dict-db/import_corpus_freq.py
+    uv run python scripts/create-dict-db/import_corpus_freq.py --input path/to/combined_merged_all.tsv
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT = (
     Path.home()
     / "Documents"

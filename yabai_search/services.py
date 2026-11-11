@@ -544,7 +544,7 @@ def warm_caches() -> None:
         print(
             f"WARNING: data/taiwan_readings.sqlite is {taiwan_status}; the Taiwan "
             "toggle falls back to slower, less complete matching. Rebuild it with "
-            "`python scripts/build_taiwan_readings.py` (see AGENTS.md).",
+            "`python scripts/generate-indexes-optimizations/build_taiwan_readings.py` (see AGENTS.md).",
             flush=True,
         )
 

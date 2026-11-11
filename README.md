@@ -246,5 +246,6 @@ The local host will change if another host is at least 20% faster for longer tha
 - add audio to details page
 - add example sentences
 - ai generate missing definitions for jp
+- remove lines like filepaths, check if i should push deploy directory to github 
 
 ---

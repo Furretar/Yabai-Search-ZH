@@ -9,7 +9,7 @@ The table stores two counts per (word, reading):
 Run this after importing CEDICT. If the file is missing or stale the app falls
 back to the live queries, so nothing breaks.
 
-    uv run python scripts/build_sense_counts.py [--path FILE]
+    uv run python scripts/generate-indexes-optimizations/build_sense_counts.py [--path FILE]
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from yabai_search import db  # noqa: E402
 

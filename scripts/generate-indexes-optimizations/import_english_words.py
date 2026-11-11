@@ -9,7 +9,7 @@ digit are skipped: Chinese prose has no word breaks, so it would otherwise land
 as one huge row.
 
 Usage (from the project root):
-    uv run python -m scripts.import_english_words
+    uv run python scripts/generate-indexes-optimizations/import_english_words.py
 """
 
 from __future__ import annotations
@@ -17,15 +17,23 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "data" / "english_words.sqlite"
+ROOT = Path(__file__).resolve().parents[2]
+# Derived indexes live in db.GENERATED_DIR, not in data/ itself.
+DB_PATH = ROOT / "data" / "generated-indexes-optimizations" / "english_words.sqlite"
 CEDICT_DB = ROOT / "data" / "cedict.sqlite"
-MOE_DB = ROOT / "data" / "moe.sqlite"
+MOE_DB = ROOT / "data" / "moe-taiwan" / "moe.sqlite"  # both MOE dictionaries
 WIKTIONARY_DB = ROOT / "data" / "wiktionary.sqlite"
 
 # Characters trimmed from both ends of a token before lowercasing. Must match
 # the strip set in yabai_search/db.py (_ENGLISH_WORD_STRIP).
 _STRIP = " \t\r\n!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~“”‘’「」【】《》…·—–~"
+
+
+
+def moe_sense_tables(source: sqlite3.Connection) -> list[str]:
+    """Sense tables of the merged MOE database: concise `senses`, comprehensive `rev_senses`."""
+    names = {row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    return [table for table in ("senses", "rev_senses") if table in names]
 
 
 def normalize(token: str) -> str:
@@ -59,8 +67,9 @@ def build() -> None:
     if MOE_DB.exists():
         source = sqlite3.connect(MOE_DB)
         try:
-            for (text,) in source.execute("SELECT text FROM senses WHERE text <> ''"):
-                add(text)
+            for table in moe_sense_tables(source):
+                for (text,) in source.execute(f"SELECT text FROM {table} WHERE text <> ''"):
+                    add(text)
         finally:
             source.close()
     if WIKTIONARY_DB.exists():

@@ -12,9 +12,9 @@ classifiers mentioned in the glosses. Each line of the JSONL is one
 word/part-of-speech entry; we keep its CJK `word`.
 
 Usage (from the project root):
-    uv run python -m scripts.import_wiktionary
-    uv run python -m scripts.import_wiktionary --input data/kaikki_zh.jsonl.gz
-    uv run python -m scripts.import_wiktionary --force
+    uv run python scripts/create-dict-db/import_wiktionary.py
+    uv run python scripts/create-dict-db/import_wiktionary.py --input data/kaikki_zh.jsonl.gz
+    uv run python scripts/create-dict-db/import_wiktionary.py --force
 """
 
 from __future__ import annotations
@@ -31,9 +31,13 @@ from pathlib import Path
 
 from opencc import OpenCC
 
-from yabai_search.pinyin import split_pinyin, to_numeric, to_toneless
+# Run as a file (python scripts/create-dict-db/NAME.py), so the project root is not
+# on the import path by default.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-ROOT = Path(__file__).resolve().parents[1]
+from yabai_search.pinyin import split_pinyin, to_numeric, to_toneless  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_URL = "https://kaikki.org/dictionary/Chinese/kaikki.org-dictionary-Chinese.jsonl.gz"
 DEFAULT_CACHE = ROOT / "data" / "dl-base-dictionaries" / "kaikki_zh.jsonl.gz"
 DEFAULT_DB = ROOT / "data" / "wiktionary.sqlite"
@@ -403,7 +407,7 @@ def build(source: Path, db_path: Path) -> None:
     if not CEDICT_DB.exists():
         raise SystemExit(
             f"error: {CEDICT_DB} is required: the readings table precomputes "
-            "CEDICT syllables and coverage. Run scripts.import_cedict first."
+            "CEDICT syllables and coverage. Run scripts/create-dict-db/import_cedict.py first."
         )
     db_path.parent.mkdir(parents=True, exist_ok=True)
     # Full wipe: delete the old DB file so every run starts from scratch.

@@ -2,9 +2,9 @@
 """Build a SQLite dictionary database from the CC-CEDICT text file.
 
 Usage (from the project root):
-    uv run python -m scripts.import_cedict
-    uv run python -m scripts.import_cedict --limit 5000
-    uv run python -m scripts.import_cedict --force
+    uv run python scripts/create-dict-db/import_cedict.py
+    uv run python scripts/create-dict-db/import_cedict.py --limit 5000
+    uv run python scripts/create-dict-db/import_cedict.py --force
 """
 
 from __future__ import annotations
@@ -18,15 +18,19 @@ import time
 import urllib.request
 from pathlib import Path
 
+# Run as a file (python scripts/create-dict-db/NAME.py), so the project root is not
+# on the import path by default.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 # Expand CEDICT abbreviations for the normalized column.
-from yabai_search.overrides import normalize_english
+from yabai_search.overrides import normalize_english  # noqa: E402
 
 # Reuse the pinyin helpers so the database gets the same marked/toneless forms
 # that the search layer computes at query time.
-from yabai_search.pinyin import numeric_to_marked, to_toneless
+from yabai_search.pinyin import numeric_to_marked, to_toneless  # noqa: E402
 
-# Project root is one directory above scripts/.
-ROOT = Path(__file__).resolve().parents[1]
+# Project root is two directories above this file (scripts/create-dict-db/).
+ROOT = Path(__file__).resolve().parents[2]
 # Source file to fetch. The filename is fixed, so this URL always serves MDBG's
 # current CC-CEDICT build (no version/date in the name).
 DEFAULT_URL = (

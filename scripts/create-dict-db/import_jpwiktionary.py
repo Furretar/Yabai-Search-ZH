@@ -6,8 +6,8 @@ definitions. This is the Chinese-to-Japanese direction (the reverse of the
 Japanese sections on zh.wiktionary). Data is CC BY-SA 4.0 and GFDL.
 
 Usage (from the project root):
-    uv run python -m scripts.import_jpwiktionary
-    uv run python -m scripts.import_jpwiktionary --input data/jawiktionary.xml.bz2
+    uv run python scripts/create-dict-db/import_jpwiktionary.py
+    uv run python scripts/create-dict-db/import_jpwiktionary.py --input data/jawiktionary.xml.bz2
 """
 
 from __future__ import annotations
@@ -20,16 +20,21 @@ import sys
 import time
 from pathlib import Path
 
-from scripts.import_zhwiktionary import (
+# Run as a file (python scripts/create-dict-db/NAME.py), so the project root is not
+# on the import path by default.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+# The zh.wiktionary importer sits next to this file, which is on the path when run as a file.
+from import_zhwiktionary import (  # noqa: E402
     CJK_RE,
     HEADING_RE,
     clean_definition,
     download,
     read_pages,
 )
-from yabai_search.pinyin import split_pinyin
+from yabai_search.pinyin import split_pinyin  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_URL = (
     "https://dumps.wikimedia.org/jawiktionary/latest/"
     "jawiktionary-latest-pages-articles.xml.bz2"

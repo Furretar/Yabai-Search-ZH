@@ -6,8 +6,8 @@ GFDL). This reads the official pages-articles XML dump, keeps pages with a
 Chinese (漢語) section, and extracts their `#` definition lines as plain text.
 
 Usage (from the project root):
-    uv run python -m scripts.import_zhwiktionary
-    uv run python -m scripts.import_zhwiktionary --input data/zhwiktionary.xml.bz2
+    uv run python scripts/create-dict-db/import_zhwiktionary.py
+    uv run python scripts/create-dict-db/import_zhwiktionary.py --input data/zhwiktionary.xml.bz2
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from pathlib import Path
 
 from opencc import OpenCC
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_URL = (
     "https://dumps.wikimedia.org/zhwiktionary/latest/"
     "zhwiktionary-latest-pages-articles.xml.bz2"

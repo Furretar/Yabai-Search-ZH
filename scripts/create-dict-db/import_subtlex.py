@@ -7,9 +7,9 @@ authors). The download is a zip with a GB18030-encoded, tab-separated text file
 whose rows are already ordered from most to least frequent.
 
 Usage (from the project root):
-    uv run python -m scripts.import_subtlex
-    uv run python -m scripts.import_subtlex --input data/subtlexchwf.zip
-    uv run python -m scripts.import_subtlex --force
+    uv run python scripts/create-dict-db/import_subtlex.py
+    uv run python scripts/create-dict-db/import_subtlex.py --input data/subtlexchwf.zip
+    uv run python scripts/create-dict-db/import_subtlex.py --force
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_URL = (
     "https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/"
     "subtlexch/subtlexchwf.zip"

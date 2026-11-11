@@ -27,7 +27,7 @@ def test_taiwan_search() -> None:
         project = make_project(Path(tmp))
         # Extra fixture rows: a word only Wiktionary has, and CEDICT's 垃圾桶.
         subprocess.run(
-            [sys.executable, str(project / "scripts" / "build_taiwan_readings.py")],
+            [sys.executable, str(project / "scripts" / "generate-indexes-optimizations" / "build_taiwan_readings.py")],
             check=True,
             capture_output=True,
             env={"PYTHONPATH": str(Path(__file__).parent / "_stubs")},

@@ -7,7 +7,7 @@ does not need that: point the app at small copies instead, where each database
 keeps its schema and the first few rows of every table:
 
     uv run python scripts/build_test_dbs.py
-    YABAI_DATA_DIR=data/dummy uv run python scripts/build_search_index.py
+    YABAI_DATA_DIR=data/dummy uv run python scripts/generate-indexes-optimizations/build_search_index.py
     YABAI_DATA_DIR=data/dummy uv run pytest tests/test_search_optimizations.py
 
 Full-text tables are rebuilt from their content tables, so an indexed search
@@ -32,7 +32,7 @@ DEFAULT_OUTPUT = DEFAULT_SOURCE / "dummy-test-databases"
 
 # These databases are derived from the others. Copying them would leave a stale
 # signature, so rebuild them from the dummy sources instead (the search index
-# with scripts/build_search_index.py, the sense counts below).
+# with scripts/generate-indexes-optimizations/build_search_index.py, the sense counts below).
 DERIVED_DATABASES = {"search_index.sqlite", "sense_counts.sqlite"}
 
 # fts5 keeps its index in these shadow tables. They belong to the virtual table
@@ -61,8 +61,8 @@ SIGNATURE_SOURCES = {
     "source_gloss.sqlite": {"cedict_sha256": "cedict.sqlite"},
     "head_grams.sqlite": {"cedict_sha256": "cedict.sqlite"},
     "gram_words.sqlite": {
-        "source:moe": "moe.sqlite",
-        "source:moe_revised": "moe_revised.sqlite",
+        "source:moe": "moe-taiwan/moe.sqlite",
+        "source:moe_revised": "moe-taiwan/moe.sqlite",
         "source:wiktionary": "wiktionary.sqlite",
         "source:zhwiktionary": "zhwiktionary.sqlite",
         "source:jpwiktionary": "jpwiktionary.sqlite",
@@ -267,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     total = sum(path.stat().st_size for path in args.output.rglob("*.sqlite"))
     print(f"{len(built)} databases, {total / 1024 / 1024:.1f} MB in {args.output}")
     print(
-        "next: YABAI_DATA_DIR={out} uv run python scripts/build_search_index.py".format(
+        "next: YABAI_DATA_DIR={out} uv run python scripts/generate-indexes-optimizations/build_search_index.py".format(
             out=args.output
         )
     )

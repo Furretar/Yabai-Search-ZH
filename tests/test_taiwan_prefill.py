@@ -137,7 +137,7 @@ def test_prefill() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         project = make_project(Path(tmp))
         result = subprocess.run(
-            [sys.executable, str(project / "scripts" / "build_taiwan_readings.py")],
+            [sys.executable, str(project / "scripts" / "generate-indexes-optimizations" / "build_taiwan_readings.py")],
             capture_output=True,
             text=True,
             env={"PYTHONPATH": str(Path(__file__).parent / "_stubs")},

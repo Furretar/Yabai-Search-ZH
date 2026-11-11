@@ -214,21 +214,23 @@ GENERATED_DIR = DATA_DIR / "generated-indexes-optimizations"
 # Path to the generated CEDICT database: <project root>/data/cedict.sqlite.
 DB_PATH = DATA_DIR / "cedict.sqlite"
 
-# Path to the concise MOE dictionary (Taiwan readings), built by
-# scripts/import_moe.py.
+# Path to the merged MOE database (Taiwan readings), built by
+# data/moe-taiwan/import_moe.py. One file holds both dictionaries: the concise
+# 國語辭典簡編本 in the plain tables (moe, senses, examples, classifiers,
+# senses_fts) and the comprehensive 重編國語辭典修訂本 in the same tables with a
+# "rev_" prefix (rev_moe, rev_senses, ...).
 MOE_DB_PATH = DATA_DIR / "moe-taiwan" / "moe.sqlite"
 
-# Path to the comprehensive MOE dictionary (重編國語辭典修訂本), built by
-# scripts/import_moe.py --kind revised.
-MOE_REVISED_DB_PATH = DATA_DIR / "moe-taiwan" / "moe_revised.sqlite"
+# The comprehensive dictionary is in the same file; the name is kept for callers.
+MOE_REVISED_DB_PATH = MOE_DB_PATH
 
 # Path to the prefilled Taiwan readings of every dictionary, built by
-# scripts/build_taiwan_readings.py. Rebuild it whenever a source database, an
+# scripts/generate-indexes-optimizations/build_taiwan_readings.py. Rebuild it whenever a source database, an
 # override in overrides.py or the Taiwan-reading logic below changes (AGENTS.md).
 TAIWAN_DB_PATH = GENERATED_DIR / "taiwan_readings.sqlite"
 
 # Path to the Wiktionary headword list (kaikki.org/Wiktextract), built by
-# scripts/import_wiktionary.py.
+# scripts/create-dict-db/import_wiktionary.py.
 WIKTIONARY_DB_PATH = DATA_DIR / "wiktionary.sqlite"
 SOURCE_GLOSS_DB_PATH = GENERATED_DIR / "source_gloss.sqlite"
 SENSE_COUNTS_DB_PATH = GENERATED_DIR / "sense_counts.sqlite"
@@ -237,11 +239,11 @@ HEAD_GRAMS_DB_PATH = GENERATED_DIR / "head_grams.sqlite"
 _head_grams_ok_cache: bool | None = None
 
 # Path to the Chinese Wiktionary (zh.wiktionary.org) database, built by
-# scripts/import_zhwiktionary.py.
+# scripts/create-dict-db/import_zhwiktionary.py.
 ZHWIKTIONARY_DB_PATH = DATA_DIR / "zhwiktionary.sqlite"
 
 # Japanese definitions from the Japanese sections of the same dump, built by
-# scripts/import_jpwiktionary.py.
+# scripts/create-dict-db/import_jpwiktionary.py.
 JPWIKTIONARY_DB_PATH = DATA_DIR / "jpwiktionary.sqlite"
 
 # Path to the Baidu pinyin crawler headwords (300k, CC-CEDICT-unlicensed
@@ -249,7 +251,7 @@ JPWIKTIONARY_DB_PATH = DATA_DIR / "jpwiktionary.sqlite"
 BAIDU_DB_PATH = DATA_DIR / "baidu.sqlite"
 
 # Path to the Chinese parts of the Unicode Han Database (Unihan: per-character readings,
-# English glosses, variants, strokes), built by scripts/import_unihan.py. Unicode License V3.
+# English glosses, variants, strokes), built by scripts/create-dict-db/import_unihan.py. Unicode License V3.
 UNIHAN_DB_PATH = DATA_DIR / "unihan.sqlite"
 
 # The usual Mandarin reading of a character: kMandarin lists the most common one first,
@@ -258,7 +260,7 @@ _UNIHAN_PINYIN = ("CASE instr(mandarin, ' ') WHEN 0 THEN mandarin "
                   "ELSE substr(mandarin, 1, instr(mandarin, ' ') - 1) END")
 
 # Path to the SUBTLEX-CH word frequencies (Cai & Brysbaert, 2010), built by
-# scripts/import_subtlex.py.
+# scripts/create-dict-db/import_subtlex.py.
 SUBTLEX_DB_PATH = DATA_DIR / "subtlex.sqlite"
 
 # Temporary frequency source built from the FineWeb2 combined list. The old
@@ -273,24 +275,24 @@ FREQ_RANK_COLUMN = "corpus_freq_rank" if FREQ_SOURCE == "corpus" else "freq_rank
 FREQ_LABEL = "FineWeb2 corpus (temporary)" if FREQ_SOURCE == "corpus" else "SUBTLEX-CH"
 FREQ_ANCHOR = "fineweb2-frequency" if FREQ_SOURCE == "corpus" else "subtlex"
 
-# Path to the HSK vocabulary levels, built by scripts/import_hsk.py.
+# Path to the HSK vocabulary levels, built by scripts/create-dict-db/import_hsk.py.
 HSK_DB_PATH = DATA_DIR / "hsk.sqlite"
 
-# Path to the definition word list (scripts/import_english_words.py): the whole
+# Path to the definition word list (scripts/generate-indexes-optimizations/import_english_words.py): the whole
 # words that appear in any dictionary's definitions, used for the English-search
 # hint.
 ENGLISH_WORDS_DB_PATH = GENERATED_DIR / "english_words.sqlite"
 
-# Path to the definition gram index (scripts/import_definition_grams.py): Han
+# Path to the definition gram index (scripts/generate-indexes-optimizations/import_definition_grams.py): Han
 # unigrams/bigrams used to skip definition scans that cannot match.
 DEFINITION_GRAMS_DB_PATH = GENERATED_DIR / "definition_grams.sqlite"
 
-# Path to the Han unigram/bigram inverted index (scripts/import_gram_words.py):
+# Path to the Han unigram/bigram inverted index (scripts/generate-indexes-optimizations/import_gram_words.py):
 # turns 1-2 character CJK queries into one lookup instead of a table scan.
 GRAM_WORDS_DB_PATH = GENERATED_DIR / "gram_words.sqlite"
 _gram_words_ok_cache: bool | None = None
 
-# Path to the prebuilt search index (scripts/build_search_index.py): the "*"
+# Path to the prebuilt search index (scripts/generate-indexes-optimizations/build_search_index.py): the "*"
 # headword list and the source pinyin rows, so a small host does not rebuild
 # them (and does not call OpenCC hundreds of thousands of times) at startup.
 # It is derived data, so it lives with the other generated indexes. The old
@@ -577,7 +579,7 @@ _MOE_REVISED_SENSES_SQL = (
     "SELECT word, position, "
     "CASE WHEN instr(text, '。') > 0 "
     "THEN substr(text, 1, instr(text, '。')) ELSE text END AS text "
-    "FROM senses WHERE word IN ({ph}) ORDER BY position"
+    "FROM rev_senses WHERE word IN ({ph}) ORDER BY position"
 )
 # CEDICT also stores the reading each sense belongs to, so its definitions can be
 # grouped per reading (for polyphonic words).
@@ -586,6 +588,40 @@ _CLASSIFIERS_SQL = (
     "SELECT word, traditional, simplified, codes, note FROM classifiers "
     "WHERE word IN ({ph})"
 )
+
+
+def _moe_queries(prefix: str) -> dict:
+    """Source queries for one MOE dictionary inside the merged database.
+
+    prefix is "" for the concise dictionary and "rev_" for the comprehensive
+    one. Both have the same table shapes; only the table names differ.
+    """
+    moe = f"{prefix}moe"
+    return {
+        "sql": f"SELECT DISTINCT word FROM {moe} WHERE word IN ({{ph}})",
+        "like_sql": f"SELECT DISTINCT word FROM {moe} "
+                    "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+        # Prefix-only lookup for the fast first response, with the reading.
+        "prefix_sql": "SELECT word, word AS traditional, '' AS simplified, "
+                      f"MAX(pinyin) AS pinyin FROM {moe} "
+                      "WHERE word LIKE ? ESCAPE '\\' GROUP BY word",
+        # The trigram senses_fts table also indexes the headword column, so a
+        # 3+ character query can use it instead of scanning the headword table.
+        "head_fts_sql": f"SELECT DISTINCT word FROM {prefix}senses_fts "
+                        "WHERE word LIKE ? ORDER BY word",
+        "all_sql": f"SELECT DISTINCT word FROM {moe} WHERE word <> ''",
+        "repeat": 1,
+        "cls_sql": _CLASSIFIERS_SQL.replace(
+            "FROM classifiers", f"FROM {prefix}classifiers"
+        ),
+        "pinyin_sql": f"SELECT pinyin FROM {moe} WHERE word = ? AND pinyin <> '' LIMIT 1",
+        "pinyin_batch_sql": f"SELECT word, pinyin FROM {moe} "
+                            "WHERE word IN ({ph}) AND pinyin <> ''",
+        "pinyin_rows_sql": f"SELECT word, pinyin FROM {moe} WHERE pinyin <> ''",
+        "count_sql": f"SELECT COUNT(*) FROM {moe}",
+    }
+
+
 # Japanese definitions carry a pinyin reading per sense, so the result can show
 # a reading header (e.g. ㄞ / ㄞˋ) above each group.
 _JP_SENSES_SQL = (
@@ -627,51 +663,18 @@ _SOURCE_QUERIES = [
         "anchor": "moe",
         "lang": "taiwan",
         "database": MOE_DB_PATH,
-        "sql": "SELECT DISTINCT word FROM moe WHERE word IN ({ph})",
-        "like_sql": "SELECT DISTINCT word FROM moe "
-                    "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
-        # Prefix-only lookup for the fast first response, with the reading.
-        "prefix_sql": "SELECT word, word AS traditional, '' AS simplified, "
-                      "MAX(pinyin) AS pinyin FROM moe "
-                      "WHERE word LIKE ? ESCAPE '\\' GROUP BY word",
-        # The trigram senses_fts table also indexes the headword column, so a
-        # 3+ character query can use it instead of scanning `moe`.
-        "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
-                        "WHERE word LIKE ? ORDER BY word",
-        "all_sql": "SELECT DISTINCT word FROM moe WHERE word <> ''",
-        "repeat": 1,
         "sense_sql": _SENSES_SQL,
-        "cls_sql": _CLASSIFIERS_SQL,
-        "pinyin_sql": "SELECT pinyin FROM moe WHERE word = ? AND pinyin <> '' LIMIT 1",
-        "pinyin_batch_sql": "SELECT word, pinyin FROM moe "
-                            "WHERE word IN ({ph}) AND pinyin <> ''",
-        "pinyin_rows_sql": "SELECT word, pinyin FROM moe WHERE pinyin <> ''",
-        "count_sql": "SELECT COUNT(*) FROM moe",
+        **_moe_queries(""),
     },
     {
         "label": "重編國語辭典修訂本",
         "anchor": "moe_revised",
         "lang": "taiwan",
         "database": MOE_REVISED_DB_PATH,
-        "sql": "SELECT DISTINCT word FROM moe WHERE word IN ({ph})",
-        "like_sql": "SELECT DISTINCT word FROM moe "
-                    "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
-        # Prefix-only lookup for the fast first response, with the reading.
-        "prefix_sql": "SELECT word, word AS traditional, '' AS simplified, "
-                      "MAX(pinyin) AS pinyin FROM moe "
-                      "WHERE word LIKE ? ESCAPE '\\' GROUP BY word",
-        # See the concise MOE source above.
-        "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
-                        "WHERE word LIKE ? ORDER BY word",
-        "all_sql": "SELECT DISTINCT word FROM moe WHERE word <> ''",
-        "repeat": 1,
         "sense_sql": _MOE_REVISED_SENSES_SQL,
-        "cls_sql": _CLASSIFIERS_SQL,
-        "pinyin_sql": "SELECT pinyin FROM moe WHERE word = ? AND pinyin <> '' LIMIT 1",
-        "pinyin_batch_sql": "SELECT word, pinyin FROM moe "
-                            "WHERE word IN ({ph}) AND pinyin <> ''",
-        "pinyin_rows_sql": "SELECT word, pinyin FROM moe WHERE pinyin <> ''",
-        "count_sql": "SELECT COUNT(*) FROM moe",
+        # Same file as the concise dictionary, so its date has its own meta key.
+        "updated_key": "rev_updated",
+        **_moe_queries("rev_"),
     },
     {
         "label": "Wiktionary",
@@ -872,7 +875,7 @@ def source_headwords(min_length: int = 2) -> set[str]:
     for source in _SOURCE_QUERIES:
         sql = source.get("segment_sql") or source.get("all_sql")
         path = Path(source["database"])
-        if not sql or not path.exists():
+        if not sql or not _source_present(source):
             continue
         try:
             connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
@@ -922,7 +925,7 @@ def data_version() -> str:
 
 # --- prebuilt search index -------------------------------------------------
 # The two expensive startup caches (the "*" headword list and the source pinyin
-# rows) are pure functions of the dictionary files. scripts/build_search_index.py
+# rows) are pure functions of the dictionary files. scripts/generate-indexes-optimizations/build_search_index.py
 # stores them in data/generated-indexes-optimizations/search_index.sqlite, and
 # this module reads them back with plain SQL. On the tablet that replaces ~90 s
 # of pure-Python OpenCC work.
@@ -1073,7 +1076,7 @@ def _dialect_index_rows() -> tuple[list[str], list[str]]:
 def build_search_index(path: Path | None = None) -> dict[str, int]:
     """Write the prebuilt search index from the current source databases.
 
-    Called by scripts/build_search_index.py. The live builders are the same
+    Called by scripts/generate-indexes-optimizations/build_search_index.py. The live builders are the same
     functions a request would use, so the file can never disagree with them.
     The write is atomic: a temporary file is renamed over the old index.
     """
@@ -1197,7 +1200,8 @@ def sources() -> list[dict]:
             if connection is not None:
                 try:
                     row = connection.execute(
-                        "SELECT value FROM meta WHERE key = 'updated'"
+                        "SELECT value FROM meta WHERE key = ?",
+                        (source.get("updated_key", "updated"),),
                     ).fetchone()
                     updated = row[0] if row else None
                     # Live count, so it reflects the data after any re-import.
@@ -1460,35 +1464,90 @@ def _pinyin_wildcard_regex(text: str) -> re.Pattern[str] | None:
     return re.compile("".join(pieces))
 
 
-def _moe_db_paths() -> list[Path]:
-    """The MOE databases that are present, concise first then comprehensive."""
-    return [
-        path
-        for path in (MOE_DB_PATH, MOE_REVISED_DB_PATH)
-        if path.exists()
-    ]
+# Table-name prefix of each MOE dictionary in the merged database, concise first.
+_MOE_PREFIXES = ("", "rev_")
+_moe_prefix_cache: tuple[tuple, list[str]] | None = None
+
+
+def _moe_prefixes() -> list[str]:
+    """Prefixes of the MOE dictionaries present in the merged database.
+
+    A dictionary counts as present when its headword table exists, so a file
+    built from only one of the two downloads still works. Cached until the file
+    changes.
+    """
+    global _moe_prefix_cache
+    if not MOE_DB_PATH.exists():
+        return []
+    stamp = (str(MOE_DB_PATH), MOE_DB_PATH.stat().st_mtime_ns)
+    if _moe_prefix_cache is None or _moe_prefix_cache[0] != stamp:
+        connection = _connect(MOE_DB_PATH)
+        try:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        finally:
+            connection.close()
+        _moe_prefix_cache = (
+            stamp,
+            [prefix for prefix in _MOE_PREFIXES if f"{prefix}moe" in tables],
+        )
+    return _moe_prefix_cache[1]
+
+
+def _source_present(source: dict) -> bool:
+    """True when this source's data can be read.
+
+    The file must exist, and each MOE dictionary also needs its own tables in the
+    merged file. A host with the new code but a file from before the merge
+    (concise tables only) then just skips the comprehensive dictionary instead
+    of failing on a missing table.
+    """
+    if not source["database"].exists():
+        return False
+    if source["anchor"] == "moe":
+        return "" in _moe_prefixes()
+    if source["anchor"] == "moe_revised":
+        return "rev_" in _moe_prefixes()
+    return True
+
+
+def _moe_query(sql: str, params=()) -> list:
+    """Run `sql` once per MOE dictionary and return all rows, concise first.
+
+    "@moe" in the SQL stands for that dictionary's headword table (moe or rev_moe).
+    """
+    prefixes = _moe_prefixes()
+    if not prefixes:
+        return []
+    connection = _connect(MOE_DB_PATH)
+    try:
+        rows: list = []
+        for prefix in prefixes:
+            rows.extend(
+                connection.execute(sql.replace("@moe", f"{prefix}moe"), params).fetchall()
+            )
+        return rows
+    finally:
+        connection.close()
 
 
 def _moe_readings(words: list[str]) -> dict[str, list[str]]:
-    """Return {word: [Taiwan pinyin, ...]} from both MOE databases."""
-    paths = _moe_db_paths()
-    if not words or not paths:
+    """Return {word: [Taiwan pinyin, ...]} from both MOE dictionaries."""
+    if not words or not _moe_prefixes():
         return {}
     placeholders = ",".join("?" * len(words))
     by_word: dict[str, list[str]] = defaultdict(list)
-    for path in paths:
-        connection = _connect(path)
-        try:
-            rows = connection.execute(
-                f"SELECT DISTINCT word, pinyin FROM moe "
-                f"WHERE word IN ({placeholders}) AND pinyin <> ''",
-                words,
-            ).fetchall()
-        finally:
-            connection.close()
-        for word, pinyin in rows:
-            if pinyin not in by_word[word]:
-                by_word[word].append(pinyin)
+    for word, pinyin in _moe_query(
+        f"SELECT DISTINCT word, pinyin FROM @moe "
+        f"WHERE word IN ({placeholders}) AND pinyin <> ''",
+        words,
+    ):
+        if pinyin not in by_word[word]:
+            by_word[word].append(pinyin)
     return by_word
 
 
@@ -1529,22 +1588,15 @@ def _char_taiwan(syllable: str, options: list[str]) -> str | None:
 
 
 def _moe_char_map() -> dict[str, list[str]]:
-    """Return {character: [Taiwan readings]} from both MOE databases."""
+    """Return {character: [Taiwan readings]} from both MOE dictionaries."""
     global _moe_char_cache
     if _moe_char_cache is None:
         mapping: dict[str, list[str]] = defaultdict(list)
-        for path in _moe_db_paths():
-            connection = _connect(path)
-            try:
-                rows = connection.execute(
-                    "SELECT word, pinyin FROM moe "
-                    "WHERE length(word) = 1 AND pinyin <> ''"
-                ).fetchall()
-            finally:
-                connection.close()
-            for word, pinyin in rows:
-                if pinyin not in mapping[word]:
-                    mapping[word].append(pinyin)
+        for word, pinyin in _moe_query(
+            "SELECT word, pinyin FROM @moe WHERE length(word) = 1 AND pinyin <> ''"
+        ):
+            if pinyin not in mapping[word]:
+                mapping[word].append(pinyin)
         _moe_char_cache = mapping
     return _moe_char_cache
 
@@ -1557,18 +1609,12 @@ def _moe_toneless_map() -> dict[str, set[str]]:
     global _moe_toneless_cache
     if _moe_toneless_cache is None:
         mapping: dict[str, set[str]] = defaultdict(set)
-        for path in _moe_db_paths():
-            connection = _connect(path)
-            try:
-                rows = connection.execute(
-                    "SELECT DISTINCT word, pinyin FROM moe WHERE pinyin <> ''"
-                ).fetchall()
-            finally:
-                connection.close()
-            for word, pinyin in rows:
-                key = to_toneless(pinyin)
-                if key:
-                    mapping[key].add(word)
+        for word, pinyin in _moe_query(
+            "SELECT DISTINCT word, pinyin FROM @moe WHERE pinyin <> ''"
+        ):
+            key = to_toneless(pinyin)
+            if key:
+                mapping[key].add(word)
         _moe_toneless_cache = mapping
     return _moe_toneless_cache
 
@@ -1582,22 +1628,16 @@ def _zhuyin_map() -> dict[str, str]:
     global _zhuyin_cache
     if _zhuyin_cache is None:
         mapping: dict[str, str] = {}
-        for path in _moe_db_paths():
-            connection = _connect(path)
-            try:
-                rows = connection.execute(
-                    "SELECT DISTINCT zhuyin, pinyin FROM moe "
-                    "WHERE zhuyin <> '' AND pinyin <> ''"
-                ).fetchall()
-            finally:
-                connection.close()
-            for zhuyin, pinyin in rows:
-                zhuyin_syllables = zhuyin.split()
-                pinyin_syllables = pinyin.split()
-                if len(zhuyin_syllables) != len(pinyin_syllables):
-                    continue
-                for z, p in zip(zhuyin_syllables, pinyin_syllables):
-                    mapping.setdefault(z, to_numeric(p))
+        for zhuyin, pinyin in _moe_query(
+            "SELECT DISTINCT zhuyin, pinyin FROM @moe "
+            "WHERE zhuyin <> '' AND pinyin <> ''"
+        ):
+            zhuyin_syllables = zhuyin.split()
+            pinyin_syllables = pinyin.split()
+            if len(zhuyin_syllables) != len(pinyin_syllables):
+                continue
+            for z, p in zip(zhuyin_syllables, pinyin_syllables):
+                mapping.setdefault(z, to_numeric(p))
         _zhuyin_cache = mapping
     return _zhuyin_cache
 
@@ -1882,10 +1922,9 @@ def _attach_sources(entries: list[dict]) -> list[dict]:
         return entries
     placeholders = ",".join("?" * len(words))
     for source in _SOURCE_QUERIES:
-        database = source["database"]
-        if not database.exists():
+        if not _source_present(source):
             continue
-        connection = _connect(database)
+        connection = _connect(source["database"])
         try:
             rows = connection.execute(
                 (source.get("heads_sql") or source["sql"]).format(ph=placeholders),
@@ -2043,7 +2082,7 @@ def _variant_form_rows(words: list[str]) -> list[tuple]:
         return []
     rows: list[tuple] = []
     for source in _SOURCE_QUERIES:
-        if not source.get("forms_sql") or not source["database"].exists():
+        if not source.get("forms_sql") or not _source_present(source):
             continue
         connection = _connect(source["database"])
         try:
@@ -2487,7 +2526,7 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
         anchor = source["anchor"]
         senses[anchor] = {}
         classifiers[anchor] = {}
-        if not source["database"].exists():
+        if not _source_present(source):
             continue
         connection = _connect(source["database"])
         try:
@@ -2697,7 +2736,7 @@ def _split_pinyin(text: str) -> str:
     """Space out a run-together reading, e.g. 'língcìyuán' -> 'líng cì yuán'.
 
     Uses the syllables CEDICT actually contains, so the importer can precompute
-    exactly the same spacing (see scripts/import_wiktionary.py).
+    exactly the same spacing (see scripts/create-dict-db/import_wiktionary.py).
     """
     return split_pinyin(text, _cedict_syllables())
 
@@ -2854,7 +2893,7 @@ def _attach_source_pinyin(entries: list[dict]) -> list[dict]:
     def query(source: dict, key: str) -> list[tuple]:
         """Run a batch reading query for this source (empty when unavailable)."""
         sql = source.get(key)
-        if not sql or not source["database"].exists():
+        if not sql or not _source_present(source):
             return []
         connection = _connect(source["database"])
         try:
@@ -3600,7 +3639,7 @@ def _source_only_entries(
         return len(heads) >= limit
 
     for source in sorted(_SOURCE_QUERIES, key=_source_rank):
-        if source["anchor"] == "cedict" or not source["database"].exists():
+        if source["anchor"] == "cedict" or not _source_present(source):
             continue
         database = _connect(source["database"])
         query_stage = pd.stage(f"src:{source['anchor']}:query")
@@ -3811,7 +3850,7 @@ def _source_pinyin_rows() -> list[tuple[str, str, str, str, str]]:
         return _source_pinyin_rows_cache[1]
     rows: list[tuple[str, str, str, str, str]] = []
     for source in sources:
-        if not source["database"].exists():
+        if not _source_present(source):
             continue
         connection = _connect(source["database"])
         try:
@@ -4480,11 +4519,15 @@ def _gram_words_version_ok() -> bool:
         "jpwiktionary": JPWIKTIONARY_DB_PATH,
         "freq": FREQ_DB_PATH,
     }
+    # Both MOE entries are the same file: hash each file once.
+    digests: dict[Path, str] = {}
     for name, path in sources.items():
         if not path.exists():
             continue
+        if path not in digests:
+            digests[path] = hashlib.sha256(path.read_bytes()).hexdigest()
         value = stored.get(f"source:{name}")
-        if not value or hashlib.sha256(path.read_bytes()).hexdigest() != value:
+        if not value or digests[path] != value:
             print(
                 f"gram_words.sqlite is stale for {name}; using legacy scans",
                 file=sys.stderr,
@@ -4547,46 +4590,29 @@ def _has_cedict_trigram() -> bool:
     return _cedict_trigram_cache
 
 
-_moe_fts_cache: bool | None = None
+_moe_fts_cache: dict[str, bool] = {}
 
 
-def _has_moe_fts() -> bool:
-    """True when the MOE database has the trigram senses_fts table."""
-    global _moe_fts_cache
-    if _moe_fts_cache is None:
+def _has_moe_fts(prefix: str = "") -> bool:
+    """True when this MOE dictionary has its trigram senses_fts table."""
+    if prefix not in _moe_fts_cache:
         connection = _connect(MOE_DB_PATH)
         try:
-            _moe_fts_cache = (
+            _moe_fts_cache[prefix] = (
                 connection.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type='table' AND name='senses_fts'"
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (f"{prefix}senses_fts",),
                 ).fetchone()
                 is not None
             )
         finally:
             connection.close()
-    return _moe_fts_cache
-
-
-_moe_revised_fts_cache: bool | None = None
+    return _moe_fts_cache[prefix]
 
 
 def _has_moe_revised_fts() -> bool:
-    """True when the comprehensive MOE database has the senses_fts table."""
-    global _moe_revised_fts_cache
-    if _moe_revised_fts_cache is None:
-        connection = _connect(MOE_REVISED_DB_PATH)
-        try:
-            _moe_revised_fts_cache = (
-                connection.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type='table' AND name='senses_fts'"
-                ).fetchone()
-                is not None
-            )
-        finally:
-            connection.close()
-    return _moe_revised_fts_cache
+    """True when the comprehensive MOE dictionary has its senses_fts table."""
+    return _has_moe_fts("rev_")
 
 
 _wiktionary_fts_cache: bool | None = None
@@ -4747,25 +4773,20 @@ def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
             }
         )
 
-    for path, has_fts, use_gram_index in (
-        (MOE_DB_PATH, _has_moe_fts, True),
-        (MOE_REVISED_DB_PATH, _has_moe_revised_fts, False),
-    ):
-        if not path.exists():
-            continue
-        connection = _connect(path)
+    for prefix in _moe_prefixes():
+        connection = _connect(MOE_DB_PATH)
         try:
-            use_fts = has_fts()
+            use_fts = _has_moe_fts(prefix)
             for form, pattern in pairs:
                 # The gram index is built from the concise dictionary only, so
                 # the comprehensive dictionary must use the normal scan.
-                candidates = _gram_candidates("moe_sense", form) if use_gram_index else None
+                candidates = _gram_candidates("moe_sense", form) if prefix == "" else None
                 if candidates is not None:
                     if not candidates:
                         continue
                     holes = ",".join("?" * len(candidates))
                     sql = (
-                        f"SELECT word FROM senses WHERE word IN ({holes}) "
+                        f"SELECT word FROM {prefix}senses WHERE word IN ({holes}) "
                         "AND text LIKE ? ESCAPE '\\' GROUP BY word "
                         "ORDER BY word LIMIT ?"
                     )
@@ -4773,13 +4794,13 @@ def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
                 elif use_fts and len(form) >= 3 and _simple_form(form):
                     # The trigram index makes LIKE use the index; no ESCAPE.
                     sql = (
-                        "SELECT DISTINCT word FROM senses_fts "
+                        f"SELECT DISTINCT word FROM {prefix}senses_fts "
                         "WHERE text LIKE ? LIMIT ?"
                     )
                     params = (f"%{form}%", limit)
                 else:
                     sql = (
-                        "SELECT DISTINCT word FROM senses "
+                        f"SELECT DISTINCT word FROM {prefix}senses "
                         "WHERE text LIKE ? ESCAPE '\\' LIMIT ?"
                     )
                     params = (pattern, limit)
@@ -5040,7 +5061,11 @@ def _entries_with_forms(limit: int = 50) -> list[dict]:
 
 def _entries_with_classifiers(limit: int = 50) -> list[dict]:
     words: list[str] = []
-    for path in (DB_PATH, MOE_DB_PATH, MOE_REVISED_DB_PATH, WIKTIONARY_DB_PATH):
+    # (database, classifiers table): the merged MOE file has one table per dictionary.
+    tables = [(DB_PATH, "classifiers")]
+    tables += [(MOE_DB_PATH, f"{prefix}classifiers") for prefix in _moe_prefixes()]
+    tables.append((WIKTIONARY_DB_PATH, "classifiers"))
+    for path, table in tables:
         if not path.exists():
             continue
         connection = _connect(path)
@@ -5048,7 +5073,7 @@ def _entries_with_classifiers(limit: int = 50) -> list[dict]:
             words.extend(
                 row[0]
                 for row in connection.execute(
-                    "SELECT DISTINCT word FROM classifiers LIMIT ?", (limit * 2,)
+                    f"SELECT DISTINCT word FROM {table} LIMIT ?", (limit * 2,)
                 )
             )
         finally:
@@ -5419,7 +5444,7 @@ def _order_headwords(
 def _all_headwords_list() -> list[str]:
     """Every distinct simplified headword across all sources, sorted and cached.
 
-    A prebuilt search index (scripts/build_search_index.py) answers this in a
+    A prebuilt search index (scripts/generate-indexes-optimizations/build_search_index.py) answers this in a
     second or two. Without it, the list is built from the source databases -
     that is correct but slow on a phone (tens of seconds of OpenCC work), so
     warm_caches() no longer does it at startup.
@@ -5463,37 +5488,21 @@ def _build_all_headwords_list() -> list[str]:
         def_words: set[str] = {
             row[0] for row in connection.execute("SELECT DISTINCT word FROM senses")
         }
-        if MOE_DB_PATH.exists():
-            # Only MOE words that actually have a sense (definition).
-            parts.append("SELECT DISTINCT word FROM moe.senses WHERE text <> ''")
+        # Both MOE dictionaries are tables of the attached "moe" database; the
+        # comprehensive one adds headwords the concise one lacks. Only words that
+        # actually have a sense (definition) count.
+        for prefix in _moe_prefixes():
+            parts.append(f"SELECT DISTINCT word FROM moe.{prefix}senses WHERE text <> ''")
             has_reading.update(
                 to_simplified(row[0])
                 for row in connection.execute(
-                    "SELECT word FROM moe.moe WHERE pinyin <> ''"
+                    f"SELECT word FROM moe.{prefix}moe WHERE pinyin <> ''"
                 )
             )
             def_words.update(
                 row[0]
                 for row in connection.execute(
-                    "SELECT DISTINCT word FROM moe.senses WHERE text <> ''"
-                )
-            )
-        if MOE_REVISED_DB_PATH.exists():
-            # The comprehensive dictionary adds headwords the concise one lacks.
-            _attach_database(connection, "moe_rev", MOE_REVISED_DB_PATH)
-            parts.append(
-                "SELECT DISTINCT word FROM moe_rev.senses WHERE text <> ''"
-            )
-            has_reading.update(
-                to_simplified(row[0])
-                for row in connection.execute(
-                    "SELECT word FROM moe_rev.moe WHERE pinyin <> ''"
-                )
-            )
-            def_words.update(
-                row[0]
-                for row in connection.execute(
-                    "SELECT DISTINCT word FROM moe_rev.senses WHERE text <> ''"
+                    f"SELECT DISTINCT word FROM moe.{prefix}senses WHERE text <> ''"
                 )
             )
         if WIKTIONARY_DB_PATH.exists():
@@ -5737,7 +5746,7 @@ def prefix_entries(query: str, anchor: str, limit: int = 25) -> list[dict]:
     source = next((item for item in _SOURCE_QUERIES if item["anchor"] == anchor), None)
     if (
         source is None
-        or not source["database"].exists()
+        or not _source_present(source)
         or not source.get("prefix_sql")
     ):
         return []
@@ -5796,7 +5805,7 @@ def _anchor_pinyin_sorted(anchor: str) -> tuple[list[str], list[tuple]]:
     if (
         source is None
         or not source.get("pinyin_rows_sql")
-        or not source["database"].exists()
+        or not _source_present(source)
     ):
         return [], []
     stamp = source["database"].stat().st_mtime
@@ -5910,7 +5919,7 @@ def _anchor_defined_words(anchor: str, words: list[str]) -> set[str]:
     simplified word (黨群 vs 黨羣), so its readings table is checked too.
     """
     source = next((item for item in _SOURCE_QUERIES if item["anchor"] == anchor), None)
-    if source is None or not source["database"].exists() or not words:
+    if source is None or not _source_present(source) or not words:
         return set()
     found: set[str] = set()
     connection = _connect(source["database"])
@@ -5994,7 +6003,7 @@ def _definition_match_anchors(entries: list[dict], query: str) -> list[set[str]]
     )
     for source in _SOURCE_QUERIES:
         anchor = source["anchor"]
-        if anchor == "cedict" or not source["database"].exists():
+        if anchor == "cedict" or not _source_present(source):
             continue
         sql = _DEFINITION_MATCH_SQL.get(anchor, _SENSE_TEXT_MATCH_SQL)
         found: set[str] = set()
@@ -8145,7 +8154,7 @@ def search(
     return entries, pinyin_match
 
 
-# Trim set for English-word tokens; must match scripts/import_english_words.py.
+# Trim set for English-word tokens; must match scripts/generate-indexes-optimizations/import_english_words.py.
 _ENGLISH_WORD_STRIP = " \t\r\n!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~“”‘’「」【】《》…·—–~"
 
 
@@ -8153,7 +8162,7 @@ def has_english_match(phrase: str) -> bool:
     """True when the quoted English-search hint applies to `phrase`.
 
     The hint is shown only when the query is a whole word from the definitions
-    (scripts/import_english_words.py builds the word list), or when it names one
+    (scripts/generate-indexes-optimizations/import_english_words.py builds the word list), or when it names one
     of the app's section labels - never for an arbitrary substring of a
     definition.
     """
@@ -8207,7 +8216,6 @@ _PAGE_CACHE_FILES = (
     MOE_DB_PATH,
     SUBTLEX_DB_PATH,
     WIKTIONARY_DB_PATH,
-    MOE_REVISED_DB_PATH,
     ZHWIKTIONARY_DB_PATH,
     JPWIKTIONARY_DB_PATH,
     GRAM_WORDS_DB_PATH,
@@ -8424,7 +8432,7 @@ def warm_caches() -> None:
         + (
             "ok"
             if _search_index_ok()
-            else "missing or stale (run scripts/build_search_index.py)"
+            else "missing or stale (run scripts/generate-indexes-optimizations/build_search_index.py)"
         ),
         flush=True,
     )

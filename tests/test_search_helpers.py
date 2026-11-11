@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -13,7 +14,18 @@ from yabai_search.default_dictionaries import DEFAULTS
 from yabai_search.services import _clean_report_settings, _report_search_url
 from yabai_search.overrides import normalize_english
 from yabai_search.pinyin import numeric_to_marked, to_numeric, to_toneless
-from scripts.import_cedict import see_target
+
+
+def _load_script(relative: str):
+    """Load a script by file path: the scripts/ subfolders have hyphens, so they are not packages."""
+    path = Path(__file__).resolve().parents[1] / relative
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+see_target = _load_script("scripts/create-dict-db/import_cedict.py").see_target
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 
@@ -494,9 +506,8 @@ def test_tonal_variant_returns_toneless_letters():
 
 
 @pytest.mark.skipif(
-    not (DATA / "moe-taiwan" / "moe.sqlite").exists()
-    and not (DATA / "moe-taiwan" / "moe_revised.sqlite").exists(),
-    reason="MOE databases not built",
+    not (DATA / "moe-taiwan" / "moe.sqlite").exists(),
+    reason="MOE database not built",
 )
 def test_zhuyin_converts_to_numeric_pinyin():
     """Bopomofo is converted to spaced numeric pinyin before matching."""

@@ -7,9 +7,9 @@ The dataset covers the old HSK 2.0 levels, the HSK 3.0 levels, and the newer
 2026); HSK 2.0 is ignored. It is released under the MIT licence.
 
 Usage (from the project root):
-    uv run python -m scripts.import_hsk
-    uv run python -m scripts.import_hsk --force
-    uv run python -m scripts.import_hsk --input data/hsk-complete.min.json
+    uv run python scripts/create-dict-db/import_hsk.py
+    uv run python scripts/create-dict-db/import_hsk.py --force
+    uv run python scripts/create-dict-db/import_hsk.py --input data/hsk-complete.min.json
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_URL = (
     "https://raw.githubusercontent.com/drkameleon/"
     "complete-hsk-vocabulary/main/complete.min.json"

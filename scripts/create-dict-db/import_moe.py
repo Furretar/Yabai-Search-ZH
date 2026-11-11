@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Import a Taiwan MOE Mandarin dictionary into its own SQLite database.
+"""Import the two Taiwan MOE Mandarin dictionaries into ONE SQLite database.
 
-Two data sets are supported:
-  concised - 國語辭典簡編本, written to data/moe.sqlite
-  revised  - 重編國語辭典修訂本, written to data/moe_revised.sqlite
+  concised - 國語辭典簡編本     tables moe, senses, examples, classifiers, senses_fts
+  revised  - 重編國語辭典修訂本  the same tables with an "rev_" prefix (rev_moe, ...)
 
-The download is a zip containing a single .xlsx. This reads that sheet with the
+Both are written to data/moe-taiwan/moe.sqlite. The raw downloads (zips, see
+scripts/download-dictionaries/download_moe.py) stay untouched in data/dl-base-dictionaries/.
+
+Each download is a zip containing a single .xlsx. This reads that sheet with the
 standard library (no openpyxl) and builds the same small schema for both.
 
 Usage (from the project root):
-    uv run python -m scripts.import_moe
-    uv run python -m scripts.import_moe --input data/dict_concised_2014_20260929.zip
-    uv run python -m scripts.import_moe --kind revised
+    uv run python scripts/create-dict-db/import_moe.py                  # both dictionaries
+    uv run python scripts/create-dict-db/import_moe.py --kind revised   # only the revised tables
+    uv run python scripts/create-dict-db/import_moe.py --kind concised --input path/to/file.zip
 """
 
 from __future__ import annotations
@@ -25,11 +27,15 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ZIP = ROOT / "data" / "dl-base-dictionaries" / "dict_concised_2014_20260929.zip"
-DEFAULT_DB = ROOT / "data" / "moe.sqlite"
-REVISED_DIR = ROOT / "data" / "moe-taiwan"
-REVISED_DB = ROOT / "data" / "moe_revised.sqlite"
+ROOT = Path(__file__).resolve().parents[2]
+# Raw downloads (the zips) live here; the merged database lives in moe-taiwan/.
+DL_DIR = ROOT / "data" / "dl-base-dictionaries"
+MOE_DIR = ROOT / "data" / "moe-taiwan"
+MOE_DB = MOE_DIR / "moe.sqlite"
+
+# Table-name prefix of each dictionary inside the merged database. The concise
+# dictionary keeps the plain names, so the old single-file queries still work.
+PREFIX = {"concised": "", "revised": "rev_"}
 
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 
@@ -55,21 +61,31 @@ COLUMNS = {
 }
 
 
-def latest_revised_zip() -> Path:
-    """Return the newest downloaded 重編國語辭典修訂本 zip."""
-    matches = sorted(REVISED_DIR.glob("dict_revised_*.zip"))
-    return matches[-1] if matches else REVISED_DIR / "dict_revised_2015_20260929.zip"
+def latest_zip(kind: str) -> Path:
+    """Return the newest downloaded text zip of a dictionary.
+
+    The name must be dict_<kind>_<edition>_<date>.zip. A plain glob on
+    "dict_revised_*" would also match the glyph-picture archive
+    (dict_revised_pic_...), which sorts after it and is not the text data.
+    """
+    pattern = re.compile(rf"dict_{kind}_\d+_\d{{8}}\.zip$")
+    matches = sorted(p for p in DL_DIR.glob(f"dict_{kind}_*.zip") if pattern.match(p.name))
+    if not matches:
+        raise FileNotFoundError(
+            f"no dict_{kind}_*.zip in {DL_DIR} - run: uv run python scripts/download-dictionaries/download_moe.py {kind}"
+        )
+    return matches[-1]
 
 
 # Where the extracted glyph images live, served by GET /moe-glyphs/<name>.
-GLYPH_DIR = ROOT / "data" / "moe-taiwan" / "moe_glyphs"
+GLYPH_DIR = MOE_DIR / "moe_glyphs"
 # The 字圖 archive's inner folder ends with this (the glyph pictures for
 # characters UTF-8 cannot represent, referenced as "&8ff0._104_0.gif;").
 _GLYPH_FOLDER_RE = re.compile(r"utf8.*字圖/$")
 
 
 def extract_glyphs(kind: str) -> int:
-    """Unpack the 字圖 (glyph image) zip into data/moe_glyphs/.
+    """Unpack the 字圖 (glyph image) zip into data/moe-taiwan/moe_glyphs/.
 
     Definitions reference these as "&8ff0._104_0.gif;"; the app swaps them for
     the picture, coloured like text. No picture zip (or none downloaded yet)
@@ -77,7 +93,7 @@ def extract_glyphs(kind: str) -> int:
     Returns the number of files written (0 when there is no picture zip).
     """
     # e.g. dict_revised_pic_2015_20260929.zip, downloaded alongside the text zip.
-    pic_zips = sorted(REVISED_DIR.glob(f"dict_{kind}_pic_*.zip"))
+    pic_zips = sorted(DL_DIR.glob(f"dict_{kind}_pic_*.zip"))
     if not pic_zips:
         return 0
     GLYPH_DIR.mkdir(parents=True, exist_ok=True)
@@ -96,10 +112,12 @@ def extract_glyphs(kind: str) -> int:
             written += 1
     return written
 
-SCHEMA = """
-DROP TABLE IF EXISTS moe;
 
-CREATE TABLE moe (
+# Tables of one dictionary; `{p}` is its prefix ("" or "rev_").
+TABLES = ("moe", "senses", "examples", "classifiers", "senses_fts")
+
+SCHEMA = """
+CREATE TABLE {p}moe (
     id         INTEGER PRIMARY KEY,
     word       TEXT NOT NULL,   -- 字詞名
     zhuyin     TEXT,            -- 注音一式
@@ -108,49 +126,44 @@ CREATE TABLE moe (
     strokes    INTEGER,         -- 總筆畫數
     definition TEXT             -- 釋義
 );
-
-CREATE INDEX idx_moe_word ON moe(word);
+CREATE INDEX idx_{p}moe_word ON {p}moe(word);
 
 -- Standardized senses and classifiers (same shape as every other source DB).
 -- The 釋義 is split on newlines and its leading "1." "2." numbers are dropped;
 -- "量詞..." senses are stored as classifier notes instead.
-DROP TABLE IF EXISTS senses;
-DROP TABLE IF EXISTS classifiers;
-
-CREATE TABLE senses (
+CREATE TABLE {p}senses (
     word     TEXT NOT NULL,
     position INTEGER NOT NULL,
     text     TEXT NOT NULL
 );
-CREATE INDEX idx_senses_word ON senses(word);
+CREATE INDEX idx_{p}senses_word ON {p}senses(word);
 
 -- Trigram full-text index over the sense text. FTS5's trigram tokenizer makes
 -- LIKE '%…%' use the index for queries of three or more characters, so quoted
 -- definition searches do not scan the whole table.
-DROP TABLE IF EXISTS senses_fts;
-CREATE VIRTUAL TABLE senses_fts USING fts5(word, text, tokenize='trigram');
+CREATE VIRTUAL TABLE {p}senses_fts USING fts5(word, text, tokenize='trigram');
 
 -- Examples ("[例]…") split out of the senses, kept separate for now.
-CREATE TABLE examples (
+CREATE TABLE {p}examples (
     word     TEXT NOT NULL,
     position INTEGER NOT NULL,
     text     TEXT NOT NULL
 );
-CREATE INDEX idx_examples_word ON examples(word);
+CREATE INDEX idx_{p}examples_word ON {p}examples(word);
 
-CREATE TABLE classifiers (
+CREATE TABLE {p}classifiers (
     word        TEXT NOT NULL,
     traditional TEXT,
     simplified  TEXT,
     codes       TEXT,
     note        TEXT
 );
-CREATE INDEX idx_classifiers_word ON classifiers(word);
-
--- Metadata (the About page shows when the data was last updated).
-DROP TABLE IF EXISTS meta;
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE INDEX idx_{p}classifiers_word ON {p}classifiers(word);
 """
+
+# Metadata shared by both (the About page shows when each was last updated):
+# key "updated" is the concise dictionary, "rev_updated" the revised one.
+META_SCHEMA = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);"
 
 
 def _column_index(ref: str) -> int:
@@ -194,7 +207,7 @@ def read_rows(zip_path: Path):
 
 def clean_definition(text: str) -> str:
     """Tidy the 釋義 cell (strip the _x000D_ markers and full-width padding)."""
-    return text.replace("_x000D_", "").replace("\u3000", " ").strip()
+    return text.replace("_x000D_", "").replace("　", " ").strip()
 
 
 # MOE appends examples to a sense as "[例]…".
@@ -246,16 +259,16 @@ def split_senses(
     return senses, notes
 
 
-def build(zip_path: Path, db_path: Path, kind: str = "concised") -> None:
-    if kind not in COLUMNS:
-        raise ValueError(f"unknown MOE kind: {kind!r}")
+def build_kind(connection: sqlite3.Connection, zip_path: Path, kind: str) -> int:
+    """(Re)build one dictionary's tables inside the open merged database."""
     columns = COLUMNS[kind]
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    if db_path.exists():
-        db_path.unlink()
+    prefix = PREFIX[kind]
+    # Only this dictionary's tables are dropped, so the other one is left alone.
+    for table in TABLES:
+        connection.execute(f"DROP TABLE IF EXISTS {prefix}{table}")
+    connection.executescript(SCHEMA.format(p=prefix))
+    connection.execute(META_SCHEMA)
 
-    connection = sqlite3.connect(db_path)
-    connection.executescript(SCHEMA)
     # The MOE download's filename carries the data date, e.g.
     # "dict_concised_2014_20260929.zip" -> 2026-09-29.
     match = re.search(r"(\d{4})(\d{2})(\d{2})", zip_path.name)
@@ -264,13 +277,15 @@ def build(zip_path: Path, db_path: Path, kind: str = "concised") -> None:
         if match
         else time.strftime("%Y-%m-%d")
     )
-    connection.execute("INSERT INTO meta (key, value) VALUES ('updated', ?)", (updated,))
+    connection.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+        (f"{prefix}updated", updated),
+    )
 
     rows = []
     sense_rows = []  # (word, position, text)
     example_rows = []  # (word, position, text)
     cls_rows = []  # (word, traditional, simplified, codes, note)
-    count = 0
     for values in read_rows(zip_path):
         word = values.get(columns["word"], "").strip()
         if not word or word == "字詞名":  # skip the header row
@@ -297,52 +312,72 @@ def build(zip_path: Path, db_path: Path, kind: str = "concised") -> None:
                 example_rows.append((word, position, example))
         for note in notes:
             cls_rows.append((word, None, None, "", note))
-        count += 1
 
     connection.executemany(
-        "INSERT INTO moe (word, zhuyin, pinyin, radical, strokes, definition) "
+        f"INSERT INTO {prefix}moe (word, zhuyin, pinyin, radical, strokes, definition) "
         "VALUES (?,?,?,?,?,?)",
         rows,
     )
     connection.executemany(
-        "INSERT INTO senses (word, position, text) VALUES (?,?,?)", sense_rows
+        f"INSERT INTO {prefix}senses (word, position, text) VALUES (?,?,?)", sense_rows
     )
     connection.executemany(
-        "INSERT INTO examples (word, position, text) VALUES (?,?,?)", example_rows
+        f"INSERT INTO {prefix}examples (word, position, text) VALUES (?,?,?)",
+        example_rows,
     )
     connection.executemany(
-        "INSERT INTO classifiers (word, traditional, simplified, codes, note) "
+        f"INSERT INTO {prefix}classifiers (word, traditional, simplified, codes, note) "
         "VALUES (?,?,?,?,?)",
         cls_rows,
     )
     connection.execute(
-        "INSERT INTO senses_fts (word, text) SELECT word, text FROM senses"
+        f"INSERT INTO {prefix}senses_fts (word, text) SELECT word, text FROM {prefix}senses"
     )
     connection.commit()
-    connection.execute("VACUUM")
-    total = connection.execute("SELECT count(*) FROM moe").fetchone()[0]
-    connection.close()
-    print(f"imported {total} entries into {db_path} ({db_path.stat().st_size / 1e6:.1f} MB)")
+    return connection.execute(f"SELECT count(*) FROM {prefix}moe").fetchone()[0]
+
+
+def build(db_path: Path, jobs: list[tuple[str, Path]], fresh: bool) -> None:
+    """Write the given (kind, zip) jobs into the merged database at db_path.
+
+    fresh=True starts from an empty file (a full rebuild of both dictionaries);
+    otherwise the existing file is opened and only the named kinds are replaced.
+    """
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if fresh and db_path.exists():
+        db_path.unlink()
+    connection = sqlite3.connect(db_path)
+    try:
+        for kind, zip_path in jobs:
+            total = build_kind(connection, zip_path, kind)
+            print(f"imported {total} {kind} entries from {zip_path.name}")
+        connection.execute("VACUUM")
+    finally:
+        connection.close()
+    print(f"wrote {db_path} ({db_path.stat().st_size / 1e6:.1f} MB)")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", choices=sorted(COLUMNS), default="concised")
-    parser.add_argument("--input", type=Path)
-    parser.add_argument("--db", type=Path)
+    parser.add_argument("--kind", choices=[*COLUMNS, "all"], default="all")
+    parser.add_argument("--input", type=Path, help="zip to read (one --kind only)")
+    parser.add_argument("--db", type=Path, default=MOE_DB)
     args = parser.parse_args()
-    if args.kind == "revised":
-        input_path = args.input or latest_revised_zip()
-        db_path = args.db or REVISED_DB
-    else:
-        input_path = args.input or DEFAULT_ZIP
-        db_path = args.db or DEFAULT_DB
-    build(input_path, db_path, kind=args.kind)
+    kinds = list(COLUMNS) if args.kind == "all" else [args.kind]
+    if args.input and len(kinds) != 1:
+        parser.error("--input needs --kind concised or --kind revised")
+    try:
+        jobs = [(kind, args.input or latest_zip(kind)) for kind in kinds]
+    except FileNotFoundError as error:
+        print(error, file=sys.stderr)
+        return 1
+    build(args.db, jobs, fresh=(args.kind == "all"))
     # The revised dictionary's definitions embed glyph pictures the text zip
-    # cannot carry ("&8ff0._104_0.gif;"); unpack them next to the databases.
-    glyphs = extract_glyphs(args.kind)
-    if glyphs:
-        print(f"extracted {glyphs} glyph images into {GLYPH_DIR}")
+    # cannot carry ("&8ff0._104_0.gif;"); unpack them next to the database.
+    if "revised" in kinds:
+        glyphs = extract_glyphs("revised")
+        if glyphs:
+            print(f"extracted {glyphs} glyph images into {GLYPH_DIR}")
     return 0
 
 

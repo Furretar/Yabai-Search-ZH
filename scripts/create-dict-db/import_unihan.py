@@ -18,8 +18,8 @@ Tables:
   meta(key, value)                   updated = Unihan's own date, unicode_version, licence
 
 Usage (from the project root):
-    uv run python -m scripts.download_unihan
-    uv run python -m scripts.import_unihan
+    uv run python scripts/download-dictionaries/download_unihan.py
+    uv run python scripts/create-dict-db/import_unihan.py
 
 Licence: Unicode License V3 (https://www.unicode.org/license.txt); keep the Unicode
 copyright and permission notice with the data or its documentation.
@@ -34,7 +34,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ZIP = ROOT / "data" / "unihan" / "Unihan.zip"
 DEFAULT_DB = ROOT / "data" / "unihan.sqlite"
 
@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     args = parser.parse_args(argv)
     if not args.input.exists():
-        raise SystemExit(f"{args.input} not found: run scripts/download_unihan.py first")
+        raise SystemExit(f"{args.input} not found: run scripts/download-dictionaries/download_unihan.py first")
     counts = build(args.input, args.db)
     print(f"{args.db}: {counts['headwords']} headwords, {counts['fields']} fields, "
           f"{counts['senses']} senses")

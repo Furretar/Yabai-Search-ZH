@@ -15,13 +15,28 @@ pytestmark = pytest.mark.skipif(
     not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
 )
 
+def _moe_tables() -> set[str]:
+    """Tables of the merged MOE database (the concise one plain, the revised one rev_)."""
+    import sqlite3
+
+    path = DATA / "moe-taiwan" / "moe.sqlite"
+    if not path.exists():
+        return set()
+    connection = sqlite3.connect(path)
+    try:
+        return {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    finally:
+        connection.close()
+
+
 requires_moe = pytest.mark.skipif(
-    not (DATA / "moe-taiwan" / "moe.sqlite").exists(),
-    reason="MOE concise database not built",
+    "moe" not in _moe_tables(), reason="MOE concise dictionary not built"
 )
 requires_revised = pytest.mark.skipif(
-    not (DATA / "moe-taiwan" / "moe_revised.sqlite").exists(),
-    reason="MOE comprehensive database not built",
+    "rev_moe" not in _moe_tables(), reason="MOE comprehensive dictionary not built"
 )
 requires_wiktionary = pytest.mark.skipif(
     not (DATA / "wiktionary.sqlite").exists(), reason="Wiktionary database not built"
@@ -36,14 +51,16 @@ requires_hsk = pytest.mark.skipif(
     not (DATA / "hsk.sqlite").exists(), reason="HSK database not built"
 )
 requires_all_sources = pytest.mark.skipif(
-    not all(
-        (DATA / name).exists()
-        for name in (
-            "moe-taiwan/moe.sqlite",
-            "moe-taiwan/moe_revised.sqlite",
-            "wiktionary.sqlite",
-            "zhwiktionary.sqlite",
-            "jpwiktionary.sqlite",
+    not (
+        "rev_moe" in _moe_tables()
+        and all(
+            (DATA / name).exists()
+            for name in (
+                "moe-taiwan/moe.sqlite",
+                "wiktionary.sqlite",
+                "zhwiktionary.sqlite",
+                "jpwiktionary.sqlite",
+            )
         )
     ),
     reason="not all dictionary databases are built",
@@ -142,7 +159,7 @@ def test_moe_revised_definition_drops_examples(search, find_result):
     conn = sqlite3.connect(db.MOE_REVISED_DB_PATH)
     try:
         full = conn.execute(
-            "SELECT text FROM senses WHERE word = ? ORDER BY position LIMIT 1",
+            "SELECT text FROM rev_senses WHERE word = ? ORDER BY position LIMIT 1",
             ("連續",),
         ).fetchone()[0]
     finally:
