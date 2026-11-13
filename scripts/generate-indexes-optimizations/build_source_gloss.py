@@ -24,8 +24,8 @@ sys.path.insert(0, str(ROOT))
 
 from yabai_search.db import to_simplified  # noqa: E402
 
-CEDICT = ROOT / "data" / "cedict.sqlite"
-WIKTIONARY = ROOT / "data" / "wiktionary.sqlite"
+CEDICT = ROOT / "data" / "dictionary-databases" / "cedict.sqlite"
+WIKTIONARY = ROOT / "data" / "dictionary-databases" / "wiktionary.sqlite"
 # Derived indexes live in db.GENERATED_DIR, not in data/ itself.
 GENERATED = ROOT / "data" / "generated-indexes-optimizations"
 OUT = GENERATED / "source_gloss.sqlite"

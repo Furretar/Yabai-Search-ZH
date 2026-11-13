@@ -20,7 +20,7 @@
         return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
     }
 
-    // Pure rule (also unit-tested in scripts/test_hosts.mjs). `st` is
+    // Pure rule (also unit-tested in scripts/tools/test_hosts.mjs). `st` is
     // {local, challenger:{host,since}|null}; `medians` maps each answering host to
     // its median time. Returns the updated state.
     function pickLocal(st, medians, now) {

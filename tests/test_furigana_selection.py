@@ -300,7 +300,7 @@ def search_server():
     port = _free_port()
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
-        part for part in (str(BASE), env.get("PYTHONPATH")) if part
+        part for part in (str(BASE), str(BASE / "django"), env.get("PYTHONPATH")) if part
     )
     # The harness only needs the app to answer; building every search cache on
     # import would make start-up slower than the readiness deadline. The first

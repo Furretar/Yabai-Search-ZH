@@ -34,7 +34,7 @@ PAGES = {
     "idioms": "dict_idiomsdict_download.html",
 }
 ROOT = Path(__file__).resolve().parents[2]
-# Raw downloads only; scripts/create-dict-db/import_moe.py builds data/moe-taiwan/moe.sqlite from them.
+# Raw downloads only; scripts/download-dictionaries/import_moe.py builds data/dictionary-databases/moe-taiwan/moe.sqlite from them.
 OUT_DIR = ROOT / "data" / "dl-base-dictionaries"
 
 # Links to downloadable zips on a dictionary's page, e.g. "download/..._2014_20260929.zip".

@@ -21,11 +21,11 @@ sys.path.insert(0, str(ROOT))
 
 
 def main() -> None:
-    from yabai_search import segment  # noqa: PLC0415  (needs the project's dependencies)
+    from yabai_search import parser as segmenter  # noqa: PLC0415  (needs the project's dependencies)
 
     started = time.time()
-    count = segment.build_userdict()
-    path = segment.build_cache()
+    count = segmenter.build_userdict()
+    path = segmenter.build_cache()
     print(f"segmenter: {count:,} headwords, {path} ({path.stat().st_size / 1e6:.1f} MB) in {time.time() - started:.0f} s")
 
 

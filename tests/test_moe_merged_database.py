@@ -1,4 +1,4 @@
-"""Both MOE dictionaries live in one SQLite file (data/moe-taiwan/moe.sqlite).
+"""Both MOE dictionaries live in one SQLite file (data/dictionary-databases/moe-taiwan/moe.sqlite).
 
 The concise dictionary keeps the plain table names (moe, senses, ...); the
 comprehensive one has the same tables with a "rev_" prefix. These tests use tiny

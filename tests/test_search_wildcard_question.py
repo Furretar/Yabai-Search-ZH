@@ -12,7 +12,7 @@ from yabai_search.pinyin import to_toneless
 DATA = Path(__file__).resolve().parents[1] / "data"
 
 pytestmark = pytest.mark.skipif(
-    not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
+    not (DATA / "dictionary-databases" / "cedict.sqlite").exists(), reason="CEDICT database not built"
 )
 
 

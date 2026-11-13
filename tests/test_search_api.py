@@ -13,12 +13,12 @@ from yabai_search.pinyin import to_toneless
 DATA = Path(__file__).resolve().parents[1] / "data"
 
 pytestmark = pytest.mark.skipif(
-    not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
+    not (DATA / "dictionary-databases" / "cedict.sqlite").exists(), reason="CEDICT database not built"
 )
 
 requires_zh_sources = pytest.mark.skipif(
-    not (DATA / "baidu.sqlite").exists()
-    or not (DATA / "zhwiktionary.sqlite").exists(),
+    not (DATA / "dictionary-databases" / "baidu" / "baidu.sqlite").exists()
+    or not (DATA / "dictionary-databases" / "zhwiktionary.sqlite").exists(),
     reason="Baidu and Chinese Wiktionary databases not built",
 )
 
@@ -248,7 +248,7 @@ def test_quoted_specific_tetragram_returns_exactly_one(search):
 
 
 @pytest.mark.skipif(
-    not (DATA / "corpus_freq.sqlite").exists(),
+    not (DATA / "dictionary-databases" / "corpus_freq.sqlite").exists(),
     reason="frequency database not built",
 )
 def test_frequency_label_page_is_exact_and_deduped(search):
@@ -262,7 +262,7 @@ def test_frequency_label_page_is_exact_and_deduped(search):
 
     from yabai_search.db import to_simplified
 
-    connection = sqlite3.connect(DATA / "corpus_freq.sqlite")
+    connection = sqlite3.connect(DATA / "dictionary-databases" / "corpus_freq.sqlite")
     try:
         seen = set()
         for (word,) in connection.execute("SELECT word FROM freq ORDER BY rank"):

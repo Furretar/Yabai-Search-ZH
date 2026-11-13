@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Download the Unicode Han Database (Unihan) to data/unihan/Unihan.zip.
+"""Download the Unicode Han Database (Unihan) to data/dl-base-dictionaries/Unihan.zip.
 
 Unihan is Unicode's per-character data for about 103,000 CJK ideographs: readings,
 English glosses, variants, radicals and stroke counts. It holds no words, only single
-characters. scripts/create-dict-db/import_unihan.py turns the Chinese parts of it into data/unihan.sqlite.
+characters. scripts/download-dictionaries/import_unihan.py turns the Chinese parts of it into data/dictionary-databases/unihan.sqlite.
 
 Usage (from the project root):
     uv run python scripts/download-dictionaries/download_unihan.py           # skip if already downloaded
@@ -24,7 +24,7 @@ from pathlib import Path
 # "latest" always points at the newest Unicode version, so this keeps working across releases.
 URL = "https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip"
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "data" / "unihan" / "Unihan.zip"
+OUT = ROOT / "data" / "dl-base-dictionaries" / "Unihan.zip"
 
 
 def download(force: bool = False) -> Path:

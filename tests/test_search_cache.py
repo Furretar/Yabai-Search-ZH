@@ -15,7 +15,7 @@ DATA = Path(__file__).resolve().parents[1] / "data"
 APP_JS = Path(__file__).resolve().parents[1] / "yabai_search" / "static" / "app.js"
 
 pytestmark = pytest.mark.skipif(
-    not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
+    not (DATA / "dictionary-databases" / "cedict.sqlite").exists(), reason="CEDICT database not built"
 )
 
 
@@ -226,7 +226,7 @@ def test_a_repeated_page_is_answered_from_the_finished_response(client):
 
 def test_a_slow_ranked_list_is_kept_on_disk_and_read_back(tmp_path, monkeypatch):
     """A slow search is stored under its exact key; a restart reads it instead of computing it."""
-    from yabai_search import result_cache, services
+    from yabai_search import expensive_search_cache as result_cache, services
 
     monkeypatch.setattr(result_cache, "MAX_BYTES", 64 * 1024 * 1024)
     monkeypatch.setattr(result_cache, "MIN_SECONDS", 0.0)
@@ -264,7 +264,7 @@ def test_a_slow_ranked_list_is_kept_on_disk_and_read_back(tmp_path, monkeypatch)
 
 
 def test_the_local_result_cache_stays_under_its_size_cap(tmp_path, monkeypatch):
-    from yabai_search import result_cache
+    from yabai_search import expensive_search_cache as result_cache
 
     monkeypatch.setattr(result_cache, "MAX_BYTES", 40_000)
     monkeypatch.setattr(result_cache, "MIN_SECONDS", 0.0)

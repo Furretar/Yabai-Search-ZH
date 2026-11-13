@@ -1,4 +1,4 @@
-"""Tests for the rolling search log (data/search.log).
+"""Tests for the rolling search log (archives/search.log).
 
 The log exists so a slow search can be explained after the fact: each entry
 keeps the query, its duration, the result count and the SQL statements with

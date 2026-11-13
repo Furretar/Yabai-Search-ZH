@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-# Keep the tests from writing data/search.log.
+# Keep the tests from writing archives/search.log.
 os.environ.setdefault("YABAI_SQL_LOG", "0")
 # No results on disk during tests: a list kept from an earlier run would hide what a test changes.
 os.environ.setdefault("YABAI_RESULT_CACHE_MB", "0")

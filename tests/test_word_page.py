@@ -9,7 +9,7 @@ import pytest
 DATA = Path(__file__).resolve().parents[1] / "data"
 
 pytestmark = pytest.mark.skipif(
-    not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
+    not (DATA / "dictionary-databases" / "cedict.sqlite").exists(), reason="CEDICT database not built"
 )
 
 
@@ -73,7 +73,7 @@ def test_word_page_returns_404_for_unknown_words(client):
     assert client.get("/word/qqzzxxnotaword").status_code == 404
 
 
-WIKTIONARY = DATA / "wiktionary.sqlite"
+WIKTIONARY = DATA / "dictionary-databases" / "wiktionary.sqlite"
 
 
 @pytest.mark.skipif(not WIKTIONARY.exists(), reason="Wiktionary database not built")
@@ -120,7 +120,7 @@ def test_conversion_literally_is_displayed(client):
     assert "(lit.)" not in text
 
 
-GLYPH = DATA / "moe-taiwan" / "moe_glyphs" / "8ff0._104_0.gif"
+GLYPH = DATA / "dictionary-databases" / "moe-taiwan" / "moe_glyphs" / "8ff0._104_0.gif"
 
 
 def test_exact_cross_reference_shows_the_target_definition(client):
@@ -143,7 +143,7 @@ def test_exact_cross_reference_shows_the_target_definition(client):
 
 
 @pytest.mark.skipif(
-    not (DATA / "wiktionary.sqlite").exists(), reason="Wiktionary database not built"
+    not (DATA / "dictionary-databases" / "wiktionary.sqlite").exists(), reason="Wiktionary database not built"
 )
 def test_every_dialect_reading_is_returned(client):
     """A word with no Mandarin reading keeps every dialect it lists.
@@ -165,7 +165,7 @@ def test_every_dialect_reading_is_returned(client):
 
 
 @pytest.mark.skipif(
-    not (DATA / "wiktionary.sqlite").exists(), reason="Wiktionary database not built"
+    not (DATA / "dictionary-databases" / "wiktionary.sqlite").exists(), reason="Wiktionary database not built"
 )
 def test_split_phrase_reading_covers_both_halves(client):
     """A 歇后语 keeps the reading for the half after the dash, too.

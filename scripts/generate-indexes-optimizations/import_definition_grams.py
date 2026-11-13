@@ -23,11 +23,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 # Derived indexes live in db.GENERATED_DIR, not in data/ itself.
 DB_PATH = ROOT / "data" / "generated-indexes-optimizations" / "definition_grams.sqlite"
-MOE_DB = ROOT / "data" / "moe-taiwan" / "moe.sqlite"  # both MOE dictionaries
-WIKTIONARY_DB = ROOT / "data" / "wiktionary.sqlite"
-ZHWIKTIONARY_DB = ROOT / "data" / "zhwiktionary.sqlite"
-JPWIKTIONARY_DB = ROOT / "data" / "jpwiktionary.sqlite"
-UNIHAN_DB = ROOT / "data" / "unihan.sqlite"  # its glosses can name other characters
+MOE_DB = ROOT / "data" / "dictionary-databases" / "moe-taiwan" / "moe.sqlite"  # both MOE dictionaries
+WIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "wiktionary.sqlite"
+ZHWIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "zhwiktionary.sqlite"
+JPWIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "jpwiktionary.sqlite"
+UNIHAN_DB = ROOT / "data" / "dictionary-databases" / "unihan.sqlite"  # its glosses can name other characters
 # Keep in step with db._definition_grams_sources(): every database whose definitions are read below.
 SOURCE_FILES = {
     "moe": MOE_DB,

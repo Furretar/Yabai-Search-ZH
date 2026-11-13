@@ -1459,7 +1459,7 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     margin-left: .5rem;
 }
 
-/* SUBTLEX-CH frequency box, shown under the headword. The chip reuses the
+/* Frequency box, shown under the headword. The chip reuses the
    .source look (outline only, yellow outline on hover). */
 .freq {
     display: flex;

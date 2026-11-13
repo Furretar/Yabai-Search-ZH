@@ -5,7 +5,7 @@ A single character or a pinyin syllable matches thousands of rows, and a new que
 them: under a second on the laptop, 4 to 10 seconds on a tablet. This runs those queries once, here,
 with each search language's default dictionaries, and ships the lists. The app reads a list only
 when its key (query, dictionaries, data version, code version) matches exactly, so a stale file is
-never wrong, only useless: rebuild it after any data or search-code change (rebuild_all.py does).
+never wrong, only useless: rebuild it after any data or search-code change (regenerate_everything.py does).
 
 Queries: the most frequent single characters (both scripts) and every pinyin syllable, with and
 without its tone number, ranked by how searched they are (a syllable counts as common as the most
@@ -27,6 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "django"))  # the Django project (yabai_site) lives in ./django
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "yabai_site.settings")
 os.environ.setdefault("DJANGO_SECRET_KEY", "build-only")
 os.environ.setdefault("YABAI_WARM_LOOKUPS", "0")
@@ -95,7 +96,7 @@ def _start() -> None:
     import django  # noqa: PLC0415
 
     django.setup()
-    from yabai_search import result_cache  # noqa: PLC0415
+    from yabai_search import expensive_search_cache as result_cache  # noqa: PLC0415
 
     result_cache.capture = []
     # The build computes every list itself. A list that is already on disk (the serving
@@ -106,7 +107,7 @@ def _start() -> None:
 
 
 def _run(job: tuple[int, str, str, str]) -> tuple[int, list]:
-    from yabai_search import result_cache, services  # noqa: PLC0415
+    from yabai_search import expensive_search_cache as result_cache, services  # noqa: PLC0415
 
     rank, query, lang, dicts = job
     result_cache.capture.clear()
@@ -133,8 +134,8 @@ def main() -> None:
     import django  # noqa: PLC0415
 
     django.setup()
-    from yabai_search import result_cache, services  # noqa: PLC0415
-    from yabai_search.default_dictionaries import DEFAULTS  # noqa: PLC0415
+    from yabai_search import expensive_search_cache as result_cache, services  # noqa: PLC0415
+    from yabai_search.default_config import DEFAULTS  # noqa: PLC0415
 
     words = queries(args.chars)
     jobs = [

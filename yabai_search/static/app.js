@@ -67,8 +67,16 @@ const dictPanel = document.querySelector(".options.dictionaries");
 const langSelect = document.querySelector(".lang-select");
 const langButton = langSelect.querySelector(".lang-button");
 const langMenu = langSelect.querySelector(".lang-menu");
-// Default dictionaries per language (from default_dictionaries.py).
+// Default dictionaries per language (from default_config.py).
 const langDefaults = JSON.parse(langSelect.dataset.defaults || "{}");
+// Display defaults (from default_config.py): the values below are only a fallback.
+const settingsDefaults = JSON.parse(langSelect.dataset.settings || "{}");
+const defaultSetting = (name, fallback) => (name in settingsDefaults ? settingsDefaults[name] : fallback);
+// A saved "true"/"false" wins; anything else means the default.
+const savedBool = (key, fallback) => {
+    const value = localStorage.getItem(key);
+    return value === "true" ? true : value === "false" ? false : fallback;
+};
 
 // Compact mode shows one definition per language, chosen by the user's
 // dictionary order. Detailed mode shows every selected dictionary.
@@ -98,15 +106,15 @@ function saveDictOrder() {
 // compact: one definition per language, by dictionary order; lang: the selected
 // search language (EN / ZH / TW / JP).
 const state = {
-    script: "simplified",
-    toneColoring: true,
-    phonetic: "pinyin",
-    taiwan: false,
-    customDicts: false,
+    script: defaultSetting("script", "simplified"),
+    toneColoring: defaultSetting("toneColoring", true),
+    phonetic: defaultSetting("phonetic", "pinyin"),
+    taiwan: defaultSetting("taiwan", false),
+    customDicts: defaultSetting("customDicts", false),
     dicts: new Set(), // selected dictionary anchors
-    compact: false,
-    lang: "EN",
-    autoClipboard: false,
+    compact: defaultSetting("compact", false),
+    lang: defaultSetting("lang", "EN"),
+    autoClipboard: defaultSetting("autoClipboard", false),
 };
 
 // True when this page was opened with display settings in the URL. Developer
@@ -4868,19 +4876,20 @@ function loadPrefs() {
     try {
         const script = localStorage.getItem("yabai-search-script");
         if (script === "traditional" || script === "simplified") state.script = script;
-        // Tone coloring is on by default; only an explicit "false" disables it.
-        state.toneColoring = localStorage.getItem("yabai-search-tone") !== "false";
-        state.phonetic = localStorage.getItem("yabai-search-phonetic") === "zhuyin" ? "zhuyin" : "pinyin";
-        state.taiwan = localStorage.getItem("yabai-search-taiwan") === "true";
-        state.customDicts = localStorage.getItem("yabai-search-custom-dicts") === "true";
-        state.compact = localStorage.getItem("yabai-search-compact") === "true";
+        // Each setting is the saved value, or the default from default_config.py.
+        state.toneColoring = savedBool("yabai-search-tone", defaultSetting("toneColoring", true));
+        const phonetic = localStorage.getItem("yabai-search-phonetic");
+        state.phonetic = phonetic === "zhuyin" || phonetic === "pinyin" ? phonetic : defaultSetting("phonetic", "pinyin");
+        state.taiwan = savedBool("yabai-search-taiwan", defaultSetting("taiwan", false));
+        state.customDicts = savedBool("yabai-search-custom-dicts", defaultSetting("customDicts", false));
+        state.compact = savedBool("yabai-search-compact", defaultSetting("compact", false));
         // Auto Clipboard is remembered across page loads. The watcher only
         // reads when the switch is on, so turning it off stops all access.
-        state.autoClipboard = localStorage.getItem("yabai-search-auto-clipboard") === "true";
+        state.autoClipboard = savedBool("yabai-search-auto-clipboard", defaultSetting("autoClipboard", false));
         // The Compact/Detailed switch is inside the custom dictionary panel,
         // so without custom dictionaries the app always uses compact mode.
         if (!state.customDicts) state.compact = true;
-        state.lang = localStorage.getItem("yabai-search-lang") || "EN";
+        state.lang = localStorage.getItem("yabai-search-lang") || defaultSetting("lang", "EN");
         loadDictOrder();
         const stored = JSON.parse(localStorage.getItem("yabai-search-dicts") || "null");
         // Without custom dictionaries, ignore saved choices and use the
@@ -5416,7 +5425,7 @@ function expandMoeSelection(dicts) {
 }
 
 // Selecting a search language switches on its default dictionaries and off all
-// the others (see yabai_search/default_dictionaries.py).
+// the others (see yabai_search/default_config.py).
 function applyDictDefaults(value) {
     if (!(value in langDefaults)) return;
     // Start from a clean slate: every dictionary in the new language category,

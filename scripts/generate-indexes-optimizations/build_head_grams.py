@@ -19,7 +19,7 @@ import sqlite3
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CEDICT = ROOT / "data" / "cedict.sqlite"
+CEDICT = ROOT / "data" / "dictionary-databases" / "cedict.sqlite"
 # Derived indexes live here (db.GENERATED_DIR), not in data/ itself.
 GENERATED = ROOT / "data" / "generated-indexes-optimizations"
 OUT = GENERATED / "head_grams.sqlite"

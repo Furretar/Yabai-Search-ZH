@@ -33,13 +33,13 @@ GENERATED = ROOT / "data" / "generated-indexes-optimizations"
 DB_PATH = GENERATED / "gram_words.sqlite"
 TEMP_PATH = GENERATED / "gram_words.sqlite.tmp"
 # One file holds both MOE dictionaries (concise: plain tables, comprehensive: rev_ tables).
-MOE_DB = ROOT / "data" / "moe-taiwan" / "moe.sqlite"
+MOE_DB = ROOT / "data" / "dictionary-databases" / "moe-taiwan" / "moe.sqlite"
 MOE_REVISED_DB = MOE_DB
-WIKTIONARY_DB = ROOT / "data" / "wiktionary.sqlite"
-ZHWIKTIONARY_DB = ROOT / "data" / "zhwiktionary.sqlite"
-JPWIKTIONARY_DB = ROOT / "data" / "jpwiktionary.sqlite"
-FREQ_DB = ROOT / "data" / "corpus_freq.sqlite"
-BAIDU_DB = ROOT / "data" / "baidu.sqlite"
+WIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "wiktionary.sqlite"
+ZHWIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "zhwiktionary.sqlite"
+JPWIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "jpwiktionary.sqlite"
+FREQ_DB = ROOT / "data" / "dictionary-databases" / "corpus_freq.sqlite"
+BAIDU_DB = ROOT / "data" / "dictionary-databases" / "baidu" / "baidu.sqlite"
 SOURCE_FILES = {
     "moe": MOE_DB,
     "moe_revised": MOE_REVISED_DB,

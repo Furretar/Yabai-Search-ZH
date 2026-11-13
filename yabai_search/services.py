@@ -20,9 +20,9 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from yabai_search import db, merge as merge_results, result_cache, segment
-from yabai_search import perf_debug as pd
-from yabai_search.default_dictionaries import DEFAULTS
+from yabai_search import db, expensive_search_cache, merge_simp_trad, parser
+from yabai_search.debug import perf as pd
+from yabai_search.default_config import DEFAULTS, SETTINGS
 from yabai_search.overrides import PREFERRED_READINGS
 from yabai_search.pinyin import to_numeric, to_toneless
 
@@ -94,7 +94,8 @@ def _code_fingerprint() -> str:
     """Short hash of the search code and result-affecting env flags.
 
     A restart must not invalidate Cloudflare's edge cache if no file changed;
-    editing a module or flipping one of these flags must invalidate it.
+    editing a module or flipping one of these flags must invalidate it. Only the modules directly in
+    yabai_search/ count: debug/ is tracing that never changes what a search returns.
     """
     digest = hashlib.sha256()
     for path in sorted(BASE.glob("*.py")):
@@ -174,7 +175,7 @@ def _page_layouts_cached(
         if hit is not None:
             _page_layout_cache.move_to_end(key)
             return hit
-    simplified, traditional, alt_same = merge_results.page_layouts(rows, taiwan)
+    simplified, traditional, alt_same = merge_simp_trad.page_layouts(rows, taiwan)
     with _page_layout_lock:
         _page_layout_cache[key] = (simplified, traditional, alt_same)
         _page_layout_cache.move_to_end(key)
@@ -259,13 +260,13 @@ def _rank_cache_get_or_compute(key: tuple, compute):
     try:
         # A list this machine (or the prebuild) already computed for this exact data and code
         # version is read from disk; otherwise compute it and keep it for the next restart.
-        value = result_cache.get(key)
+        value = expensive_search_cache.get(key)
         if value is not None:
             status = "disk"
         else:
             started = time.perf_counter()
             value = compute()
-            result_cache.put(key, value, time.perf_counter() - started)
+            expensive_search_cache.put(key, value, time.perf_counter() - started)
     except BaseException:
         with _rank_cache_lock:
             _rank_cache_events.pop(key, None)
@@ -582,7 +583,7 @@ def asset_version() -> str:
 
 
 
-# Minified copies of the page's scripts and stylesheet (scripts/build_static.py), used only while
+# Minified copies of the page's scripts and stylesheet (scripts/generate-indexes-optimizations/build_static.py), used only while
 # they match their source: {name: (source mtime, usable)}.
 _MIN_DIR = _STATIC_DIR / "min"
 _min_state: dict[str, tuple[float, bool]] = {}
@@ -631,7 +632,7 @@ def warm_caches() -> None:
     # warm_caches starts the page-cache read in a daemon thread (default);
     # YABAI_WARM_PAGE_CACHE=legacy restores the old synchronous warm-up.
     db.warm_caches()
-    segment.warm()
+    parser.warm()
     # Fill the parser's reading cache in the background, so common pasted words
     # skip the cold lookup path without delaying startup. Tests disable it to
     # keep the timing-sensitive browser test stable.
@@ -756,6 +757,26 @@ def _preferred_bonus(entry: dict) -> int:
     return 0
 
 
+def _reading_score(entry: dict, main: dict) -> int:
+    """How strongly this entry's reading represents its headword (higher is shown).
+
+    With the pregenerated main-reading list (`main` = db.main_reading_info) the score is just a match
+    against it: the simplified headword's main reading first, then the spelling pair's own. Without it
+    (list missing or stale) it is the old per-request score: CEDICT senses plus the manual override.
+    Entries that are not the main reading still rank by sense count, so ties stay stable.
+    """
+    info = main.get((entry.get("traditional"), entry.get("simplified")))
+    if not info:
+        return _reading_count(entry) + _preferred_bonus(entry)
+    key = db.reading_key(entry.get("pinyin"))
+    score = _reading_count(entry)
+    if key == db.reading_key(info[0]):
+        score += 1_000_000
+    if key == db.reading_key(info[1]):
+        score += 2_000_000
+    return score
+
+
 def _has_explicit_tones(query: str) -> bool:
     """True when the query spells out tones (digits or Bopomofo marks)."""
     return any(char.isdigit() for char in query) or any(
@@ -815,6 +836,13 @@ def _expand_variants(results: list[dict]) -> list[dict]:
         if not (_readings_like(local, want, strict=True) if want else []):
             targets.add(target)
     looked_by_target = db.lookup_many(sorted(targets)) if targets else {}
+    # One batched read of the pregenerated main readings for every row that may be shown.
+    main = db.main_reading_info(
+        (e.get("traditional"), e.get("simplified"))
+        for rows in (results, *looked_by_target.values())
+        for e in rows
+        if e.get("traditional") and e.get("simplified")
+    )
     for entry in results:
         if entry.get("main"):
             target = entry["main"]
@@ -848,7 +876,7 @@ def _expand_variants(results: list[dict]) -> list[dict]:
             key = (e["traditional"], e["simplified"])
             if found_as and (e is not entry or e.get("main")):
                 e = {**e, "found_as": sorted(set(found_as) | set(e.get("found_as") or []))}
-            score = _reading_count(e) + _preferred_bonus(e)
+            score = _reading_score(e, main)
             if key not in best:
                 best[key] = (score, e)
                 order.append(key)
@@ -865,7 +893,7 @@ def _expand_variants(results: list[dict]) -> list[dict]:
 # Debug log: the last few searches, with each SQL statement's timing (see
 # db.start_log). The per-request instrumentation is on by default.
 SEARCH_LOG_ENTRIES = 5  # how many searches data/search.log keeps
-_SEARCH_LOG_PATH = db.DATA_DIR / "search.log"
+_SEARCH_LOG_PATH = BASE.parent / "archives" / "search.log"
 _recent_searches: "collections.deque[dict]" = collections.deque(
     maxlen=SEARCH_LOG_ENTRIES
 )
@@ -925,10 +953,10 @@ def api_search(
     taiwan: bool = False,
     offset: int = 0,
     part: str = "all",
-    lang: str = "EN",
+    lang: str = SETTINGS["lang"],
     exact: bool = False,
     dicts: str = "",
-    script: str = "simplified",
+    script: str = SETTINGS["script"],
     merge: bool = False,
 ):
     """JSON search endpoint. `q` is the term; `limit` is clamped to 1..25.
@@ -962,7 +990,7 @@ def api_search(
     timings: dict[str, float] = {}
     counters: dict[str, object] = {"part": part, "query_length": len(q)}
     # The search-language dropdown picks the primary tier's dictionary.
-    lang = (lang or "EN").strip().upper()
+    lang = (lang or SETTINGS["lang"]).strip().upper()
     if lang not in DEFAULTS:
         lang = "EN"
     # Only anchors this server knows; local imported dictionaries are ignored.
@@ -996,13 +1024,16 @@ def api_search(
             # Without this, a cross-reference such as 没sei了 -> 沒誰了 showed
             # its CC-CEDICT chip but none of the target's definitions.
             entries = _expand_variants([dict(entry) for entry in entries])
+            main = db.main_reading_info(
+                (e.get("traditional"), e.get("simplified")) for e in entries
+            )
             for entry in entries:
                 slug = _audio_slug(
                     entry.get("traditional", ""), entry.get("pinyin", "")
                 )
                 entry["audio"] = _AUDIO_BASE + quote(slug) + ".mp3" if slug else None
                 # Let the merged exact row pick the best reading (只 zhǐ, not 隻 zhī).
-                entry["reading_score"] = _reading_count(entry) + _preferred_bonus(entry)
+                entry["reading_score"] = _reading_score(entry, main)
             results = entries
             total = len(results)
             fuzzy = []
@@ -1024,11 +1055,26 @@ def api_search(
             # "*": every headword across all sources, 50 per page.
             at = time.perf_counter()
             with pd.stage("headwords"):
-                heads, total = db.all_headwords(offset, db.ALL_PAGE_SIZE, selected_dicts)
+                heads, total, labels = db.all_headwords_labeled(
+                    offset, db.ALL_PAGE_SIZE, selected_dicts
+                )
             mark("headwords", at)
             at = time.perf_counter()
             with pd.stage("decorate"):
                 results = db.entries_for_headwords(heads)
+            if labels:
+                # Same fields as every other branch: category 1/2/3 and, for a
+                # bare "*", tier 1/4/5/6 (every ordinary word is tier 1). They
+                # come from the data that ordered the list, so they cannot
+                # disagree with the order, and the page does not re-sort.
+                by_head = {
+                    db.to_simplified(head): label
+                    for head, label in zip(heads, labels)
+                }
+                for entry in results:
+                    label = by_head.get(entry.get("simplified") or "")
+                    if label:
+                        entry["category"], entry["tier"] = label
             mark("hydrate", at)
             counters["raw"] = len(heads)
             counters["expanded"] = len(results)
@@ -1324,7 +1370,7 @@ def _annotate_text(text: str) -> tuple[bytes, dict, dict]:
 
     seg: dict[str, float] = {}
     at = time.perf_counter()
-    words = segment.segment(text, seg)
+    words = parser.segment(text, seg)
     tick("segment", at)
     for key, value in seg.items():
         if key.startswith("n_"):
@@ -1389,7 +1435,7 @@ def _annotate_text(text: str) -> tuple[bytes, dict, dict]:
             not entries
             and len(word) > 1
             and db.has_cjk(word)
-            and not segment.is_headword(word)
+            and not parser.is_headword(word)
         ):
             for i, char in enumerate(word):
                 tokens.append(

@@ -351,7 +351,7 @@ def test_custom_dicts_script_loads_only_after_an_import():
 def test_the_minified_assets_match_their_sources():
     """The shipped minified copies must be built from the current sources.
 
-    scripts/build_static.py writes yabai_search/static/min/ and the manifest there holds the
+    scripts/generate-indexes-optimizations/build_static.py writes yabai_search/static/min/ and the manifest there holds the
     sha256 of the source each copy came from. A source edited without a rebuild would otherwise
     ship old code, so this fails until build_static.py runs again.
     """
@@ -361,14 +361,14 @@ def test_the_minified_assets_match_their_sources():
     static = ROOT / "yabai_search" / "static"
     manifest_path = static / "min" / "manifest.json"
     assert manifest_path.is_file(), (
-        "yabai_search/static/min/manifest.json is missing: run python scripts/build_static.py"
+        "yabai_search/static/min/manifest.json is missing: run python scripts/generate-indexes-optimizations/build_static.py"
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     for name, digest in manifest.items():
         source = static / name
         assert source.is_file(), f"{name} is missing"
         assert hashlib.sha256(source.read_bytes()).hexdigest() == digest, (
-            f"{name} changed since the minified copy was built: run python scripts/build_static.py"
+            f"{name} changed since the minified copy was built: run python scripts/generate-indexes-optimizations/build_static.py"
         )
         assert (static / "min" / name).is_file(), f"min/{name} is missing"
 

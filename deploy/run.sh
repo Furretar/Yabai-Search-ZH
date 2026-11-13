@@ -38,6 +38,9 @@ esac
 
 # gunicorn runs the Django app; threads (not async) keep searches concurrent.
 APP="yabai_site.wsgi:application"
+# yabai_site and dictionary live in ./django, a plain folder that is put on the import path here (the
+# accounts replication commands and manage.py below import them too).
+export PYTHONPATH="$ROOT/django${PYTHONPATH:+:$PYTHONPATH}"
 THREADS="${YABAI_THREADS:-8}"
 # Slow 32-bit tablets need a longer worker timeout for the pure-Python OpenCC.
 TIMEOUT="${YABAI_TIMEOUT:-60}"
@@ -143,7 +146,8 @@ while true; do
     "${LAUNCH[@]}" "$APP" --bind "$BIND:$PORT" --workers 1 \
         --worker-class gthread --threads "$THREADS" --timeout "$TIMEOUT" &
     CHILD=$!
-    echo "$CHILD" > deploy/run/gunicorn.pid
+    # update.sh restarts the app through this file; start.py sets YABAI_PID_FILE so a second copy never replaces it.
+    echo "$CHILD" > "${YABAI_PID_FILE:-deploy/run/gunicorn.pid}"
     wait "$CHILD"
     echo "app exited, restarting in 2s" >&2
     sleep 2

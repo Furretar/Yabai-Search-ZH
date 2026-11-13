@@ -19,8 +19,9 @@ from pathlib import Path
 
 from opencc import OpenCC
 
-from yabai_search import perf_debug as pd
+from yabai_search.debug import perf as pd
 from yabai_search import relevance
+from yabai_search import gen_taiwan_readings
 from yabai_search.overrides import (
     HIDE_FORMS,
     IDS_IMAGES,
@@ -217,7 +218,7 @@ def script_variants(words: Iterable[str]) -> set[str]:
 
 # Every database lives in <project root>/data. Tests and optimisation runs can
 # point every reader at a small generated set instead with YABAI_DATA_DIR (see
-# scripts/build_test_dbs.py), so they do not need the full ~1.4 GB of sources.
+# scripts/tools/build_test_dbs.py), so they do not need the full ~1.4 GB of sources.
 DATA_DIR = Path(
     os.environ.get("YABAI_DATA_DIR")
     or Path(__file__).resolve().parents[1] / "data"
@@ -227,15 +228,19 @@ DATA_DIR = Path(
 # dictionaries stay easy to find. YABAI_DATA_DIR moves the whole tree.
 GENERATED_DIR = DATA_DIR / "generated-indexes-optimizations"
 
-# Path to the generated CEDICT database: <project root>/data/cedict.sqlite.
-DB_PATH = DATA_DIR / "cedict.sqlite"
+# Every dictionary's database lives in data/dictionary-databases/. A dictionary that is only a database file is
+# that file; one with more (raw downloads, glyph pictures, exports) has its own folder there.
+DICTIONARIES_DIR = DATA_DIR / "dictionary-databases"
+
+# Path to the generated CEDICT database: <project root>/data/dictionary-databases/cedict.sqlite.
+DB_PATH = DICTIONARIES_DIR / "cedict.sqlite"
 
 # Path to the merged MOE database (Taiwan readings), built by
-# data/moe-taiwan/import_moe.py. One file holds both dictionaries: the concise
+# scripts/download-dictionaries/import_moe.py. One file holds both dictionaries: the concise
 # 國語辭典簡編本 in the plain tables (moe, senses, examples, classifiers,
 # senses_fts) and the comprehensive 重編國語辭典修訂本 in the same tables with a
 # "rev_" prefix (rev_moe, rev_senses, ...).
-MOE_DB_PATH = DATA_DIR / "moe-taiwan" / "moe.sqlite"
+MOE_DB_PATH = DICTIONARIES_DIR / "moe-taiwan" / "moe.sqlite"
 
 # The comprehensive dictionary is in the same file; the name is kept for callers.
 MOE_REVISED_DB_PATH = MOE_DB_PATH
@@ -244,10 +249,14 @@ MOE_REVISED_DB_PATH = MOE_DB_PATH
 # scripts/generate-indexes-optimizations/build_taiwan_readings.py. Rebuild it whenever a source database, an
 # override in overrides.py or the Taiwan-reading logic below changes (AGENTS.md).
 TAIWAN_DB_PATH = GENERATED_DIR / "taiwan_readings.sqlite"
+# The fixed main-reading lists (scripts/generate-indexes-optimizations/build_main_readings.py).
+MAIN_READINGS_DB_PATH = GENERATED_DIR / "main_readings.sqlite"
+# Frequency rank and HSK level of every word form (scripts/generate-indexes-optimizations/build_headwords.py).
+HEADWORDS_DB_PATH = GENERATED_DIR / "headwords.sqlite"
 
 # Path to the Wiktionary headword list (kaikki.org/Wiktextract), built by
-# scripts/create-dict-db/import_wiktionary.py.
-WIKTIONARY_DB_PATH = DATA_DIR / "wiktionary.sqlite"
+# scripts/download-dictionaries/import_wiktionary.py.
+WIKTIONARY_DB_PATH = DICTIONARIES_DIR / "wiktionary.sqlite"
 SOURCE_GLOSS_DB_PATH = GENERATED_DIR / "source_gloss.sqlite"
 SENSE_COUNTS_DB_PATH = GENERATED_DIR / "sense_counts.sqlite"
 _source_gloss_ok_cache: bool | None = None
@@ -255,44 +264,37 @@ HEAD_GRAMS_DB_PATH = GENERATED_DIR / "head_grams.sqlite"
 _head_grams_ok_cache: bool | None = None
 
 # Path to the Chinese Wiktionary (zh.wiktionary.org) database, built by
-# scripts/create-dict-db/import_zhwiktionary.py.
-ZHWIKTIONARY_DB_PATH = DATA_DIR / "zhwiktionary.sqlite"
+# scripts/download-dictionaries/import_zhwiktionary.py.
+ZHWIKTIONARY_DB_PATH = DICTIONARIES_DIR / "zhwiktionary.sqlite"
 
 # Japanese definitions from the Japanese sections of the same dump, built by
-# scripts/create-dict-db/import_jpwiktionary.py.
-JPWIKTIONARY_DB_PATH = DATA_DIR / "jpwiktionary.sqlite"
+# scripts/download-dictionaries/import_jpwiktionary.py.
+JPWIKTIONARY_DB_PATH = DICTIONARIES_DIR / "jpwiktionary.sqlite"
 
 # Path to the Baidu pinyin crawler headwords (300k, CC-CEDICT-unlicensed
 # scrape), built by ~/Desktop/ai/baidu-scraper/scripts/import_baidu.py. Contributes a source chip only.
-BAIDU_DB_PATH = DATA_DIR / "baidu.sqlite"
+BAIDU_DB_PATH = DICTIONARIES_DIR / "baidu" / "baidu.sqlite"
 
 # Path to the Chinese parts of the Unicode Han Database (Unihan: per-character readings,
-# English glosses, variants, strokes), built by scripts/create-dict-db/import_unihan.py. Unicode License V3.
-UNIHAN_DB_PATH = DATA_DIR / "unihan.sqlite"
+# English glosses, variants, strokes), built by scripts/download-dictionaries/import_unihan.py. Unicode License V3.
+UNIHAN_DB_PATH = DICTIONARIES_DIR / "unihan.sqlite"
 
 # The usual Mandarin reading of a character: kMandarin lists the most common one first,
 # separated from the others by a space.
 _UNIHAN_PINYIN = ("CASE instr(mandarin, ' ') WHEN 0 THEN mandarin "
                   "ELSE substr(mandarin, 1, instr(mandarin, ' ') - 1) END")
 
-# Path to the SUBTLEX-CH word frequencies (Cai & Brysbaert, 2010), built by
-# scripts/create-dict-db/import_subtlex.py.
-SUBTLEX_DB_PATH = DATA_DIR / "subtlex.sqlite"
+# The word frequency list, built from the FineWeb2 combined list by
+# scripts/download-dictionaries/import_corpus_freq.py. Its rank is also copied into CEDICT's
+# `corpus_freq_rank` column so searches can sort by it without a lookup per row.
+CORPUS_FREQ_DB_PATH = DICTIONARIES_DIR / "corpus_freq.sqlite"
+FREQ_DB_PATH = CORPUS_FREQ_DB_PATH
+FREQ_RANK_COLUMN = "corpus_freq_rank"
+FREQ_LABEL = "FineWeb2 corpus (temporary)"
+FREQ_ANCHOR = "fineweb2-frequency"
 
-# Temporary frequency source built from the FineWeb2 combined list. The old
-# SUBTLEX rank column stays in the database, so setting
-# YABAI_FREQ_SOURCE=subtlex restores it without rebuilding anything.
-CORPUS_FREQ_DB_PATH = DATA_DIR / "corpus_freq.sqlite"
-FREQ_SOURCE = os.environ.get("YABAI_FREQ_SOURCE", "corpus").strip().lower()
-if FREQ_SOURCE not in {"corpus", "subtlex"}:
-    FREQ_SOURCE = "corpus"
-FREQ_DB_PATH = CORPUS_FREQ_DB_PATH if FREQ_SOURCE == "corpus" else SUBTLEX_DB_PATH
-FREQ_RANK_COLUMN = "corpus_freq_rank" if FREQ_SOURCE == "corpus" else "freq_rank"
-FREQ_LABEL = "FineWeb2 corpus (temporary)" if FREQ_SOURCE == "corpus" else "SUBTLEX-CH"
-FREQ_ANCHOR = "fineweb2-frequency" if FREQ_SOURCE == "corpus" else "subtlex"
-
-# Path to the HSK vocabulary levels, built by scripts/create-dict-db/import_hsk.py.
-HSK_DB_PATH = DATA_DIR / "hsk.sqlite"
+# Path to the HSK vocabulary levels, built by scripts/download-dictionaries/import_hsk.py.
+HSK_DB_PATH = DICTIONARIES_DIR / "hsk.sqlite"
 
 # Path to the definition word list (scripts/generate-indexes-optimizations/import_english_words.py): the whole
 # words that appear in any dictionary's definitions, used for the English-search
@@ -456,7 +458,7 @@ class _TimedCursor(sqlite3.Cursor):
 
 # One pooled connection per database path, kept for the process lifetime:
 # read-only, with a page cache, so a search does not reopen files (or re-ATTACH
-# MOE/SUBTLEX) on every call. close() is a no-op, so the existing
+# MOE/frequency list) on every call. close() is a no-op, so the existing
 # `finally: connection.close()` calls stay harmless. A restart is already
 # required after re-imports, so holding the old file handle is fine.
 class _PooledConnection(sqlite3.Connection):
@@ -878,7 +880,7 @@ _SOURCE_QUERIES = [
 ]
 
 # --- headword export for the segmenter -------------------------------------
-# The segmenter (segment.py) must know every word search can find, otherwise
+# The segmenter (parser.py) must know every word search can find, otherwise
 # "it's 缩头缩脑" splits a word that "缩头缩脑" alone finds. Rather than keep a
 # second list of dictionaries there, it asks this registry: each source
 # contributes the headwords from its `segment_sql` (when it has one) or else its
@@ -933,7 +935,6 @@ def data_version() -> str:
     paths.extend(
         [
             TAIWAN_DB_PATH,
-            SUBTLEX_DB_PATH,
             FREQ_DB_PATH,
             HSK_DB_PATH,
             ENGLISH_WORDS_DB_PATH,
@@ -1379,18 +1380,16 @@ _zhuyin_cache: dict[str, str] | None = None
 # Cache of {word: number of distinct CEDICT readings}. None until built.
 _reading_count_cache: dict[str, int] | None = None
 
-# Words that never take a Taiwan reading - the word-level MOE reading does not
-# fit their CEDICT sense. Add more here as needed.
-_TAIWAN_EXCEPTIONS = {"啊"}
+# The rules that generate a Taiwan reading live in yabai_search/gen_taiwan_readings.py.
+_TAIWAN_EXCEPTIONS = gen_taiwan_readings.TAIWAN_EXCEPTIONS
 
 
 def connect() -> sqlite3.Connection:
     """The pooled CEDICT connection, with MOE and the frequency list attached.
 
     Rows behave like dicts; the MOE database is attached as "moe" (when
-    present) so a query can also match Taiwan readings. The configured
-    frequency database is attached as "subtlex" for compatibility with the
-    existing queries.
+    present) so a query can also match Taiwan readings. The frequency
+    list is attached as "wordfreq" (queries read `wordfreq.freq`).
     """
     connection = _connect(DB_PATH)
     # Row factory lets us read columns by name, e.g. row["pinyin"].
@@ -1402,8 +1401,8 @@ def connect() -> sqlite3.Connection:
             attached = {row[1] for row in connection.execute("PRAGMA database_list")}
             if "moe" not in attached and MOE_DB_PATH.exists():
                 connection.execute("ATTACH DATABASE ? AS moe", (str(MOE_DB_PATH),))
-            if "subtlex" not in attached and FREQ_DB_PATH.exists():
-                connection.execute("ATTACH DATABASE ? AS subtlex", (str(FREQ_DB_PATH),))
+            if "wordfreq" not in attached and FREQ_DB_PATH.exists():
+                connection.execute("ATTACH DATABASE ? AS wordfreq", (str(FREQ_DB_PATH),))
             if "tw" not in attached and TAIWAN_DB_PATH.exists():
                 connection.execute("ATTACH DATABASE ? AS tw", (str(TAIWAN_DB_PATH),))
         connection._yabai_attached = True
@@ -1598,40 +1597,8 @@ def _moe_readings(words: list[str]) -> dict[str, list[str]]:
     return by_word
 
 
-def _word_taiwan(pinyin: str, options: list[str]) -> str | None:
-    """Return the Taiwan reading for a whole word from its MOE readings.
-
-    An exact MOE word match always wins. A single reading is used as-is (even if
-    it differs from CEDICT). With several (polyphonic), prefer the one matching
-    the entry's reading exactly, then by toneless form, then MOE's first.
-    """
-    if not options:
-        return None
-    if len(options) == 1:
-        return options[0]
-    lowered = pinyin.lower()
-    for option in options:
-        if option.lower() == lowered:
-            return option
-    target = to_toneless(pinyin)
-    for option in options:
-        if to_toneless(option) == target:
-            return option
-    return options[0]
-
-
-def _char_taiwan(syllable: str, options: list[str]) -> str | None:
-    """Return a character's Taiwan reading for the per-character fallback.
-
-    If MOE lists a single reading for the character, use it as-is (even when it
-    differs from the CEDICT syllable). With several readings, use one only if
-    exactly one matches the syllable's toneless form.
-    """
-    if len(options) == 1:
-        return options[0]
-    target = to_toneless(syllable)
-    matches = {option for option in options if to_toneless(option) == target}
-    return matches.pop() if len(matches) == 1 else None
+_word_taiwan = gen_taiwan_readings.word_taiwan
+_char_taiwan = gen_taiwan_readings.char_taiwan
 
 
 def _moe_char_map() -> dict[str, list[str]]:
@@ -1715,31 +1682,8 @@ def _zhuyin_to_numeric(text: str) -> str | None:
 
 
 def _derive_taiwan(traditional: str, pinyin: str, char_map: dict[str, list[str]]) -> str | None:
-    """Build a Taiwan reading character by character from MOE.
-
-    Used for words the MOE dictionary doesn't list whole. Each character is
-    swapped for its MOE reading only when that reading is unambiguous (exactly
-    one matches the syllable). Returns None when nothing changed.
-    """
-    chars = list(traditional)
-    syllables = pinyin.split()
-    if len(chars) != len(syllables):
-        return None
-    counts = _reading_counts()
-    changed = False
-    result = []
-    for char, syllable in zip(chars, syllables):
-        # Don't guess for a polyphonic character: its MOE reading may belong to a
-        # different sense (e.g. 腌 āng vs the 腌 ā in 腌臜).
-        replacement = None
-        if counts.get(char, 1) == 1:
-            replacement = _char_taiwan(syllable, char_map.get(char, []))
-        if replacement:
-            result.append(replacement)
-            changed = True
-        else:
-            result.append(syllable)
-    return " ".join(result) if changed else None
+    """Per-character Taiwan reading (see gen_taiwan_readings.derive_taiwan)."""
+    return gen_taiwan_readings.derive_taiwan(traditional, pinyin, char_map, _reading_counts())
 
 
 # CEDICT cross-references: "trad|simp[pinyin]" or "word[pinyin]".
@@ -1754,50 +1698,8 @@ def _cross_refs(text: str) -> list[tuple[str, str, str]]:
     ]
 
 
-def _taiwan_reading(
-    word: str, pinyin: str, options: list[str], counts: dict[str, int], char_map: dict
-) -> str | None:
-    """Return a word's Taiwan reading (marked pinyin), or None.
-
-    Words in `_TAIWAN_EXCEPTIONS` get none. A monophonic word may use its
-    whole-word MOE reading; a polyphonic word keeps its specific CEDICT reading
-    (the MOE reading is keyed by word, not sense). Everything else falls back to
-    per-character derivation.
-    """
-    if word in _TAIWAN_EXCEPTIONS:
-        return None
-    if counts.get(word, 1) == 1:
-        reading = _word_taiwan(pinyin, options)
-        if reading is not None:
-            return reading
-    return _derive_taiwan(word, pinyin, char_map)
-
-
-def _entry_taiwan_reading(
-    traditional: str,
-    simplified: str,
-    pinyin: str,
-    english_normalized: str,
-    options: list[str],
-    counts: dict[str, int],
-    char_map: dict,
-) -> str | None:
-    """The Taiwan reading of one headword row, or None when it has none.
-
-    The single place where the rules are combined, used by the build script (to
-    prefill taiwan_readings.sqlite) and by _decorate (when a row is not in that
-    table): a manual override in overrides.py wins; then the whole-word MOE
-    reading (see _taiwan_reading); then CEDICT's own "Taiwan pr." note; then the
-    per-character derivation.
-    """
-    override = TAIWAN_READINGS.get(traditional) or TAIWAN_READINGS.get(simplified)
-    if override:
-        return override
-    if options:
-        return _taiwan_reading(traditional, pinyin, options, counts, char_map)
-    return _cedict_taiwan_reading(english_normalized or "") or _taiwan_reading(
-        traditional, pinyin, options, counts, char_map
-    )
+_taiwan_reading = gen_taiwan_readings.taiwan_reading
+_entry_taiwan_reading = gen_taiwan_readings.entry_taiwan_reading
 
 
 # --- prefilled Taiwan readings (taiwan_readings.sqlite) --------------------
@@ -1888,13 +1790,7 @@ def _taiwan_lookup(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], str | 
 # Everything the prefilled table is derived from. The build script stores this
 # fingerprint; startup compares it so a stale table is reported, not trusted.
 _TAIWAN_LOGIC = (
-    "_word_taiwan",
-    "_char_taiwan",
-    "_derive_taiwan",
-    "_taiwan_reading",
-    "_entry_taiwan_reading",
-    "_cedict_taiwan_reading",
-    "_reading_counts",
+    "_reading_counts",  # how many CEDICT readings a word has, passed into the rules
 )
 
 
@@ -1928,8 +1824,8 @@ def taiwan_signature() -> str:
         parts.append(inspect.getsource(_pinyin_module))
     except (OSError, TypeError):
         parts.append("pinyin")
-    parts.append(_TAIWAN_PR_RE.pattern)
-    parts.append(_json.dumps(sorted(_TAIWAN_EXCEPTIONS), ensure_ascii=False))
+    # Every rule (and the exceptions list and the Taiwan-note pattern) is in gen_taiwan_readings.py.
+    parts.append(inspect.getsource(gen_taiwan_readings))
     parts.append(_json.dumps(TAIWAN_READINGS, ensure_ascii=False, sort_keys=True))
     for source in _SOURCE_QUERIES:
         parts.append(f"{source['anchor']}={_file_change_stamp(source['database'])}")
@@ -1950,6 +1846,166 @@ def taiwan_table_status() -> str:
     finally:
         connection.close()
     return "ok" if row and row[0] == taiwan_signature() else "stale"
+
+
+def main_readings_signature() -> str:
+    """Fingerprint of everything main_readings.sqlite is derived from.
+
+    The sources, the sense counts, overrides.py, the Taiwan rules (gen_taiwan_readings.py) and the builder itself,
+    so a changed input is reported as a stale list instead of being trusted.
+    """
+    import inspect
+    import json as _json
+
+    parts: list[str] = []
+    for name in ("_reading_counts",):
+        parts.append(inspect.getsource(globals()[name]))
+    parts.append(inspect.getsource(gen_taiwan_readings))
+    builder = Path(__file__).resolve().parents[1] / "scripts" / "generate-indexes-optimizations" / "build_main_readings.py"
+    parts.append(builder.read_text(encoding="utf-8") if builder.exists() else "builder")
+    parts.append(_json.dumps(PREFERRED_READINGS, ensure_ascii=False, sort_keys=True))
+    parts.append(_json.dumps(TAIWAN_READINGS, ensure_ascii=False, sort_keys=True))
+    parts.append(f"sense_counts={_file_change_stamp(SENSE_COUNTS_DB_PATH)}")
+    for source in _SOURCE_QUERIES:
+        parts.append(f"{source['anchor']}={_file_change_stamp(source['database'])}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def main_readings_table_status() -> str:
+    """"ok", "missing" or "stale" for main_readings.sqlite."""
+    if not MAIN_READINGS_DB_PATH.exists():
+        return "missing"
+    connection = _connect(MAIN_READINGS_DB_PATH)
+    try:
+        row = connection.execute("SELECT value FROM meta WHERE key = 'signature'").fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        connection.close()
+    return "ok" if row and row[0] == main_readings_signature() else "stale"
+
+
+def headwords_signature() -> str:
+    """Fingerprint of what headwords.sqlite is derived from: the frequency list, the HSK list and the builder."""
+    builder = Path(__file__).resolve().parents[1] / "scripts" / "generate-indexes-optimizations" / "build_headwords.py"
+    parts = [
+        builder.read_text(encoding="utf-8") if builder.exists() else "builder",
+        f"freq={_file_change_stamp(FREQ_DB_PATH)}",
+        f"hsk={_file_change_stamp(HSK_DB_PATH)}",
+    ]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def headwords_table_status() -> str:
+    """"ok", "missing" or "stale" for headwords.sqlite."""
+    if not HEADWORDS_DB_PATH.exists():
+        return "missing"
+    connection = _connect(HEADWORDS_DB_PATH)
+    try:
+        row = connection.execute("SELECT value FROM meta WHERE key = 'signature'").fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        connection.close()
+    return "ok" if row and row[0] == headwords_signature() else "stale"
+
+
+def _headwords_ok() -> bool:
+    """True when headwords.sqlite was built from the current inputs (regenerate_everything.py --check)."""
+    return headwords_table_status() == "ok"
+
+
+_headwords_ready_cache: bool | None = None
+
+
+def _headwords_ready() -> bool:
+    """True when the headwords index can be trusted; checked once per process."""
+    global _headwords_ready_cache
+    if _headwords_ready_cache is None:
+        _headwords_ready_cache = headwords_table_status() == "ok"
+    return _headwords_ready_cache
+
+
+def _headword_rows(words: list[str]) -> dict[str, tuple]:
+    """{word: (freq_rank, freq_count, per_million, hsk_new, hsk_newest)} read from the headwords index."""
+    rows: dict[str, tuple] = {}
+    connection = _connect(HEADWORDS_DB_PATH)
+    try:
+        for chunk in _chunks(words):
+            holes = ",".join("?" * len(chunk))
+            for row in connection.execute(
+                "SELECT word, freq_rank, freq_count, per_million, hsk_new, hsk_newest "
+                f"FROM headwords WHERE word IN ({holes})",
+                tuple(chunk),
+            ):
+                rows[row[0]] = tuple(row[1:])
+    finally:
+        connection.close()
+    return rows
+
+
+_main_ready_cache: bool | None = None
+_main_info_cache: dict[tuple[str, str], tuple[str, str] | None] = {}
+_MAIN_INFO_CACHE_MAX = 200_000
+
+
+def _main_readings_ready() -> bool:
+    """True when the main-reading list can be trusted (built from the current inputs); cached."""
+    global _main_ready_cache
+    if _main_ready_cache is None:
+        _main_ready_cache = main_readings_table_status() == "ok"
+    return _main_ready_cache
+
+
+def main_reading_info(
+    pairs: Iterable[tuple[str, str]],
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """{(traditional, simplified): (the pair's main reading, its simplified headword's main reading)}.
+
+    Read from the pregenerated main_readings.sqlite (README, "Headword Readings"); nothing is computed
+    here. Pairs the list does not know are left out, and so is everything when the list is missing or
+    stale, so callers fall back to the old per-request scoring.
+    """
+    wanted = list(dict.fromkeys(pairs))
+    if not wanted or not _main_readings_ready():
+        return {}
+    missing = [pair for pair in wanted if pair not in _main_info_cache]
+    if missing:
+        if len(_main_info_cache) > _MAIN_INFO_CACHE_MAX:
+            _main_info_cache.clear()
+        connection = _connect(MAIN_READINGS_DB_PATH)
+        try:
+            for start in range(0, len(missing), 400):
+                chunk = missing[start : start + 400]
+                words = sorted({word for pair in chunk for word in pair})
+                holes = ",".join("?" * len(words))
+                pair_reading = {
+                    (row[0], row[1]): row[2]
+                    for row in connection.execute(
+                        "SELECT traditional, simplified, reading FROM pairs "
+                        f"WHERE simplified IN ({holes}) OR traditional IN ({holes})",
+                        words + words,
+                    )
+                }
+                head_reading = dict(
+                    connection.execute(
+                        f"SELECT simplified, reading FROM simplified WHERE simplified IN ({holes})",
+                        words,
+                    ).fetchall()
+                )
+                for pair in chunk:
+                    own = pair_reading.get(pair)
+                    _main_info_cache[pair] = (
+                        (own, head_reading.get(pair[1], own)) if own else None
+                    )
+        finally:
+            connection.close()
+    return {pair: _main_info_cache[pair] for pair in wanted if _main_info_cache.get(pair)}
+
+
+def _main_readings_ok() -> bool:
+    """True when main_readings.sqlite was built from the current inputs (regenerate_everything.py --check)."""
+    return main_readings_table_status() == "ok"
 
 
 def _attach_sources(entries: list[dict]) -> list[dict]:
@@ -2000,6 +2056,16 @@ def _attach_freq(entries: list[dict]) -> list[dict]:
     )
     for entry in entries:
         entry["freq"] = None
+    if words and _headwords_ready():
+        # Pregenerated (headwords.sqlite): the same simplified-then-traditional match, no per-request work.
+        rows = _headword_rows(words)
+        for entry in entries:
+            for key in (entry["simplified"], entry["traditional"]):
+                row = rows.get(key)
+                if row and row[0] is not None:
+                    entry["freq"] = {"rank": row[0], "count": row[1], "per_million": row[2]}
+                    break
+        return entries
     if not words or not FREQ_DB_PATH.exists():
         return entries
     by_word: dict[str, dict] = {}
@@ -2038,6 +2104,15 @@ def _attach_hsk(entries: list[dict]) -> list[dict]:
     )
     for entry in entries:
         entry["hsk"] = None
+    if words and _headwords_ready():
+        rows = _headword_rows(words)
+        for entry in entries:
+            for key in (entry["simplified"], entry["traditional"]):
+                row = rows.get(key)
+                if row and (row[3] is not None or row[4] is not None):
+                    entry["hsk"] = {"new": row[3], "newest": row[4]}
+                    break
+        return entries
     if not words or not HSK_DB_PATH.exists():
         return entries
     placeholders = ",".join("?" * len(words))
@@ -2783,7 +2858,7 @@ def _split_pinyin(text: str) -> str:
     """Space out a run-together reading, e.g. 'língcìyuán' -> 'líng cì yuán'.
 
     Uses the syllables CEDICT actually contains, so the importer can precompute
-    exactly the same spacing (see scripts/create-dict-db/import_wiktionary.py).
+    exactly the same spacing (see scripts/download-dictionaries/import_wiktionary.py).
     """
     return split_pinyin(text, _cedict_syllables())
 
@@ -3051,18 +3126,8 @@ def _ids_images_for(word: str) -> list[str]:
 
 
 # CC-CEDICT's own Taiwan reading note, e.g. "Taiwan pr. [xia4 hai2]".
-_TAIWAN_PR_RE = re.compile(r"(?:Taiwan|Taiwanese)\s+pr\.\s*\[([^\]]+)\]")
-
-
-def _cedict_taiwan_reading(text: str) -> str:
-    """The marked pinyin from a CEDICT "Taiwan pr. [...]" note, or ""."""
-    match = _TAIWAN_PR_RE.search(text or "")
-    if not match:
-        return ""
-    # CEDICT may run the syllables together ("xia4hai2"), so split on each
-    # letter run + optional tone digit before marking.
-    syllables = re.findall(r"[A-Za-zü:]+[0-9]?", match.group(1))
-    return numeric_to_marked(" ".join(syllables))
+_TAIWAN_PR_RE = gen_taiwan_readings.TAIWAN_PR_RE
+_cedict_taiwan_reading = gen_taiwan_readings.cedict_taiwan_reading
 
 
 def _decorate(entries: list[dict]) -> list[dict]:
@@ -3289,7 +3354,33 @@ def _lookup_uncached(words: list[str]) -> dict[str, list[dict]]:
             result[word] = batch_rows[word]
     for word in words:
         _preferred_sort(word, result[word])
+    _main_reading_first(result)
     return result
+
+
+def _main_reading_first(result: dict[str, list[dict]]) -> None:
+    """Put each word's main reading (pregenerated list) first among its rows; nothing else moves.
+
+    The parsed-input display shows a word's first row, so this is what makes it read 都 as dōu.
+    A stable sort: rows keep their order (sense count, id) apart from the ones that match.
+    """
+    main = main_reading_info(
+        (row["traditional"], row["simplified"]) for rows in result.values() for row in rows
+    )
+    if not main:
+        return
+    for rows in result.values():
+
+        def rank(row: dict) -> int:
+            info = main.get((row["traditional"], row["simplified"]))
+            if not info:
+                return 3
+            key = reading_key(row["pinyin"])
+            if key == reading_key(info[1]):
+                return 0  # the simplified headword's main reading
+            return 1 if key == reading_key(info[0]) else 2
+
+        rows.sort(key=rank)
 
 
 def lookup_many(words: list[str]) -> dict[str, list[dict]]:
@@ -3391,7 +3482,7 @@ def warm_lookup_readings(limit: int = 5000) -> None:
         words = [
             row[0]
             for row in connection.execute(
-                "SELECT word FROM subtlex.freq ORDER BY rank LIMIT ?", (limit,)
+                "SELECT word FROM wordfreq.freq ORDER BY rank LIMIT ?", (limit,)
             )
         ]
     except sqlite3.Error:
@@ -3591,7 +3682,7 @@ def _freq_order() -> list[str]:
         return []
     if _freq_rank_ready():
         return [f"{FREQ_RANK_COLUMN} IS NULL", FREQ_RANK_COLUMN]
-    rank = "(SELECT rank FROM subtlex.freq WHERE subtlex.freq.word = entries.simplified)"
+    rank = "(SELECT rank FROM wordfreq.freq WHERE wordfreq.freq.word = entries.simplified)"
     return [f"({rank} IS NULL)", rank]
 
 
@@ -3634,7 +3725,7 @@ def _source_rank(source: dict) -> tuple[int, int]:
 def _source_only_entries(
     query: str, limit: int = 10, exact: bool = False, allow_no_gloss: bool = False
 ) -> list[dict]:
-    """Headwords that only the secondary sources (or SUBTLEX) have.
+    """Headwords that only the secondary sources (or the frequency list) have.
 
     Search results normally come from CEDICT alone. This finds matching headwords
     in the other source databases plus the frequency list, so a word CEDICT lacks
@@ -4632,7 +4723,7 @@ def _definition_grams_current(connection: sqlite3.Connection) -> bool:
         if stored.get(f"source:{name}") != _file_sha256(path):
             print(
                 f"definition_grams.sqlite is stale for {name}; scanning definitions without it "
-                "(run scripts/generate-indexes-optimizations/rebuild_all.py)",
+                "(run scripts/regenerate_everything.py)",
                 file=sys.stderr,
             )
             return False
@@ -5706,7 +5797,7 @@ _all_headwords_cache: tuple[list[str], list[int], list[int]] | None = None
 # stored beside the "*" headword list. Filled from the index (or a live build).
 _def_anchors: list[str] = []
 # One reordered "*" list for the current dictionary selection, keyed by its mask.
-_selected_order_cache: dict[int, list[str]] = {}
+_selected_order_cache: dict[int, list[int]] = {}
 
 
 def _build_fold(pairs) -> Callable[[str], str]:
@@ -5964,7 +6055,7 @@ def _build_all_headwords_list() -> list[str]:
         if FREQ_DB_PATH.exists():
             freq_rank = {
                 row[0]: row[1]
-                for row in connection.execute("SELECT word, rank FROM subtlex.freq")
+                for row in connection.execute("SELECT word, rank FROM wordfreq.freq")
             }
     finally:
         connection.close()
@@ -6015,16 +6106,37 @@ def all_headwords(
     ordered by frequency (missing frequencies last). The order is fixed once the
     list is cached, so paging is stable.
 
-    With `selected`, the words that a selected dictionary defines come first (in
-    the same order), and the rest follow: picking only 百度汉语 must not fill the
-    first page with words that only CEDICT can define. The reordered list is
-    kept for the current selection.
+    With `selected`, the README's categories come first: words a selected
+    dictionary defines (category 1), then words only another dictionary defines
+    (category 2), then words nothing defines (category 3). Inside a category the
+    tier and frequency order above holds. The reordered list is kept for the
+    current selection.
+    """
+    heads, total, _labels = all_headwords_labeled(offset, limit, selected)
+    return heads, total
+
+
+def all_headwords_labeled(
+    offset: int = 0, limit: int = ALL_PAGE_SIZE, selected: list[str] | None = None
+) -> tuple[list[str], int, list[tuple[int, int]]]:
+    """`all_headwords` plus each word's (category, tier) for the page.
+
+    The labels come from the data that orders the list (the tier group and the
+    per-source definition mask), so a label can never disagree with the order.
+    Tier is 1, 4, 5 or 6 for a bare "*" (every ordinary word is tier 1).
     """
     heads = _all_headwords_list()
     mask = _selection_mask(selected)
-    if mask:
-        heads = _selected_headword_order(heads, mask)
-    return heads[offset : offset + limit], len(heads)
+    cache = _all_headwords_cache
+    if not mask or cache is None or len(cache) < 3:
+        return heads[offset : offset + limit], len(heads), []
+    order = _selected_headword_order(mask)
+    groups, sels = cache[1], cache[2]
+    page = order[offset : offset + limit]
+    labels = [
+        (1 if sels[i] & mask else 2 if sels[i] else 3, groups[i]) for i in page
+    ]
+    return [heads[i] for i in page], len(heads), labels
 
 
 def _selection_mask(selected: list[str] | None) -> int:
@@ -6038,19 +6150,25 @@ def _selection_mask(selected: list[str] | None) -> int:
     return mask
 
 
-def _selected_headword_order(heads: list[str], mask: int) -> list[str]:
-    """The "*" list with the words a selected dictionary defines first."""
+def _selected_headword_order(mask: int) -> list[int]:
+    """Positions in the "*" list ordered by (category, tier, frequency).
+
+    The list itself is already (tier, frequency); a stable sort on the category
+    alone keeps that order inside each category. Category 1 is a word a selected
+    dictionary defines, 2 a word only an unselected one defines, 3 a word nothing
+    defines. A defined dialect-only word (category 2, tier 4) therefore sits
+    before an undefined one (category 3, tier 4). Cached for the current
+    selection.
+    """
     cached = _selected_order_cache.get(mask)
+    heads = _all_headwords_cache[0]
     if cached is not None and len(cached) == len(heads):
         return cached
-    if _all_headwords_cache is None or len(_all_headwords_cache) < 3:
-        return heads
     sels = _all_headwords_cache[2]
-    first: list[str] = []
-    rest: list[str] = []
-    for word, sel in zip(heads, sels):
-        (first if sel & mask else rest).append(word)
-    order = first + rest
+    buckets: tuple[list[int], list[int], list[int]] = ([], [], [])
+    for index, sel in enumerate(sels):
+        buckets[0 if sel & mask else 1 if sel else 2].append(index)
+    order = buckets[0] + buckets[1] + buckets[2]
     _selected_order_cache.clear()
     _selected_order_cache[mask] = order
     return order
@@ -6065,13 +6183,19 @@ def entries_for_headwords(headwords: list[str]) -> list[dict]:
     """
     if not headwords:
         return []
+    # Which word a headword stands for is decided by its first CEDICT row (id
+    # order), as it always was: 妳 is the row that simplifies to 你, not the
+    # variant row that simplifies to 奶. Among the rows of that same word, take
+    # the best reading: lookup_many() orders them by sense count and preferred
+    # reading, like the word page does. Taking the first database row showed
+    # the surname row, so 都 read "Dū" instead of "dōu".
     placeholders = ",".join("?" * len(headwords))
     connection = connect()
     try:
         rows = connection.execute(
             "SELECT simplified, traditional, pinyin, english, english_normalized "
             f"FROM entries WHERE simplified IN ({placeholders}) "
-            f"OR traditional IN ({placeholders})",
+            f"OR traditional IN ({placeholders}) ORDER BY id",
             headwords + headwords,
         ).fetchall()
     finally:
@@ -6082,25 +6206,40 @@ def entries_for_headwords(headwords: list[str]) -> list[dict]:
         entry = dict(row)
         by_word.setdefault(entry["simplified"], entry)
         by_word.setdefault(entry["traditional"], entry)
+    looked = lookup_many(list(dict.fromkeys(h for h in headwords if h in by_word)))
 
     entries: list[dict] = []
+    fresh: list[dict] = []  # rows built here, still to be decorated
     seen: set[str] = set()
     for head in headwords:
         key = to_simplified(head)
         if key in seen:
             continue
         seen.add(key)
-        entries.append(
-            by_word.get(head)
-            or {
-                "simplified": key,
-                "traditional": to_traditional(head),
-                "pinyin": "",
-                "english": "",
-                "english_normalized": "",
-            }
-        )
-    return _decorate(entries)
+        first = by_word.get(head)
+        if first:
+            same_word = [
+                row
+                for row in looked.get(head, [])
+                if row["simplified"] == first["simplified"]
+            ]
+            # The word's main reading (pregenerated list); lookup_many() already puts it first.
+            # A copy, because lookup_many() entries are shared and cached.
+            entries.append(dict(same_word[0]) if same_word else first)
+            if not same_word:
+                fresh.append(first)
+            continue
+        entry = {
+            "simplified": key,
+            "traditional": to_traditional(head),
+            "pinyin": "",
+            "english": "",
+            "english_normalized": "",
+        }
+        entries.append(entry)
+        fresh.append(entry)
+    _decorate(fresh)
+    return entries
 
 
 def source_entries(word: str) -> list[dict]:
@@ -6122,7 +6261,7 @@ def prefix_entries(query: str, anchor: str, limit: int = 25) -> list[dict]:
 
     Used by the primary (fast) search tier for Chinese queries: instead of
     always previewing CEDICT, preview the first dictionary for the selected
-    search language (see default_dictionaries.py). Only prefix matches are
+    search language (see default_config.py). Only prefix matches are
     returned; words that merely contain the query are left to the full tier.
     """
     query = (query or "").strip()
@@ -8748,7 +8887,6 @@ _PAGE_CACHE_FILES = (
     HSK_DB_PATH,
     SEARCH_INDEX_DB_PATH,
     MOE_DB_PATH,
-    SUBTLEX_DB_PATH,
     WIKTIONARY_DB_PATH,
     ZHWIKTIONARY_DB_PATH,
     JPWIKTIONARY_DB_PATH,

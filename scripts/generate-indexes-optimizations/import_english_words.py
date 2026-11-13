@@ -20,9 +20,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 # Derived indexes live in db.GENERATED_DIR, not in data/ itself.
 DB_PATH = ROOT / "data" / "generated-indexes-optimizations" / "english_words.sqlite"
-CEDICT_DB = ROOT / "data" / "cedict.sqlite"
-MOE_DB = ROOT / "data" / "moe-taiwan" / "moe.sqlite"  # both MOE dictionaries
-WIKTIONARY_DB = ROOT / "data" / "wiktionary.sqlite"
+CEDICT_DB = ROOT / "data" / "dictionary-databases" / "cedict.sqlite"
+MOE_DB = ROOT / "data" / "dictionary-databases" / "moe-taiwan" / "moe.sqlite"  # both MOE dictionaries
+WIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "wiktionary.sqlite"
 
 # Characters trimmed from both ends of a token before lowercasing. Must match
 # the strip set in yabai_search/db.py (_ENGLISH_WORD_STRIP).

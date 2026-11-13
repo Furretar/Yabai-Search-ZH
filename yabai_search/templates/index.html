@@ -179,7 +179,7 @@
             <div class="search-panel">
                 <form id="search-form" role="search" autocomplete="off">
                     <!-- Search-language dropdown (EN / ZH / TW), left of the input. -->
-                    <div class="lang-select" data-defaults='{{ defaults | tojson }}'>
+                    <div class="lang-select" data-defaults='{{ defaults | tojson }}' data-settings='{{ settings | tojson }}'>
                         <button type="button" class="lang-button" aria-haspopup="listbox"
                             aria-expanded="false">EN</button>
                         <ul class="lang-menu" role="listbox" hidden>
@@ -342,8 +342,17 @@
                     set(btn, "aria-pressed", btn.getAttribute("data-theme") === theme);
                 });
 
-                // Script: simplified unless stored as traditional.
-                var traditional = get("yabai-search-script") === "traditional";
+                // Defaults come from yabai_search/default_config.py (data-settings).
+                var S = {};
+                try { S = JSON.parse(document.querySelector(".lang-select").dataset.settings || "{}"); } catch (e) {}
+                var savedBool = function (key, fallback) {
+                    var v = get(key);
+                    return v === "true" ? true : v === "false" ? false : fallback;
+                };
+
+                // Script: the saved choice, else the default.
+                var scriptPref = get("yabai-search-script");
+                var traditional = (scriptPref === "traditional" || scriptPref === "simplified" ? scriptPref : S.script) === "traditional";
                 document.querySelectorAll(".quick-script .quick-square").forEach(function (btn) {
                     set(btn, "aria-pressed", (btn.getAttribute("data-script") === "traditional") === traditional);
                 });
@@ -369,7 +378,8 @@
                 }
 
                 // Phonetic system: pinyin unless zhuyin.
-                var zhuyin = get("yabai-search-phonetic") === "zhuyin";
+                var phoneticPref = get("yabai-search-phonetic");
+                var zhuyin = (phoneticPref === "zhuyin" || phoneticPref === "pinyin" ? phoneticPref : S.phonetic) === "zhuyin";
                 var pinyinBtn = document.querySelector(".quick-pinyin");
                 var zhuyinBtn = document.querySelector(".quick-zhuyin");
                 set(pinyinBtn, "aria-pressed", !zhuyin);
@@ -380,7 +390,7 @@
                 });
 
                 // Region: Mainland unless Taiwan.
-                var taiwan = get("yabai-search-taiwan") === "true";
+                var taiwan = savedBool("yabai-search-taiwan", !!S.taiwan);
                 var chinaBtn = document.querySelector('[data-region="china"]');
                 var taiwanBtn = document.querySelector('[data-region="taiwan"]');
                 set(chinaBtn, "aria-pressed", !taiwan);
@@ -391,17 +401,17 @@
                 });
 
                 // Custom dictionaries button.
-                var customDicts = get("yabai-search-custom-dicts") === "true";
+                var customDicts = savedBool("yabai-search-custom-dicts", !!S.customDicts);
                 set(document.getElementById("custom-dicts-button"), "aria-pressed", customDicts);
 
                 // Compact / Detailed dictionary mode.
-                var compact = get("yabai-search-compact") === "true";
+                var compact = !customDicts || savedBool("yabai-search-compact", !!S.compact);
                 document.querySelectorAll(".dict-mode-option").forEach(function (btn) {
                     set(btn, "aria-pressed", (btn.getAttribute("data-mode") === "compact") === compact);
                 });
 
                 // Search language dropdown.
-                var lang = get("yabai-search-lang") || "EN";
+                var lang = get("yabai-search-lang") || S.lang || "EN";
                 var langButton = document.querySelector(".lang-button");
                 if (langButton) langButton.textContent = lang;
                 document.querySelectorAll(".lang-menu [role='option']").forEach(function (item) {

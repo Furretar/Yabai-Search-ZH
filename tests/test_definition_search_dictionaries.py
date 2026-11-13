@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from yabai_search import db, merge
+from yabai_search import db, merge_simp_trad as merge
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = ROOT / "yabai_search" / "static" / "app.js"

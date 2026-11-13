@@ -1,4 +1,4 @@
-"""Tests for scripts/build_test_dbs.py, the small stand-in databases.
+"""Tests for scripts/tools/build_test_dbs.py, the small stand-in databases.
 
 The builder exists so optimisation runs can use tiny copies of every dictionary
 instead of the ~1.4 GB of real data; these tests pin the schema-preserving copy
@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.build_test_dbs import build_all, copy_database
+from scripts.tools.build_test_dbs import build_all, copy_database
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -96,7 +96,8 @@ def test_copy_keeps_schema_and_limits_rows(tmp_path: Path) -> None:
 def test_build_all_skips_derived_and_empty_databases(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _make_source(data / "cedict.sqlite")
+    (data / "dictionary-databases").mkdir()
+    _make_source(data / "dictionary-databases" / "cedict.sqlite")
     (data / "search_index.sqlite").write_bytes(b"")  # legacy leftover
     (data / "wikt.sqlite").write_bytes(b"")  # truncated leftover file
     # A derived index that remembers the CEDICT it was built from.
@@ -118,7 +119,7 @@ def test_build_all_skips_derived_and_empty_databases(tmp_path: Path) -> None:
         "sense_counts.sqlite",
     }
     generated = tmp_path / "dummy" / "generated-indexes-optimizations"
-    assert (tmp_path / "dummy" / "cedict.sqlite").is_file()
+    assert (tmp_path / "dummy" / "dictionary-databases" / "cedict.sqlite").is_file()
     assert (generated / "sense_counts.sqlite").is_file()
     assert not (generated / "search_index.sqlite").exists()
     # The sense counts are rebuilt from the dummy CEDICT, not copied stale.
@@ -137,7 +138,7 @@ def test_build_all_skips_derived_and_empty_databases(tmp_path: Path) -> None:
     finally:
         stub.close()
     expected = hashlib.sha256(
-        (tmp_path / "dummy" / "cedict.sqlite").read_bytes()
+        (tmp_path / "dummy" / "dictionary-databases" / "cedict.sqlite").read_bytes()
     ).hexdigest()
     assert stored == expected
 
@@ -169,8 +170,8 @@ def test_yabai_data_dir_points_the_app_at_the_dummy_folder(tmp_path: Path) -> No
 
     lines = result.stdout.strip().splitlines()
     assert lines[0] == str(tmp_path)
-    assert lines[1] == str(tmp_path / "cedict.sqlite")
-    assert lines[2] == str(tmp_path / "moe-taiwan" / "moe.sqlite")
+    assert lines[1] == str(tmp_path / "dictionary-databases" / "cedict.sqlite")
+    assert lines[2] == str(tmp_path / "dictionary-databases" / "moe-taiwan" / "moe.sqlite")
     assert lines[3] == str(
         tmp_path / "generated-indexes-optimizations" / "search_index.sqlite"
     )

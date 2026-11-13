@@ -2,8 +2,8 @@
 # Fast deploy from this dev checkout to every serving copy.
 #
 # Usage: deploy/deploy-all.sh [--data] [--fast] [--pc]
-#   --data   also copy the databases to the laptop and tablet: data/*.sqlite, the MOE database and the
-#            generated indexes. Refuses to run when an index is stale (rebuild_all.py --check).
+#   --data   also copy the databases to the laptop and tablet: the MOE database and the
+#            generated indexes. Refuses to run when an index is stale (regenerate_everything.py --check).
 #   --fast   skip the test suite
 #   --pc     restart the Windows scheduled task after the sync
 #
@@ -60,8 +60,8 @@ if [ "$SYNC_DATA" = 1 ]; then
     # databases, and several of them are exact negative filters: a stale one hides results that exist.
     # Importers rebuild them when they finish; this makes sure nothing stale ships.
     echo "== indexes are current?"
-    "$PYTHON" scripts/generate-indexes-optimizations/rebuild_all.py --check || {
-        echo "Stale indexes: run scripts/generate-indexes-optimizations/rebuild_all.py, then deploy again." >&2
+    "$PYTHON" scripts/regenerate_everything.py --check || {
+        echo "Stale indexes: run scripts/regenerate_everything.py, then deploy again." >&2
         exit 1
     }
 fi
@@ -96,9 +96,12 @@ COMMON_EXCLUDES=(
 echo "== laptop"
 rsync -a --delete "${COMMON_EXCLUDES[@]}" "$ROOT/" "$LAPTOP_DIR/"
 if [ "$SYNC_DATA" = 1 ]; then
-    rsync -a data/*.sqlite "$LAPTOP_DIR/data/"
-    mkdir -p "$LAPTOP_DIR/data/moe-taiwan" "$LAPTOP_DIR/data/generated-indexes-optimizations"
-    rsync -a data/moe-taiwan/moe.sqlite "$LAPTOP_DIR/data/moe-taiwan/"
+    # Dictionaries: the plain databases, and the database of each dictionary that has its own folder.
+    mkdir -p "$LAPTOP_DIR/data/dictionary-databases/moe-taiwan" "$LAPTOP_DIR/data/dictionary-databases/baidu" \
+        "$LAPTOP_DIR/data/generated-indexes-optimizations"
+    rsync -a data/dictionary-databases/*.sqlite "$LAPTOP_DIR/data/dictionary-databases/"
+    rsync -a data/dictionary-databases/moe-taiwan/moe.sqlite "$LAPTOP_DIR/data/dictionary-databases/moe-taiwan/"
+    rsync -a data/dictionary-databases/baidu/baidu.sqlite "$LAPTOP_DIR/data/dictionary-databases/baidu/"
     # The segmenter's word list; its cache (segmenter.pickle, below) only loads beside the same list.
     mkdir -p "$LAPTOP_DIR/data/dl-base-dictionaries"
     rsync -a data/dl-base-dictionaries/cedict_userdict.txt data/dl-base-dictionaries/cedict_userdict.version "$LAPTOP_DIR/data/dl-base-dictionaries/"
@@ -113,9 +116,10 @@ rsync -a --delete -e "ssh -p $TABLET_PORT -i $TABLET_KEY -o StrictHostKeyCheckin
     "${COMMON_EXCLUDES[@]}" "$ROOT/" "$TABLET_SSH:$TABLET_DIR/"
 if [ "$SYNC_DATA" = 1 ]; then
     TABLET_RSH="ssh -p $TABLET_PORT -i $TABLET_KEY -o StrictHostKeyChecking=no"
-    $TABLET_RSH "$TABLET_SSH" "mkdir -p $TABLET_DIR/data/moe-taiwan $TABLET_DIR/data/generated-indexes-optimizations"
-    rsync -a -e "$TABLET_RSH" data/*.sqlite "$TABLET_SSH:$TABLET_DIR/data/"
-    rsync -a -e "$TABLET_RSH" data/moe-taiwan/moe.sqlite "$TABLET_SSH:$TABLET_DIR/data/moe-taiwan/"
+    $TABLET_RSH "$TABLET_SSH" "mkdir -p $TABLET_DIR/data/dictionary-databases/moe-taiwan $TABLET_DIR/data/dictionary-databases/baidu $TABLET_DIR/data/generated-indexes-optimizations"
+    rsync -a -e "$TABLET_RSH" data/dictionary-databases/*.sqlite "$TABLET_SSH:$TABLET_DIR/data/dictionary-databases/"
+    rsync -a -e "$TABLET_RSH" data/dictionary-databases/moe-taiwan/moe.sqlite "$TABLET_SSH:$TABLET_DIR/data/dictionary-databases/moe-taiwan/"
+    rsync -a -e "$TABLET_RSH" data/dictionary-databases/baidu/baidu.sqlite "$TABLET_SSH:$TABLET_DIR/data/dictionary-databases/baidu/"
     rsync -a -e "$TABLET_RSH" data/generated-indexes-optimizations/*.sqlite data/generated-indexes-optimizations/segmenter.pickle "$TABLET_SSH:$TABLET_DIR/data/generated-indexes-optimizations/"
 fi
 ssh -p "$TABLET_PORT" -i "$TABLET_KEY" -o StrictHostKeyChecking=no \

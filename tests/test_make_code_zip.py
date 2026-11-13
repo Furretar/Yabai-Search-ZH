@@ -1,4 +1,4 @@
-"""Tests for scripts/make_code_zip.py, the source-archive helper.
+"""Tests for scripts/tools/make_code_zip.py, the source-archive helper.
 
 The tree is built in a temporary folder so the test never touches the real
 repository or its 1.4 GB data folder.
@@ -9,8 +9,8 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
-from scripts import make_code_zip
-from scripts.make_code_zip import build_zip, prune_archives
+from scripts.tools import make_code_zip
+from scripts.tools.make_code_zip import build_zip, prune_archives
 
 
 def _make_tree(root: Path) -> None:

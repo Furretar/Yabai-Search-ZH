@@ -12,11 +12,11 @@ from yabai_search.pinyin import to_numeric, to_toneless
 DATA = Path(__file__).resolve().parents[1] / "data"
 
 pytestmark = pytest.mark.skipif(
-    not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
+    not (DATA / "dictionary-databases" / "cedict.sqlite").exists(), reason="CEDICT database not built"
 )
 
 requires_moe = pytest.mark.skipif(
-    not (DATA / "moe-taiwan" / "moe.sqlite").exists(),
+    not (DATA / "dictionary-databases" / "moe-taiwan" / "moe.sqlite").exists(),
     reason="MOE database not built",
 )
 

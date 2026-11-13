@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from yabai_search import db
-from yabai_search.default_dictionaries import DEFAULTS
+from yabai_search.default_config import DEFAULTS
 from yabai_search.services import _clean_report_settings, _report_search_url
 from yabai_search.overrides import normalize_english
 from yabai_search.pinyin import numeric_to_marked, to_numeric, to_toneless
@@ -25,12 +25,12 @@ def _load_script(relative: str):
     return module
 
 
-see_target = _load_script("scripts/create-dict-db/import_cedict.py").see_target
+see_target = _load_script("scripts/download-dictionaries/import_cedict.py").see_target
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 
 pytestmark = pytest.mark.skipif(
-    not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
+    not (DATA / "dictionary-databases" / "cedict.sqlite").exists(), reason="CEDICT database not built"
 )
 
 
@@ -506,7 +506,7 @@ def test_tonal_variant_returns_toneless_letters():
 
 
 @pytest.mark.skipif(
-    not (DATA / "moe-taiwan" / "moe.sqlite").exists(),
+    not (DATA / "dictionary-databases" / "moe-taiwan" / "moe.sqlite").exists(),
     reason="MOE database not built",
 )
 def test_zhuyin_converts_to_numeric_pinyin():
@@ -569,7 +569,7 @@ def test_frequency_source_metadata():
 
 
 @pytest.mark.skipif(
-    not (DATA / "hsk.sqlite").exists(), reason="HSK database not built"
+    not (DATA / "dictionary-databases" / "hsk.sqlite").exists(), reason="HSK database not built"
 )
 def test_hsk_source_metadata():
     """The HSK source reports its anchor and roughly 11k vocabulary entries."""
@@ -646,7 +646,7 @@ def test_report_settings_ignore_unknown_and_oversized_values():
     assert "unknown" not in cleaned
 
 
-import_moe = _load_script("scripts/create-dict-db/import_moe.py")
+import_moe = _load_script("scripts/download-dictionaries/import_moe.py")
 
 
 def test_moe_classifier_words_keep_their_measure_word_senses_as_senses():

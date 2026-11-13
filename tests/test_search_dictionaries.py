@@ -7,19 +7,19 @@ from pathlib import Path
 import pytest
 
 from yabai_search import db
-from yabai_search.default_dictionaries import DEFAULTS
+from yabai_search.default_config import DEFAULTS
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 
 pytestmark = pytest.mark.skipif(
-    not (DATA / "cedict.sqlite").exists(), reason="CEDICT database not built"
+    not (DATA / "dictionary-databases" / "cedict.sqlite").exists(), reason="CEDICT database not built"
 )
 
 def _moe_tables() -> set[str]:
     """Tables of the merged MOE database (the concise one plain, the revised one rev_)."""
     import sqlite3
 
-    path = DATA / "moe-taiwan" / "moe.sqlite"
+    path = DATA / "dictionary-databases" / "moe-taiwan" / "moe.sqlite"
     if not path.exists():
         return set()
     connection = sqlite3.connect(path)
@@ -39,22 +39,19 @@ requires_revised = pytest.mark.skipif(
     "rev_moe" not in _moe_tables(), reason="MOE comprehensive dictionary not built"
 )
 requires_wiktionary = pytest.mark.skipif(
-    not (DATA / "wiktionary.sqlite").exists(), reason="Wiktionary database not built"
-)
-requires_subtlex = pytest.mark.skipif(
-    not (DATA / "subtlex.sqlite").exists(), reason="SUBTLEX database not built"
+    not (DATA / "dictionary-databases" / "wiktionary.sqlite").exists(), reason="Wiktionary database not built"
 )
 requires_freq = pytest.mark.skipif(
     not db.FREQ_DB_PATH.exists(), reason="frequency database not built"
 )
 requires_hsk = pytest.mark.skipif(
-    not (DATA / "hsk.sqlite").exists(), reason="HSK database not built"
+    not (DATA / "dictionary-databases" / "hsk.sqlite").exists(), reason="HSK database not built"
 )
 requires_all_sources = pytest.mark.skipif(
     not (
         "rev_moe" in _moe_tables()
         and all(
-            (DATA / name).exists()
+            (DATA / "dictionary-databases" / name).exists()
             for name in (
                 "moe-taiwan/moe.sqlite",
                 "wiktionary.sqlite",
@@ -67,10 +64,10 @@ requires_all_sources = pytest.mark.skipif(
 )
 
 requires_baidu = pytest.mark.skipif(
-    not (DATA / "baidu.sqlite").exists(), reason="Baidu database not built"
+    not (DATA / "dictionary-databases" / "baidu" / "baidu.sqlite").exists(), reason="Baidu database not built"
 )
 requires_unihan = pytest.mark.skipif(
-    not (DATA / "unihan.sqlite").exists(), reason="Unihan database not built"
+    not (DATA / "dictionary-databases" / "unihan.sqlite").exists(), reason="Unihan database not built"
 )
 
 

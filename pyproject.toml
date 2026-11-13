@@ -32,4 +32,4 @@ package = false                   # this is an app, not an installable library
 DJANGO_SETTINGS_MODULE = "yabai_site.test_settings"   # real settings + a test-only key
 # `uv run pytest` starts the pytest console script, which does not add the
 # working directory to sys.path; the tests import the yabai_search package.
-pythonpath = ["."]
+pythonpath = [".", "django"]   # django/ holds the Django project (yabai_site) and app (dictionary)

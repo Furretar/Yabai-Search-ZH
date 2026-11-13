@@ -126,7 +126,6 @@ Tone-insensitive entries are shown in a `Fuzzy match` section below the main res
 
 Zhuyin is converted to tonal pinyin first, so it is fully supported. Enabling zhuyin will convert all pinyin readings to zhuyin.
 
-
 #### Wildcard
 
 A wildcard is a placeholder for normal text, `?` is a single character wildcard, and `*` is a multiple character wildcard.
@@ -145,9 +144,14 @@ A bare `*` fits every headword, so tiers 1-3 do not separate anything: every ord
 
 #### Simplified and Traditional
 
-Some characters were combined when converting from Traditional to Simplified. For example, `干`, `幹`, and `乾` all simplified into `干`. These are all displayed as different entries in traditional mode, but are combined in simplified mode. However, the definitions are kept separate with headers showing the traditional version that they apply to. You can see this [here](https://yabaisearch.org/?q=干&script=simplified&tone=1&phonetic=pinyin&taiwan=0&custom=0&compact=1&lang=TW).
+Some characters were combined when converting from Traditional to Simplified. For example, `干`, `幹`, and `乾` all simplified into `干`. These are all displayed as different entries in traditional mode, but are combined in simplified mode. However, the definitions are kept separate with headers showing the traditional version that they apply to. You can see this [here](https://yabaisearch.org/?q=干&script=simplified&tone=1&phonetic=pinyin&taiwan=0&custom=0&compact=1&lang=EN).
 
 Taiwanese definitions will also stay in traditional Chinese even in simplified mode.
+
+#### Headword Readings
+Many characters and words have multiple readings, so a main reading must be chosen. The reading with the most senses in CEDICT is chosen as the main reading, falling back to other dictionaries if the word does not exist in CEDICT. This technique is not always accurate for the most common readings, so there is also a manual override list as well (see [了](https://yabaisearch.org/?q=le)). There is also a separate list for Taiwanese readings.
+
+Main readings only apply when searching with Chinese characters. When searching with pinyin, the searched reading will be displayed instead of the main reading. For example, when searching [`huo`](https://yabaisearch.org/?q=huo&custom=0&lang=EN), the character `和` will be displayed with the reading `huò`, despite the main reading being `hé`.
 
 #### CC-CEDICT
 

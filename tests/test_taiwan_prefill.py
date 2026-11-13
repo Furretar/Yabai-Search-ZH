@@ -46,10 +46,11 @@ def make_project(base: Path) -> Path:
     )
     data = project / "data"
     data.mkdir()
+    (data / "dictionary-databases").mkdir()  # every dictionary database lives here
 
     from yabai_search.pinyin import to_toneless
 
-    cedict = sqlite3.connect(data / "cedict.sqlite")
+    cedict = sqlite3.connect(data / "dictionary-databases" / "cedict.sqlite")
     cedict.execute(
         "CREATE TABLE entries (id INTEGER PRIMARY KEY, simplified TEXT, traditional TEXT,"
         " pinyin TEXT, pinyin_numeric TEXT, pinyin_toneless TEXT, english TEXT,"
@@ -84,8 +85,8 @@ def make_project(base: Path) -> Path:
     cedict.commit()
     cedict.close()
 
-    (data / "moe-taiwan").mkdir()
-    moe = sqlite3.connect(data / "moe-taiwan" / "moe.sqlite")
+    (data / "dictionary-databases" / "moe-taiwan").mkdir()
+    moe = sqlite3.connect(data / "dictionary-databases" / "moe-taiwan" / "moe.sqlite")
     moe.execute("CREATE TABLE moe (word TEXT, pinyin TEXT, zhuyin TEXT)")
     for word, pinyin in [
         ("垃圾", "lè sè"),
@@ -98,7 +99,7 @@ def make_project(base: Path) -> Path:
     moe.commit()
     moe.close()
 
-    wik = sqlite3.connect(data / "wiktionary.sqlite")
+    wik = sqlite3.connect(data / "dictionary-databases" / "wiktionary.sqlite")
     wik.execute(
         "CREATE TABLE readings (id INTEGER PRIMARY KEY, word TEXT, kind TEXT, pinyin TEXT, "
         "pinyin_toneless TEXT, pinyin_spaced TEXT, pinyin_numeric TEXT, simplified TEXT, "
@@ -206,7 +207,7 @@ def test_prefill() -> None:
         assert db.taiwan_table_status() == "stale"
         db.TAIWAN_READINGS["血"] = original
         assert db.taiwan_table_status() == "ok"
-        conn = sqlite3.connect(project / "data" / "moe-taiwan" / "moe.sqlite")  # a source is edited
+        conn = sqlite3.connect(project / "data" / "dictionary-databases" / "moe-taiwan" / "moe.sqlite")  # a source is edited
         conn.execute("INSERT INTO moe VALUES ('桶','tǒng','')")
         conn.commit()
         conn.close()
