@@ -960,6 +960,9 @@ def source_databases(trait: str) -> dict[str, Path]:
 
 # How to read each dictionary IN FULL, for the builders of the gram, word and Taiwan indexes (the registry above
 # answers "which of these words?", this answers "everything"). SQL run on the dictionary's own database:
+#   listed_words         one column: every word the "*" list takes from it
+#   reading_words        optional, one column: the words that have a Mandarin reading
+#   dialect_words        optional, one column: the words that have a non-Mandarin reading
 #   defined_words        one column: every word the dictionary has a definition for, under that exact spelling
 #   variant_words        optional: more words it defines through another spelling of the same word
 #   headwords            one column: every headword, in order
@@ -971,12 +974,20 @@ def source_databases(trait: str) -> dict[str, Path]:
 #   requires             optional: SQL that must return a row, or the dictionary is skipped (a table it needs)
 _SOURCE_SCANS: dict[str, dict[str, str]] = {
     "cedict": {
+        "listed_words": "SELECT simplified FROM entries UNION SELECT traditional FROM entries",
+        "reading_words": "SELECT simplified FROM entries WHERE pinyin <> ''",
         "defined_words": "SELECT DISTINCT word FROM senses",
         "definitions": "SELECT traditional, english FROM entries WHERE english <> ''",
         "readings": "SELECT traditional, simplified, pinyin, english_normalized FROM entries WHERE pinyin <> ''",
     },
     "wiktionary": {
         "defined_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL",
+        # A headword with no gloss has nothing to show, so it is not listed.
+        "listed_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL",
+        "reading_words": "SELECT word FROM readings WHERE pinyin <> '' AND kind = 'mandarin'",
+        # Dialect-only readings (Wu, Xiang, ...) become tier 4; the app falls back to one only when the word
+        # has no Mandarin reading, so the Mandarin set is subtracted later.
+        "dialect_words": "SELECT DISTINCT word FROM readings WHERE pinyin <> '' AND kind <> 'mandarin'",
         # Wiktionary also stores some glosses under another spelling of the same simplified word (黨群 vs 黨羣).
         "variant_words": (
             "SELECT DISTINCT r.simplified FROM readings r JOIN wiktionary w ON w.word = r.word "
@@ -988,12 +999,17 @@ _SOURCE_SCANS: dict[str, dict[str, str]] = {
         "readings": "SELECT word, NULL, pinyin FROM readings WHERE kind = 'mandarin' AND pinyin <> ''",
     },
     "moe": {
+        # Only words that actually have a sense (definition) are listed.
+        "listed_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
+        "reading_words": "SELECT word FROM moe WHERE pinyin <> ''",
         "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
         "headwords": "SELECT DISTINCT word FROM moe ORDER BY word",
         "definitions": "SELECT word, text FROM senses WHERE text <> ''",
     },
     "moe_revised": {
         "requires": "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'rev_moe'",
+        "listed_words": "SELECT DISTINCT word FROM rev_senses WHERE text <> ''",
+        "reading_words": "SELECT word FROM rev_moe WHERE pinyin <> ''",
         "defined_words": "SELECT DISTINCT word FROM rev_senses WHERE text <> ''",
         "headwords": "SELECT DISTINCT word FROM rev_moe ORDER BY word",
         "definitions": "SELECT word, text FROM rev_senses WHERE text <> ''",
@@ -1005,17 +1021,26 @@ _SOURCE_SCANS: dict[str, dict[str, str]] = {
         ),
     },
     "zhwiktionary": {
+        "listed_words": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "reading_words": "SELECT word FROM headwords WHERE pinyin <> ''",
         "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
         "headwords": "SELECT DISTINCT word FROM headwords ORDER BY word",
         "definitions": "SELECT word, text FROM senses WHERE text <> ''",
     },
     "jpwiktionary": {
+        "listed_words": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "reading_words": "SELECT word FROM headwords WHERE pinyin <> ''",
         "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
         "headwords": "SELECT DISTINCT word FROM headwords ORDER BY word",
         "definitions": "SELECT word, text FROM senses WHERE text <> ''",
     },
-    "baidu": {"defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''", "headwords": "SELECT word FROM headwords ORDER BY word"},
+    "baidu": {
+        # Baidu lists all of its headwords, including the ones with no definition.
+        "listed_words": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''", "headwords": "SELECT word FROM headwords ORDER BY word"},
     "unihan": {
+        "listed_words": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "reading_words": "SELECT word FROM chars WHERE mandarin IS NOT NULL AND mandarin <> ''",
         "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
         "definitions": "SELECT word, text FROM senses WHERE text <> ''",
     },
@@ -6096,95 +6121,23 @@ def _build_all_headwords_list() -> list[str]:
     global _all_headwords_cache
     connection = connect()
     try:
-        parts = [
-            "SELECT simplified AS headword FROM entries",
-            "SELECT traditional FROM entries",
-        ]
-        # Which headwords actually have a Mandarin reading. Dialect-only
-        # readings are collected separately below and become tier 4.
-        has_reading: set[str] = {
-            row[0]
-            for row in connection.execute(
-                "SELECT simplified FROM entries WHERE pinyin <> ''"
+        # What each dictionary contributes comes from its scans (db._SOURCE_SCANS); nothing here names one.
+        listed: set[str] = set()  # every headword the list takes
+        has_reading: set[str] = set()  # which headwords actually have a Mandarin reading
+        dialect_raw: set[str] = set()  # dialect readings that can stand in for a missing Mandarin one
+        for source in _SOURCE_QUERIES:
+            listed.update(word for (word,) in _scan(source, "listed_words") if word)
+            # The backbone's own words are already simplified; every other dictionary's are brought to simplified.
+            simplify = source["anchor"] != BACKBONE_ANCHOR
+            has_reading.update(
+                to_simplified(word) if simplify else word for (word,) in _scan(source, "reading_words") if word
             )
-        }
-        # Dialect readings that can stand in for a missing Mandarin reading.
-        dialect_raw: set[str] = set()
+            dialect_raw.update(word for (word,) in _scan(source, "dialect_words") if word)
+        rows = [(word,) for word in listed]
         # Which headwords actually have a definition, per source: the "*" list is
         # reordered for a dictionary selection so the selected sources' words come
         # first (see all_headwords).
         def_by_anchor: dict[str, set[str]] = {}  # filled from the scans below
-        # Both MOE dictionaries are tables of the attached "moe" database; the
-        # comprehensive one adds headwords the concise one lacks. Only words that
-        # actually have a sense (definition) count.
-        for prefix in _moe_prefixes():
-            parts.append(f"SELECT DISTINCT word FROM moe.{prefix}senses WHERE text <> ''")
-            has_reading.update(
-                to_simplified(row[0])
-                for row in connection.execute(
-                    f"SELECT word FROM moe.{prefix}moe WHERE pinyin <> ''"
-                )
-            )
-        if WIKTIONARY_DB_PATH.exists():
-            _attach_database(connection, "wikt", WIKTIONARY_DB_PATH)
-            # A Wiktionary headword with no gloss has nothing to show; leave it
-            # out (the frequency list has no definitions either, so it is not a
-            # headword source here).
-            parts.append(
-                "SELECT DISTINCT word FROM wikt.wiktionary WHERE gloss IS NOT NULL"
-            )
-            has_reading.update(
-                to_simplified(row[0])
-                for row in connection.execute(
-                    "SELECT word FROM wikt.readings "
-                    "WHERE pinyin <> '' AND kind = 'mandarin'"
-                )
-            )
-            # Dialect-only readings (Wu, Xiang, ...) become tier 4. The app
-            # only falls back to one when the word has no Mandarin reading, so
-            # subtract the Mandarin set later.
-            dialect_raw.update(
-                row[0]
-                for row in connection.execute(
-                    "SELECT DISTINCT word FROM wikt.readings "
-                    "WHERE pinyin <> '' AND kind <> 'mandarin'"
-                )
-            )
-        if ZHWIKTIONARY_DB_PATH.exists():
-            _attach_database(connection, "zhwikt", ZHWIKTIONARY_DB_PATH)
-            # Chinese Wiktionary headwords, plus their readings and definitions.
-            parts.append("SELECT DISTINCT word FROM zhwikt.headwords WHERE word <> ''")
-            has_reading.update(
-                to_simplified(row[0])
-                for row in connection.execute(
-                    "SELECT word FROM zhwikt.headwords WHERE pinyin <> ''"
-                )
-            )
-        if JPWIKTIONARY_DB_PATH.exists():
-            _attach_database(connection, "jpwikt", JPWIKTIONARY_DB_PATH)
-            # Japanese Wiktionary headwords, plus their readings and definitions.
-            parts.append("SELECT DISTINCT word FROM jpwikt.headwords WHERE word <> ''")
-            has_reading.update(
-                to_simplified(row[0])
-                for row in connection.execute(
-                    "SELECT word FROM jpwikt.headwords WHERE pinyin <> ''"
-                )
-            )
-        if BAIDU_DB_PATH.exists():
-            _attach_database(connection, "baidu", BAIDU_DB_PATH)
-            # Baidu contributes all of its headwords, including the ones with no
-            # definition: the user asked to exclude nothing.
-            parts.append("SELECT DISTINCT word FROM baidu.headwords WHERE word <> ''")
-        if UNIHAN_DB_PATH.exists():
-            _attach_database(connection, "unihan", UNIHAN_DB_PATH)
-            parts.append("SELECT DISTINCT word FROM unihan.headwords WHERE word <> ''")
-            has_reading.update(
-                to_simplified(row[0])
-                for row in connection.execute(
-                    "SELECT word FROM unihan.chars "
-                    "WHERE mandarin IS NOT NULL AND mandarin <> ''"
-                )
-            )
         # Which dictionary defines which word: one scan per dictionary (db._SOURCE_SCANS), the same meaning of
         # "defined" the category ranking uses.
         def_by_anchor = {
@@ -6205,8 +6158,6 @@ def _build_all_headwords_list() -> list[str]:
         fold = _build_fold(
             connection.execute("SELECT traditional, simplified FROM entries")
         )
-        union = " UNION ".join(parts)
-        rows = connection.execute(f"SELECT DISTINCT headword FROM ({union})").fetchall()
 
         # Fold the three lookup sets with the same function as the headwords.
         # dialect_words is "has a dialect reading and no Mandarin one", which is
