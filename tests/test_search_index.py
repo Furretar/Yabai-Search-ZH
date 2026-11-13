@@ -79,7 +79,7 @@ def test_legacy_index_is_moved_once(tmp_path, monkeypatch):
 
 def test_index_round_trips_the_live_lists(index_file, monkeypatch):
     """Loading the index gives exactly the lists the live builders produce."""
-    live_heads, live_groups = db._all_headwords_cache
+    live_heads, live_groups, live_sels = db._all_headwords_cache
     live_sorted = list(db._source_pinyin_sorted()[1])
 
     _use_index(monkeypatch, index_file)
@@ -90,6 +90,7 @@ def test_index_round_trips_the_live_lists(index_file, monkeypatch):
     assert len(heads) == len(live_heads)
     assert heads == live_heads
     assert groups == live_groups
+    assert db._all_headwords_cache[2] == live_sels
 
     keys, rows = db._source_pinyin_sorted()[0], live_sorted
     expected_prefix = db._prefix_rows(keys, rows, "shi")

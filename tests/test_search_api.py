@@ -977,3 +977,20 @@ def test_shared_simplified_headword_does_not_repeat_a_sense(search):
     assert all(
         group["senses"].count("surname Gan") == 1 for group in surname_groups
     )
+
+
+@requires_zh_sources
+def test_star_puts_the_selected_dictionarys_words_first(search):
+    """Picking one dictionary leads the "*" list with the words it defines.
+
+    Before, the first page was the same whatever was selected, so choosing only
+    百度汉语 showed words that only CEDICT could define, all under "Other
+    dictionaries".
+    """
+    everything = _words(search("*", lang="ZH"))
+    baidu = _words(search("*", lang="ZH", dicts="baidu"))
+    assert everything != baidu
+    data = search("*", lang="ZH", dicts="baidu", limit=8)
+    for entry in data["results"]:
+        anchors = {block["anchor"] for block in entry.get("definitions", [])}
+        assert "baidu" in anchors, entry["simplified"]

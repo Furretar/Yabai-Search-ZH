@@ -1024,7 +1024,7 @@ def api_search(
             # "*": every headword across all sources, 50 per page.
             at = time.perf_counter()
             with pd.stage("headwords"):
-                heads, total = db.all_headwords(offset, db.ALL_PAGE_SIZE)
+                heads, total = db.all_headwords(offset, db.ALL_PAGE_SIZE, selected_dicts)
             mark("headwords", at)
             at = time.perf_counter()
             with pd.stage("decorate"):

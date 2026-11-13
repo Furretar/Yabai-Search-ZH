@@ -961,7 +961,7 @@ def data_version() -> str:
 # of pure-Python OpenCC work.
 # Bumped when the headword list builder changes, so an index from an older build
 # is rebuilt instead of silently winning.
-_SEARCH_INDEX_VERSION = 2
+_SEARCH_INDEX_VERSION = 3
 # The dialect early-out tables have their own version so adding them does not
 # invalidate the headword/pinyin index (which would force a 110 s rebuild on the
 # tablet just to gain a small lookup table).
@@ -1026,22 +1026,31 @@ def search_index_status() -> dict:
     }
 
 
-def _load_headwords_from_index() -> tuple[list[str], list[int]] | None:
+def _load_headwords_from_index() -> tuple[list[str], list[int], list[int]] | None:
     """Load the sorted "*" headword list, or None when the index is unusable."""
+    global _def_anchors
     if not _search_index_ok():
         return None
     connection = _connect(SEARCH_INDEX_DB_PATH)
     try:
         rows = connection.execute(
-            "SELECT word, grp FROM headwords ORDER BY position"
+            "SELECT word, grp, sel FROM headwords ORDER BY position"
         ).fetchall()
+        anchors = connection.execute(
+            "SELECT value FROM meta WHERE key = 'def_anchors'"
+        ).fetchone()
     except sqlite3.Error:
         return None
     finally:
         connection.close()
     if not rows:
         return None
-    return [row[0] for row in rows], [row[1] for row in rows]
+    _def_anchors = (anchors[0].split(",") if anchors and anchors[0] else [])
+    return (
+        [row[0] for row in rows],
+        [row[1] for row in rows],
+        [row[2] for row in rows],
+    )
 
 
 def _source_pinyin_index_rows(
@@ -1125,6 +1134,7 @@ def build_search_index(path: Path | None = None) -> dict[str, int]:
     _all_headwords_cache = None
     heads = _build_all_headwords_list()
     groups = _all_headwords_cache[1] if _all_headwords_cache else []
+    sels = _all_headwords_cache[2] if _all_headwords_cache else []
     pinyin_rows = _source_pinyin_rows()
     dialect_labels, dialect_pinyin = _dialect_index_rows()
     signature = _search_index_signature()
@@ -1138,7 +1148,8 @@ def build_search_index(path: Path | None = None) -> dict[str, int]:
         )
         connection.execute(
             "CREATE TABLE headwords ("
-            "position INTEGER PRIMARY KEY, word TEXT NOT NULL, grp INTEGER NOT NULL)"
+            "position INTEGER PRIMARY KEY, word TEXT NOT NULL, grp INTEGER NOT NULL, "
+            "sel INTEGER NOT NULL)"
         )
         connection.execute(
             "CREATE TABLE pinyin ("
@@ -1153,8 +1164,11 @@ def build_search_index(path: Path | None = None) -> dict[str, int]:
             "CREATE TABLE dialect_pinyin (toneless TEXT PRIMARY KEY)"
         )
         connection.executemany(
-            "INSERT INTO headwords (position, word, grp) VALUES (?, ?, ?)",
-            ((position, word, groups[position]) for position, word in enumerate(heads)),
+            "INSERT INTO headwords (position, word, grp, sel) VALUES (?, ?, ?, ?)",
+            (
+                (position, word, groups[position], sels[position])
+                for position, word in enumerate(heads)
+            ),
         )
         # pinyin_rows is (word, simplified, marked, toneless, numeric); keep the
         # INSERT columns in that order. Only the SELECT order is rearranged.
@@ -1178,6 +1192,7 @@ def build_search_index(path: Path | None = None) -> dict[str, int]:
                 ("version", str(_SEARCH_INDEX_VERSION)),
                 ("signature", signature),
                 ("headwords", str(len(heads))),
+                ("def_anchors", ",".join(_def_anchors)),
                 ("pinyin", str(len(pinyin_rows))),
                 ("dialect_version", str(_DIALECT_INDEX_VERSION)),
                 ("dialect_labels", str(len(dialect_labels))),
@@ -5686,7 +5701,12 @@ ALL_PAGE_SIZE = 25
 
 # Cache of (every distinct simplified headword, its tier group) across all
 # sources. Both lists are built together so they cannot drift apart.
-_all_headwords_cache: tuple[list[str], list[int]] | None = None
+_all_headwords_cache: tuple[list[str], list[int], list[int]] | None = None
+# The anchors that can give a headword a definition, in bit order for the masks
+# stored beside the "*" headword list. Filled from the index (or a live build).
+_def_anchors: list[str] = []
+# One reordered "*" list for the current dictionary selection, keyed by its mask.
+_selected_order_cache: dict[int, list[str]] = {}
 
 
 def _build_fold(pairs) -> Callable[[str], str]:
@@ -5804,10 +5824,13 @@ def _build_all_headwords_list() -> list[str]:
         }
         # Dialect readings that can stand in for a missing Mandarin reading.
         dialect_raw: set[str] = set()
-        # Which headwords actually have a definition (so ones that do not can be
-        # listed after every other entry).
-        def_words: set[str] = {
-            row[0] for row in connection.execute("SELECT DISTINCT word FROM senses")
+        # Which headwords actually have a definition, per source: the "*" list is
+        # reordered for a dictionary selection so the selected sources' words come
+        # first (see all_headwords).
+        def_by_anchor: dict[str, set[str]] = {
+            "cedict": {
+                row[0] for row in connection.execute("SELECT DISTINCT word FROM senses")
+            }
         }
         # Both MOE dictionaries are tables of the attached "moe" database; the
         # comprehensive one adds headwords the concise one lacks. Only words that
@@ -5820,12 +5843,12 @@ def _build_all_headwords_list() -> list[str]:
                     f"SELECT word FROM moe.{prefix}moe WHERE pinyin <> ''"
                 )
             )
-            def_words.update(
+            def_by_anchor["moe_revised" if prefix else "moe"] = {
                 row[0]
                 for row in connection.execute(
                     f"SELECT DISTINCT word FROM moe.{prefix}senses WHERE text <> ''"
                 )
-            )
+            }
         if WIKTIONARY_DB_PATH.exists():
             _attach_database(connection, "wikt", WIKTIONARY_DB_PATH)
             # A Wiktionary headword with no gloss has nothing to show; leave it
@@ -5851,13 +5874,13 @@ def _build_all_headwords_list() -> list[str]:
                     "WHERE pinyin <> '' AND kind <> 'mandarin'"
                 )
             )
-            def_words.update(
+            def_by_anchor["wiktionary"] = {
                 row[0]
                 for row in connection.execute(
                     "SELECT DISTINCT word FROM wikt.wiktionary "
                     "WHERE gloss IS NOT NULL"
                 )
-            )
+            }
         if ZHWIKTIONARY_DB_PATH.exists():
             _attach_database(connection, "zhwikt", ZHWIKTIONARY_DB_PATH)
             # Chinese Wiktionary headwords, plus their readings and definitions.
@@ -5868,12 +5891,12 @@ def _build_all_headwords_list() -> list[str]:
                     "SELECT word FROM zhwikt.headwords WHERE pinyin <> ''"
                 )
             )
-            def_words.update(
+            def_by_anchor["zhwiktionary"] = {
                 row[0]
                 for row in connection.execute(
                     "SELECT DISTINCT word FROM zhwikt.senses WHERE text <> ''"
                 )
-            )
+            }
         if JPWIKTIONARY_DB_PATH.exists():
             _attach_database(connection, "jpwikt", JPWIKTIONARY_DB_PATH)
             # Japanese Wiktionary headwords, plus their readings and definitions.
@@ -5884,23 +5907,23 @@ def _build_all_headwords_list() -> list[str]:
                     "SELECT word FROM jpwikt.headwords WHERE pinyin <> ''"
                 )
             )
-            def_words.update(
+            def_by_anchor["jpwiktionary"] = {
                 row[0]
                 for row in connection.execute(
                     "SELECT DISTINCT word FROM jpwikt.senses WHERE text <> ''"
                 )
-            )
+            }
         if BAIDU_DB_PATH.exists():
             _attach_database(connection, "baidu", BAIDU_DB_PATH)
             # Baidu contributes all of its headwords, including the ones with no
             # definition: the user asked to exclude nothing.
             parts.append("SELECT DISTINCT word FROM baidu.headwords WHERE word <> ''")
-            def_words.update(
+            def_by_anchor["baidu"] = {
                 row[0]
                 for row in connection.execute(
                     "SELECT DISTINCT word FROM baidu.senses WHERE text <> ''"
                 )
-            )
+            }
         if UNIHAN_DB_PATH.exists():
             _attach_database(connection, "unihan", UNIHAN_DB_PATH)
             parts.append("SELECT DISTINCT word FROM unihan.headwords WHERE word <> ''")
@@ -5911,12 +5934,12 @@ def _build_all_headwords_list() -> list[str]:
                     "WHERE mandarin IS NOT NULL AND mandarin <> ''"
                 )
             )
-            def_words.update(
+            def_by_anchor["unihan"] = {
                 row[0]
                 for row in connection.execute(
                     "SELECT DISTINCT word FROM unihan.senses WHERE text <> ''"
                 )
-            )
+            }
         # Use the CEDICT map so variants OpenCC misses (e.g. 寳 -> 宝,
         # 砲 -> 炮) still collapse onto their simplified form, and therefore
         # get the same tier as the word they belong to.
@@ -5930,7 +5953,11 @@ def _build_all_headwords_list() -> list[str]:
         # dialect_words is "has a dialect reading and no Mandarin one", which is
         # exactly when the app shows a tier-4 reading.
         has_reading = {fold(word) for word in has_reading}
-        def_words = {fold(word) for word in def_words}
+        def_by_anchor = {
+            anchor: {fold(word) for word in words}
+            for anchor, words in def_by_anchor.items()
+        }
+        def_words = set().union(*def_by_anchor.values()) if def_by_anchor else set()
         dialect_words = {fold(word) for word in dialect_raw} - has_reading
 
         freq_rank: dict[str, int] = {}
@@ -5952,7 +5979,17 @@ def _build_all_headwords_list() -> list[str]:
     heads, groups = _order_headwords(
         heads, def_words, has_reading, dialect_words, freq_rank
     )
-    _all_headwords_cache = (heads, groups)
+    # For each headword, which sources give it a definition (one bit per anchor,
+    # in _DEF_ANCHORS order). This is what lets "*" put a selected dictionary's
+    # words first without asking the source databases again.
+    global _def_anchors
+    _def_anchors = list(def_by_anchor)
+    masks: dict[str, int] = {}
+    for bit, anchor in enumerate(_def_anchors):
+        for word in def_by_anchor[anchor]:
+            masks[word] = masks.get(word, 0) | (1 << bit)
+    sels = [masks.get(head, 0) for head in heads]
+    _all_headwords_cache = (heads, groups, sels)
     return heads
 
 
@@ -5966,7 +6003,9 @@ def all_headword_groups() -> list[int]:
     return _all_headwords_cache[1] if _all_headwords_cache else []
 
 
-def all_headwords(offset: int = 0, limit: int = ALL_PAGE_SIZE) -> tuple[list[str], int]:
+def all_headwords(
+    offset: int = 0, limit: int = ALL_PAGE_SIZE, selected: list[str] | None = None
+) -> tuple[list[str], int]:
     """One page of every distinct headword across all sources, plus the total.
 
     Used by the "*" search. A bare "*" fits every headword, so match tiers 1-3 do
@@ -5975,9 +6014,46 @@ def all_headwords(offset: int = 0, limit: int = ALL_PAGE_SIZE) -> tuple[list[str
     (tier 5), then words with neither (tier 6). Inside each tier the list is
     ordered by frequency (missing frequencies last). The order is fixed once the
     list is cached, so paging is stable.
+
+    With `selected`, the words that a selected dictionary defines come first (in
+    the same order), and the rest follow: picking only 百度汉语 must not fill the
+    first page with words that only CEDICT can define. The reordered list is
+    kept for the current selection.
     """
     heads = _all_headwords_list()
+    mask = _selection_mask(selected)
+    if mask:
+        heads = _selected_headword_order(heads, mask)
     return heads[offset : offset + limit], len(heads)
+
+
+def _selection_mask(selected: list[str] | None) -> int:
+    """The bit mask of the selected dictionaries among `_def_anchors`."""
+    if not selected or not _def_anchors:
+        return 0
+    mask = 0
+    for anchor in selected:
+        if anchor in _def_anchors:
+            mask |= 1 << _def_anchors.index(anchor)
+    return mask
+
+
+def _selected_headword_order(heads: list[str], mask: int) -> list[str]:
+    """The "*" list with the words a selected dictionary defines first."""
+    cached = _selected_order_cache.get(mask)
+    if cached is not None and len(cached) == len(heads):
+        return cached
+    if _all_headwords_cache is None or len(_all_headwords_cache) < 3:
+        return heads
+    sels = _all_headwords_cache[2]
+    first: list[str] = []
+    rest: list[str] = []
+    for word, sel in zip(heads, sels):
+        (first if sel & mask else rest).append(word)
+    order = first + rest
+    _selected_order_cache.clear()
+    _selected_order_cache[mask] = order
+    return order
 
 
 def entries_for_headwords(headwords: list[str]) -> list[dict]:
