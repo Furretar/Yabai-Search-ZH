@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import pickle
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -82,27 +86,128 @@ def build_userdict() -> int:
 
 
 def _userdict_is_stale() -> bool:
-    """True when the user dict is missing, outdated or older than its sources."""
+    """True when the user dict is missing, outdated or older than its sources (see sources_changed)."""
+    return _userdict_missing() or sources_changed()
+
+
+def _userdict_missing() -> bool:
+    """True when there is no user dict of the current version on disk."""
     if not USERDICT_PATH.exists() or not USERDICT_VERSION_PATH.exists():
         return True
     try:
         version = USERDICT_VERSION_PATH.read_text(encoding="utf-8").strip()
     except OSError:
         return True
-    if version != str(USERDICT_VERSION):
+    return version != str(USERDICT_VERSION)
+
+
+def sources_changed() -> bool:
+    """True when a source database is newer than the user dict (for rebuild_all.py --check)."""
+    if not USERDICT_PATH.exists():
         return True
     built = USERDICT_PATH.stat().st_mtime
     sources = [*db.source_database_paths(), *(path for path, _ in EXTRA_HEADWORD_SOURCES)]
     return any(p.exists() and p.stat().st_mtime > built for p in sources)
 
 
-def _ensure_loaded() -> None:
-    """Load the user dictionary into jieba once (building it if needed)."""
+# The loaded segmenter state (jieba's word table with the user dict merged in, plus the headword set),
+# pickled so a start is one file read. Merging 1.2 million user-dict lines into jieba and converting
+# every headword to both scripts takes minutes on a tablet, longer than gunicorn's worker timeout.
+# The shipped copy is built by rebuild_all.py; a machine without a matching one builds its own under
+# deploy/run/, which Syncthing ignores (a serving machine must never write into the synced data).
+CACHE_PATH = db.GENERATED_DIR / "segmenter.pickle"
+LOCAL_CACHE_PATH = Path(__file__).resolve().parents[1] / "deploy" / "run" / "segmenter.pickle"
+_CACHE_FORMAT = 1
+_load_lock = threading.Lock()
+
+
+def _userdict_stamp() -> list:
+    """What a cache must have been built from: the user dict's content and jieba's version."""
+    digest = hashlib.sha256(USERDICT_PATH.read_bytes()).hexdigest()
+    return [_CACHE_FORMAT, USERDICT_VERSION, digest, getattr(jieba, "__version__", "")]
+
+
+def _read_cache(path: Path, stamp: list) -> dict | None:
+    try:
+        with path.open("rb") as handle:
+            if pickle.load(handle) != stamp:
+                return None
+            return pickle.load(handle)
+    except (OSError, pickle.PickleError, EOFError, ValueError, AttributeError):
+        return None
+
+
+def _write_cache(path: Path, stamp: list, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    with temp.open("wb") as handle:
+        pickle.dump(stamp, handle, protocol=4)
+        pickle.dump(state, handle, protocol=4)
+    os.replace(temp, path)
+
+
+def _build_state() -> dict:
+    """Load the user dict into jieba the slow way and return everything a later start needs."""
+    jieba.load_userdict(str(USERDICT_PATH))
+    words = _headwords()
+    return {
+        "freq": jieba.dt.FREQ,
+        "total": jieba.dt.total,
+        "headwords": words,
+        "max_len": max((len(word) for word in words), default=1),
+    }
+
+
+def build_cache() -> Path:
+    """Write the shipped segmenter cache (rebuild_all.py runs this after the user dict is rebuilt)."""
     global _loaded
-    if not _loaded:
-        if _userdict_is_stale():
+    stamp = _userdict_stamp()
+    _write_cache(CACHE_PATH, stamp, _build_state())
+    _loaded = True
+    return CACHE_PATH
+
+
+def cache_current() -> bool:
+    """True when the shipped cache matches the user dict on disk."""
+    if _userdict_missing():
+        return False
+    try:
+        with CACHE_PATH.open("rb") as handle:
+            return pickle.load(handle) == _userdict_stamp()
+    except (OSError, pickle.PickleError, EOFError, ValueError):
+        return False
+
+
+def _ensure_loaded() -> None:
+    """Load the segmenter once: from a cache when one matches, the slow way otherwise.
+
+    The user dict is only built here when it is missing. It is rebuilt with the other derived data
+    (rebuild_all.py), never because a source file looks newer: on a serving machine that rewrote a
+    file Syncthing delivers, and the folder then stopped syncing.
+    """
+    global _loaded, _headword_cache, _max_len_cache
+    if _loaded:
+        return
+    with _load_lock:
+        if _loaded:
+            return
+        if _userdict_missing():
             build_userdict()
-        jieba.load_userdict(str(USERDICT_PATH))
+        stamp = _userdict_stamp()
+        state = _read_cache(CACHE_PATH, stamp) or _read_cache(LOCAL_CACHE_PATH, stamp)
+        if state is None:
+            state = _build_state()
+            try:
+                _write_cache(LOCAL_CACHE_PATH, stamp, state)
+            except OSError:
+                pass  # a read-only checkout still segments, it just loads slowly next time
+        else:
+            jieba.dt.FREQ = state["freq"]
+            jieba.dt.total = state["total"]
+            jieba.dt.initialized = True
+        if _headword_cache is None:
+            _headword_cache = state["headwords"]
+            _max_len_cache = state["max_len"]
         _loaded = True
 
 
@@ -114,16 +219,22 @@ def _max_headword_len() -> int:
     return _max_len_cache
 
 
-def warm() -> None:
+def warm(background: bool = True) -> None:
     """Load jieba and the headword list before the first annotate request.
 
-    jieba builds its prefix dictionary on first use, which takes over a second.
-    The parsed-input header is rendered by /api/annotate, so doing this at
-    startup keeps the first search from paying it.
+    In the background by default, so the server answers searches while the segmenter loads (tens of
+    seconds on a tablet). /api/annotate waits for it.
     """
-    _ensure_loaded()
-    _headwords()
-    _max_headword_len()
+
+    def load() -> None:
+        _ensure_loaded()
+        _headwords()
+        _max_headword_len()
+
+    if background:
+        threading.Thread(target=load, name="segmenter-warm", daemon=True).start()
+    else:
+        load()
 
 
 def is_headword(word: str) -> bool:

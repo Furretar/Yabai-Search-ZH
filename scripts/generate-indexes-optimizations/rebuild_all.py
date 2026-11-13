@@ -34,6 +34,7 @@ STEPS = [
     ("definition_grams", "import_definition_grams.py", "_definition_grams_ok"),
     ("taiwan_readings", "build_taiwan_readings.py", "_taiwan_ok"),
     ("search_index", "build_search_index.py", "_search_index_ok"),
+    ("segmenter", "build_segmenter.py", "_segmenter_ok"),
 ]
 
 
@@ -46,9 +47,15 @@ def check() -> int:
         db._definition_grams_cache = None
         return bool(db._definition_grams())
 
+    def segmenter_ok() -> bool:
+        from yabai_search import segment  # noqa: PLC0415
+
+        return segment.cache_current() and not segment.sources_changed()
+
     checks = {
         "_taiwan_ok": lambda: db.taiwan_table_status() == "ok",
         "_definition_grams_ok": definition_grams_ok,
+        "_segmenter_ok": segmenter_ok,
     }
     bad = 0
     for name, _script, func in STEPS:

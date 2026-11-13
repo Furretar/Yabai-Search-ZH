@@ -99,7 +99,10 @@ if [ "$SYNC_DATA" = 1 ]; then
     rsync -a data/*.sqlite "$LAPTOP_DIR/data/"
     mkdir -p "$LAPTOP_DIR/data/moe-taiwan" "$LAPTOP_DIR/data/generated-indexes-optimizations"
     rsync -a data/moe-taiwan/moe.sqlite "$LAPTOP_DIR/data/moe-taiwan/"
-    rsync -a data/generated-indexes-optimizations/*.sqlite "$LAPTOP_DIR/data/generated-indexes-optimizations/"
+    # The segmenter's word list; its cache (segmenter.pickle, below) only loads beside the same list.
+    mkdir -p "$LAPTOP_DIR/data/dl-base-dictionaries"
+    rsync -a data/dl-base-dictionaries/cedict_userdict.txt data/dl-base-dictionaries/cedict_userdict.version "$LAPTOP_DIR/data/dl-base-dictionaries/"
+    rsync -a data/generated-indexes-optimizations/*.sqlite data/generated-indexes-optimizations/segmenter.pickle "$LAPTOP_DIR/data/generated-indexes-optimizations/"
 fi
 systemctl --user restart yabai-app@laptop
 
@@ -113,7 +116,7 @@ if [ "$SYNC_DATA" = 1 ]; then
     $TABLET_RSH "$TABLET_SSH" "mkdir -p $TABLET_DIR/data/moe-taiwan $TABLET_DIR/data/generated-indexes-optimizations"
     rsync -a -e "$TABLET_RSH" data/*.sqlite "$TABLET_SSH:$TABLET_DIR/data/"
     rsync -a -e "$TABLET_RSH" data/moe-taiwan/moe.sqlite "$TABLET_SSH:$TABLET_DIR/data/moe-taiwan/"
-    rsync -a -e "$TABLET_RSH" data/generated-indexes-optimizations/*.sqlite "$TABLET_SSH:$TABLET_DIR/data/generated-indexes-optimizations/"
+    rsync -a -e "$TABLET_RSH" data/generated-indexes-optimizations/*.sqlite data/generated-indexes-optimizations/segmenter.pickle "$TABLET_SSH:$TABLET_DIR/data/generated-indexes-optimizations/"
 fi
 ssh -p "$TABLET_PORT" -i "$TABLET_KEY" -o StrictHostKeyChecking=no \
     "$TABLET_SSH" "pgrep -f '[g]unicorn yabai_site' | xargs -r kill"

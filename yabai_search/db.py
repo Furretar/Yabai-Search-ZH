@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import threading
@@ -4222,7 +4223,7 @@ def _source_gloss_version_ok() -> bool:
         )
         _source_gloss_ok_cache = False
         return False
-    digest = hashlib.sha256(DB_PATH.read_bytes()).hexdigest()
+    digest = _file_sha256(DB_PATH)
     _source_gloss_ok_cache = digest == row[0]
     if not _source_gloss_ok_cache:
         print(
@@ -4253,7 +4254,7 @@ def _head_grams_version_ok() -> bool:
     if not row:
         _head_grams_ok_cache = False
         return False
-    digest = hashlib.sha256(DB_PATH.read_bytes()).hexdigest()
+    digest = _file_sha256(DB_PATH)
     _head_grams_ok_cache = digest == row[0]
     if not _head_grams_ok_cache:
         print(
@@ -4458,15 +4459,46 @@ _definition_grams_cache: set[str] | None = None
 _file_sha256_cache: dict[Path, str] = {}
 
 
+# sha256 of the source databases, remembered across restarts by (size, mtime): hashing about 1 GB at
+# every start costs seconds on the laptop and close to a minute on a tablet. Kept under deploy/run/,
+# which Syncthing ignores.
+_SHA256_STORE = Path(__file__).resolve().parents[1] / "deploy" / "run" / "sha256-cache.json"
+_sha256_store_lock = threading.Lock()
+
+
 def _file_sha256(path: Path) -> str:
     """sha256 of a file, read once per process: several index checks hash the same large databases."""
-    if path not in _file_sha256_cache:
+    if path in _file_sha256_cache:
+        return _file_sha256_cache[path]
+    with _sha256_store_lock:
+        if path in _file_sha256_cache:
+            return _file_sha256_cache[path]
+        stat = path.stat()
+        key = str(path.resolve())
+        signature = [stat.st_size, stat.st_mtime_ns]
+        try:
+            store = json.loads(_SHA256_STORE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            store = {}
+        known = store.get(key)
+        if isinstance(known, list) and known[:2] == signature:
+            _file_sha256_cache[path] = known[2]
+            return known[2]
         digest = hashlib.sha256()
         with path.open("rb") as handle:  # in chunks: some sources are hundreds of MB
             for chunk in iter(lambda: handle.read(1 << 22), b""):
                 digest.update(chunk)
-        _file_sha256_cache[path] = digest.hexdigest()
-    return _file_sha256_cache[path]
+        value = digest.hexdigest()
+        _file_sha256_cache[path] = value
+        store[key] = [*signature, value]
+        try:
+            _SHA256_STORE.parent.mkdir(parents=True, exist_ok=True)
+            temp = _SHA256_STORE.with_suffix(".tmp")
+            temp.write_text(json.dumps(store), encoding="utf-8")
+            os.replace(temp, _SHA256_STORE)
+        except OSError:
+            pass
+        return value
 
 
 def _definition_grams_sources() -> dict[str, Path]:

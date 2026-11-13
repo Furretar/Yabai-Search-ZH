@@ -115,3 +115,44 @@ def test_source_headwords_normalizes_a_traditional_moe_headword(monkeypatch):
 
     assert "縮頭縮腦" in words
     assert "缩头缩脑" in words
+
+
+def test_segmenter_cache_round_trips_and_rejects_another_userdict(tmp_path):
+    """The loaded-state cache is only used beside the user dict it was built from."""
+    path = tmp_path / "segmenter.pickle"
+    state = {"freq": {"缩头缩脑": 20000, "缩": 0}, "total": 20000, "headwords": {"缩头缩脑"}, "max_len": 4}
+    segment._write_cache(path, ["stamp-a"], state)
+    assert segment._read_cache(path, ["stamp-a"]) == state
+    assert segment._read_cache(path, ["stamp-b"]) is None
+    assert segment._read_cache(tmp_path / "missing.pickle", ["stamp-a"]) is None
+
+
+def test_a_newer_source_does_not_make_a_serving_machine_rebuild_the_userdict(monkeypatch):
+    """Only a missing user dict is built at run time: rewriting a synced file stopped Syncthing."""
+    if segment._userdict_missing():
+        pytest.skip("user dict not built")
+    monkeypatch.setattr(segment, "sources_changed", lambda: True)
+    monkeypatch.setattr(segment, "build_userdict", lambda: pytest.fail("rebuilt the user dict"))
+    monkeypatch.setattr(segment, "_loaded", False)
+    segment._ensure_loaded()
+    assert segment._loaded
+
+
+def test_file_sha256_is_remembered_by_size_and_mtime(tmp_path, monkeypatch):
+    """A restart reuses the stored hash of an unchanged file and rehashes a changed one."""
+    import hashlib
+
+    monkeypatch.setattr(db, "_SHA256_STORE", tmp_path / "sha.json")
+    monkeypatch.setattr(db, "_file_sha256_cache", {})
+    target = tmp_path / "source.sqlite"
+    target.write_bytes(b"one")
+    assert db._file_sha256(target) == hashlib.sha256(b"one").hexdigest()
+    monkeypatch.setattr(db, "_file_sha256_cache", {})  # a new process
+    expected = hashlib.sha256(b"one").hexdigest()
+    monkeypatch.setattr(db.hashlib, "sha256", lambda *a: pytest.fail("rehashed an unchanged file"))
+    assert db._file_sha256(target) == expected
+    monkeypatch.undo()
+    monkeypatch.setattr(db, "_SHA256_STORE", tmp_path / "sha.json")
+    monkeypatch.setattr(db, "_file_sha256_cache", {})
+    target.write_bytes(b"three")
+    assert db._file_sha256(target) == hashlib.sha256(b"three").hexdigest()
