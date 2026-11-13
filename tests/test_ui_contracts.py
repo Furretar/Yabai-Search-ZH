@@ -497,7 +497,8 @@ def test_cedict_reading_groups_label_the_spelling():
     assert "mergeSharedGroups(blocks, displayWord(entry))" in js
     assert "spellings.append(toneColoredText(word, group.pinyin));" in js
     assert "searchLink(word, toneColoredText(word, group.pinyin))" not in js
-    assert "searchLink(word, toneColoredText(word, form.pinyin))" not in js
+    # The form words are now links: clicking "Other forms"/"old variant" searches them.
+    assert "searchLink(word, toneColoredText(word, form.pinyin))" in js
     assert "def-reading-spellings" in js
     assert ".def-reading .def-reading-spellings {" in css
 

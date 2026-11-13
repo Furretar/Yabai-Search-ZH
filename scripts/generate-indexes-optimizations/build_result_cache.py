@@ -98,6 +98,11 @@ def _start() -> None:
     from yabai_search import result_cache  # noqa: PLC0415
 
     result_cache.capture = []
+    # The build computes every list itself. A list that is already on disk (the serving
+    # machine's own cache, or the file of an earlier build) would be handed back at once and
+    # never captured, so the build would miss exactly the searches that were made before it.
+    result_cache.LOCAL_PATH = Path("/nonexistent/result_cache_local.sqlite")
+    result_cache.SHIPPED_PATH = Path("/nonexistent/result_cache_shipped.sqlite")
 
 
 def _run(job: tuple[int, str, str, str]) -> tuple[int, list]:

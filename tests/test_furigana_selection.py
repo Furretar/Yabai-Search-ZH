@@ -447,7 +447,8 @@ def test_traditional_zhi_spellings_keep_their_own_senses(search_server, tmp_path
 
     # The definitions differ now, so the identical-row fold must not run.
     assert "Other forms: 只, 秖" not in by_trad["隻"]["notes"]
-    assert all(row["noteLinks"] == 0 for row in by_trad.values())
+    # The form words in the notes are now links (clickable to search them).
+    assert sum(row["noteLinks"] for row in by_trad.values()) > 0
 
 
 def test_simplified_zhi_labels_each_spelling_group(search_server, tmp_path):
@@ -461,7 +462,8 @@ def test_simplified_zhi_labels_each_spelling_group(search_server, tmp_path):
     assert row["spellingClasses"] == ["tone1", "tone1"]
     # Header spellings and notes are labels, not search links.
     assert row["spellingLinks"] == 0
-    assert row["noteLinks"] == 0
+    # The form words in the note are now links (clickable to search them).
+    assert row["noteLinks"] > 0
     assert "Other forms: 祇, 衹" in row["notes"]
     assert "Traditional forms: 隻, 秖" in row["notes"]
     assert "1.classifier for birds" in " ".join(row["lines"])

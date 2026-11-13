@@ -2377,8 +2377,8 @@ html.theme-light .defs {
 @media (hover: none), (pointer: coarse) {
     .dict-handle {
         width: 1.2rem;
-        height: 1.6rem;
-        background-size: .36rem .36rem;
+        height: 1.2rem;
+        background-size: .4rem .4rem;
         opacity: .55;
         visibility: visible;
     }

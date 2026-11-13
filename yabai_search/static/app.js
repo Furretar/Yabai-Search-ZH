@@ -1842,8 +1842,11 @@ function definitionBody(source, taiwanRefs, copy) {
         source.classifiers.forEach((classifier, i) => {
             if (i > 0) line.append(document.createTextNode(", "));
             // MOE stores a prose note instead of a single classifier word.
+            // Any Chinese word in that note can be searched, so link it.
             if (classifier.note) {
-                line.append(document.createTextNode(classifier.note));
+                const noteFragment = document.createDocumentFragment();
+                appendLinkedText(noteFragment, classifier.note, true);
+                line.append(noteFragment);
                 return;
             }
             const form =
@@ -2189,9 +2192,9 @@ function formsRows(forms, sectionReading = null) {
                 readingKey(form.pinyin) !== readingKey(sectionReading);
             if (differs) {
                 hasFurigana = true;
-                fragment.append(furigana(word, form.pinyin));
+                fragment.append(searchLink(word, furigana(word, form.pinyin)));
             } else {
-                fragment.append(toneColoredText(word, form.pinyin));
+                fragment.append(searchLink(word, toneColoredText(word, form.pinyin)));
             }
         });
         const row = detailRow(`${label}: `, fragment);
@@ -2712,8 +2715,9 @@ function fillEntryRow(row, entry) {
             const word = form.traditional ?? form;
             const pinyin = form.pinyin || "";
             // No furigana here: the forms are not under a reading heading.
-            // Tone colour still shows how each one is pronounced.
-            line.append(toneColoredText(word, pinyin));
+            // Tone colour still shows how each one is pronounced. The forms
+            // are other words, so each is a link that searches it.
+            line.append(searchLink(word, toneColoredText(word, pinyin)));
         });
         defsBox.append(line);
     }
@@ -4785,6 +4789,10 @@ function performSearch(query) {
     exactMode = false;
     history.pushState({ q: query }, "", `/?q=${encodeURIComponent(query)}`);
     annotate(query);
+    // On a phone the soft keyboard stays up after the form is submitted; blur the
+    // box so it minimizes once the search has started. Desktop keeps the focus
+    // so the query can be refined without clicking back in.
+    if (window.matchMedia("(pointer: coarse)").matches) input.blur();
 }
 
 // Restore the view (results or home) from whatever is in the URL now.
