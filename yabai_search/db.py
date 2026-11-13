@@ -959,7 +959,9 @@ def data_version() -> str:
 # stores them in data/generated-indexes-optimizations/search_index.sqlite, and
 # this module reads them back with plain SQL. On the tablet that replaces ~90 s
 # of pure-Python OpenCC work.
-_SEARCH_INDEX_VERSION = 1
+# Bumped when the headword list builder changes, so an index from an older build
+# is rebuilt instead of silently winning.
+_SEARCH_INDEX_VERSION = 2
 # The dialect early-out tables have their own version so adding them does not
 # invalidate the headword/pinyin index (which would force a 110 s rebuild on the
 # tablet just to gain a small lookup table).
@@ -5886,6 +5888,33 @@ def _build_all_headwords_list() -> list[str]:
                 row[0]
                 for row in connection.execute(
                     "SELECT DISTINCT word FROM jpwikt.senses WHERE text <> ''"
+                )
+            )
+        if BAIDU_DB_PATH.exists():
+            _attach_database(connection, "baidu", BAIDU_DB_PATH)
+            # Baidu contributes all of its headwords, including the ones with no
+            # definition: the user asked to exclude nothing.
+            parts.append("SELECT DISTINCT word FROM baidu.headwords WHERE word <> ''")
+            def_words.update(
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT word FROM baidu.senses WHERE text <> ''"
+                )
+            )
+        if UNIHAN_DB_PATH.exists():
+            _attach_database(connection, "unihan", UNIHAN_DB_PATH)
+            parts.append("SELECT DISTINCT word FROM unihan.headwords WHERE word <> ''")
+            has_reading.update(
+                to_simplified(row[0])
+                for row in connection.execute(
+                    "SELECT word FROM unihan.chars "
+                    "WHERE mandarin IS NOT NULL AND mandarin <> ''"
+                )
+            )
+            def_words.update(
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT word FROM unihan.senses WHERE text <> ''"
                 )
             )
         # Use the CEDICT map so variants OpenCC misses (e.g. 寳 -> 宝,
