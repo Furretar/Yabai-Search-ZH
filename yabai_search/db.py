@@ -501,6 +501,22 @@ def _database_key(database: str) -> str:
     return str(Path(database).resolve())
 
 
+def _mmap_size(legacy_sqlite: bool = False, pointer_max: int | None = None) -> int:
+    """Bytes of each database SQLite may map into memory (0 = read through the page cache instead).
+
+    A 32-bit process has about 3 GB of address space in total. Every thread keeps its own connection
+    to every database, and the databases add up to well over 1 GB, so mapping them exhausted the
+    address space on the 32-bit tablet: allocations failed and the worker aborted (SIGABRT) in a loop.
+    YABAI_SQLITE_MMAP overrides the size in bytes.
+    """
+    override = os.environ.get("YABAI_SQLITE_MMAP", "").strip()
+    if override.isdigit():
+        return int(override)
+    if (pointer_max if pointer_max is not None else sys.maxsize) < 2**32:
+        return 0
+    return 268435456 if legacy_sqlite else 1073741824
+
+
 def _connect(database) -> sqlite3.Connection:
     """Return this thread's read-only connection for a database file."""
     key = _database_key(str(database))
@@ -519,9 +535,7 @@ def _connect(database) -> sqlite3.Connection:
         check_same_thread=False,
         factory=_PooledConnection,
     )
-    connection.execute(
-        "PRAGMA mmap_size=268435456" if legacy_sqlite else "PRAGMA mmap_size=1073741824"
-    )
+    connection.execute(f"PRAGMA mmap_size={_mmap_size(legacy_sqlite)}")
     # 16 MB page cache per connection keeps the hot headword/gloss pages
     # without multiplying a large cache across every worker thread.
     connection.execute(

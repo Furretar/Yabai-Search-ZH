@@ -227,9 +227,12 @@ def warm(background: bool = True) -> None:
     """
 
     def load() -> None:
-        _ensure_loaded()
-        _headwords()
-        _max_headword_len()
+        try:
+            _ensure_loaded()
+            _headwords()
+            _max_headword_len()
+        except Exception as exc:  # noqa: BLE001  (the next annotate request retries and reports)
+            print(f"segmenter warm-up failed: {exc!r}", flush=True)
 
     if background:
         threading.Thread(target=load, name="segmenter-warm", daemon=True).start()

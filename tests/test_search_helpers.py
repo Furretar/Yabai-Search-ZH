@@ -675,3 +675,12 @@ def test_definition_only_rows_get_their_cedict_row_and_common_reading():
     rows = db._with_cedict_rows([stub, other])
     assert rows[0]["pinyin"] == "huì" and rows[0]["_stub"] is True
     assert rows[1] is other  # not in CC-CEDICT: unchanged
+
+
+def test_sqlite_memory_mapping_is_off_in_a_32_bit_process(monkeypatch):
+    """Mapping every database per thread exhausts a 32-bit address space (the tablet's SIGABRT loop)."""
+    monkeypatch.delenv("YABAI_SQLITE_MMAP", raising=False)
+    assert db._mmap_size(pointer_max=2**31 - 1) == 0
+    assert db._mmap_size(pointer_max=2**63 - 1) == 1073741824
+    monkeypatch.setenv("YABAI_SQLITE_MMAP", "4096")
+    assert db._mmap_size(pointer_max=2**31 - 1) == 4096
