@@ -167,8 +167,9 @@ def taiwan_for(
 ) -> tuple[str, int, int]:
     """(Taiwan reading, changed, overridden) of a main reading, by the rules in gen_taiwan_readings.py."""
     overridden = int(bool(TAIWAN_READINGS.get(traditional) or TAIWAN_READINGS.get(simplified)))
-    if anchor in ("moe", "moe_revised"):
-        # MOE readings ARE Taiwan readings; only an override changes them.
+    registry = next((item for item in db._SOURCE_QUERIES if item["anchor"] == anchor), {})
+    if registry.get("readings_are_taiwan"):
+        # Such a dictionary's readings ARE Taiwan readings (the trait in db.py); only an override changes them.
         derived = TAIWAN_READINGS.get(traditional) or TAIWAN_READINGS.get(simplified)
     else:
         derived = gen_taiwan_readings.entry_taiwan_reading(

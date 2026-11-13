@@ -4,13 +4,14 @@ Everything that GENERATES a Taiwan reading lives here and nowhere else. The
 functions are pure: they read no database and import nothing from db.py, so the
 same code runs when the Taiwan lists are built (scripts/generate-indexes-
 optimizations/) and, for a row that is not in a prebuilt list yet, when a page
-is decorated. What they need from the databases (MOE readings, how many CEDICT
-readings a word has) is passed in.
+is decorated. What they need from the databases (the Taiwan dictionary's readings, how many readings a
+word has in the headword table) is passed in; no dictionary is named here.
 
 The rules, in the order `entry_taiwan_reading` applies them:
 1. a manual override in overrides.py (TAIWAN_READINGS) wins;
 2. the whole-word MOE reading (see `taiwan_reading`);
-3. CEDICT's own "Taiwan pr. [...]" note;
+3. a "Taiwan pr. [...]" note in the row's own definition text (a convention some dictionaries use; see
+   `taiwan_note_reading`);
 4. the per-character derivation from MOE (see `derive_taiwan`).
 
 Changing anything in this file changes what the lists contain, and the stored
@@ -25,10 +26,10 @@ from yabai_search.overrides import TAIWAN_READINGS
 from yabai_search.pinyin import numeric_to_marked, to_toneless
 
 # Words that never take a Taiwan reading - the word-level MOE reading does not
-# fit their CEDICT sense. Add more here as needed.
+# fit the sense of the row's own reading. Add more here as needed.
 TAIWAN_EXCEPTIONS = {"啊"}
 
-# CEDICT notes a Taiwan pronunciation as "Taiwan pr. [xia4 hai2]".
+# A definition can note a Taiwan pronunciation as "Taiwan pr. [xia4 hai2]".
 TAIWAN_PR_RE = re.compile(r"(?:Taiwan|Taiwanese)\s+pr\.\s*\[([^\]]+)\]")
 
 
@@ -36,7 +37,7 @@ def word_taiwan(pinyin: str, options: list[str]) -> str | None:
     """Return the Taiwan reading for a whole word from its MOE readings.
 
     An exact MOE word match always wins. A single reading is used as-is (even if
-    it differs from CEDICT). With several (polyphonic), prefer the one matching
+    it differs from the row's own reading). With several (polyphonic), prefer the one matching
     the entry's reading exactly, then by toneless form, then MOE's first.
     """
     if not options:
@@ -58,7 +59,7 @@ def char_taiwan(syllable: str, options: list[str]) -> str | None:
     """Return a character's Taiwan reading for the per-character fallback.
 
     If MOE lists a single reading for the character, use it as-is (even when it
-    differs from the CEDICT syllable). With several readings, use one only if
+    differs from the row's own syllable). With several readings, use one only if
     exactly one matches the syllable's toneless form.
     """
     if len(options) == 1:
@@ -78,7 +79,7 @@ def derive_taiwan(
 
     Used for words the MOE dictionary doesn't list whole. Each character is
     swapped for its MOE reading only when that reading is unambiguous (exactly
-    one matches the syllable). `counts` is {word: number of CEDICT readings}.
+    one matches the syllable). `counts` is {word: number of readings it has}.
     Returns None when nothing changed.
     """
     chars = list(traditional)
@@ -101,12 +102,12 @@ def derive_taiwan(
     return " ".join(result) if changed else None
 
 
-def cedict_taiwan_reading(text: str) -> str:
-    """The marked pinyin from a CEDICT "Taiwan pr. [...]" note, or ""."""
+def taiwan_note_reading(text: str) -> str:
+    """The marked pinyin from a "Taiwan pr. [...]" note in a definition's text, or ""."""
     match = TAIWAN_PR_RE.search(text or "")
     if not match:
         return ""
-    # CEDICT may run the syllables together ("xia4hai2"), so split on each
+    # The note may run the syllables together ("xia4hai2"), so split on each
     # letter run + optional tone digit before marking.
     syllables = re.findall(r"[A-Za-zü:]+[0-9]?", match.group(1))
     return numeric_to_marked(" ".join(syllables))
@@ -118,7 +119,7 @@ def taiwan_reading(
     """Return a word's Taiwan reading (marked pinyin), or None.
 
     Words in `TAIWAN_EXCEPTIONS` get none. A monophonic word may use its
-    whole-word MOE reading; a polyphonic word keeps its specific CEDICT reading
+    whole-word MOE reading; a polyphonic word keeps its own specific reading
     (the MOE reading is keyed by word, not sense). Everything else falls back to
     per-character derivation.
     """
@@ -135,7 +136,7 @@ def entry_taiwan_reading(
     traditional: str,
     simplified: str,
     pinyin: str,
-    english_normalized: str,
+    note_text: str,
     options: list[str],
     counts: dict[str, int],
     char_map: dict,
@@ -149,6 +150,6 @@ def entry_taiwan_reading(
         return override
     if options:
         return taiwan_reading(traditional, pinyin, options, counts, char_map)
-    return cedict_taiwan_reading(english_normalized or "") or taiwan_reading(
+    return taiwan_note_reading(note_text or "") or taiwan_reading(
         traditional, pinyin, options, counts, char_map
     )

@@ -34,16 +34,21 @@ from yabai_search import db  # noqa: E402
 PAGE_SIZE = 25
 # Headwords the fake "wiktionary" dictionary defines (selected dict is cedict).
 WIKTIONARY_WORDS: set[str] = set()
+# Headwords the fake "cedict" dictionary defines: every row built by entry() with some English text.
+CEDICT_WORDS: set[str] = set()
 
 
 def fake_defined(anchor: str, words) -> set[str]:
     """Stand-in for db._anchor_defined_words: who has a definition in `anchor`."""
-    return {w for w in words if w in WIKTIONARY_WORDS} if anchor == "wiktionary" else set()
+    defined = {"wiktionary": WIKTIONARY_WORDS, "cedict": CEDICT_WORDS}.get(anchor, set())
+    return {w for w in words if w in defined}
 
 
 def entry(word, pinyin, english="", **extra):
     row = {"simplified": word, "traditional": word, "pinyin": pinyin, "english": english}
     row.update(extra)
+    if english:
+        CEDICT_WORDS.add(word)
     return row
 
 
@@ -101,10 +106,13 @@ class RankPatch(unittest.TestCase):
         WIKTIONARY_WORDS.clear()
         patches = [
             mock.patch.object(db, "_anchor_defined_words", fake_defined),
+            # No search index in these tests: the ranking asks each (fake) dictionary in turn.
+            mock.patch.object(db, "definer_masks", lambda words: None),
             mock.patch.object(
                 db, "_SOURCE_QUERIES", [{"anchor": "cedict"}, {"anchor": "wiktionary"}]
             ),
         ]
+        CEDICT_WORDS.clear()
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)

@@ -25,7 +25,7 @@ RELEVANCE_VERSION = 2
 from dataclasses import dataclass
 from functools import lru_cache
 
-# The five prefixes the CEDICT SQL filters already treat as cross-references.
+# The prefixes that mark a sense as a pointer to another word (the SQL filters in db.py use them too).
 SQL_XREF_PREFIXES = (
     "variant of ",
     "old variant of ",

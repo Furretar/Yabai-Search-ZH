@@ -15,25 +15,19 @@ Usage (from the project root):
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from yabai_search import db  # noqa: E402
 # Derived indexes live in db.GENERATED_DIR, not in data/ itself.
 DB_PATH = ROOT / "data" / "generated-indexes-optimizations" / "english_words.sqlite"
-CEDICT_DB = ROOT / "data" / "dictionary-databases" / "cedict.sqlite"
-MOE_DB = ROOT / "data" / "dictionary-databases" / "moe-taiwan" / "moe.sqlite"  # both MOE dictionaries
-WIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "wiktionary.sqlite"
 
 # Characters trimmed from both ends of a token before lowercasing. Must match
 # the strip set in yabai_search/db.py (_ENGLISH_WORD_STRIP).
 _STRIP = " \t\r\n!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~“”‘’「」【】《》…·—–~"
 
-
-
-def moe_sense_tables(source: sqlite3.Connection) -> list[str]:
-    """Sense tables of the merged MOE database: concise `senses`, comprehensive `rev_senses`."""
-    names = {row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    return [table for table in ("senses", "rev_senses") if table in names]
 
 
 def normalize(token: str) -> str:
@@ -58,29 +52,11 @@ def build() -> None:
                 continue
             connection.execute("INSERT OR IGNORE INTO words (word) VALUES (?)", (word,))
 
-    source = sqlite3.connect(CEDICT_DB)
-    try:
-        for (english,) in source.execute("SELECT english FROM entries WHERE english <> ''"):
-            add(english)
-    finally:
-        source.close()
-    if MOE_DB.exists():
-        source = sqlite3.connect(MOE_DB)
-        try:
-            for table in moe_sense_tables(source):
-                for (text,) in source.execute(f"SELECT text FROM {table} WHERE text <> ''"):
-                    add(text)
-        finally:
-            source.close()
-    if WIKTIONARY_DB.exists():
-        source = sqlite3.connect(WIKTIONARY_DB)
-        try:
-            for (gloss,) in source.execute(
-                "SELECT gloss FROM wiktionary WHERE gloss IS NOT NULL AND gloss <> ''"
-            ):
-                add(gloss)
-        finally:
-            source.close()
+    # Every dictionary whose definitions are English text (the "english_text" trait). What its tables look like
+    # is in db._SOURCE_SCANS.
+    for dictionary in db.sources_with("english_text"):
+        for _word, text in db.scan_definitions(dictionary):
+            add(text)
     connection.commit()
     words = connection.execute("SELECT count(*) FROM words").fetchone()[0]
     connection.close()

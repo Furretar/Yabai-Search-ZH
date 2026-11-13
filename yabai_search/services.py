@@ -722,7 +722,7 @@ def _reading_count(entry: dict) -> int:
     pinyin = entry.get("pinyin") or ""
     key = db.reading_key(pinyin)
     for definition in entry.get("definitions", []):
-        if definition.get("anchor") == "cedict":
+        if definition.get("anchor") == db.BACKBONE_ANCHOR:
             groups = definition.get("groups", [])
             # Exact reading first: "Gān" (surname) and "gān" are different groups.
             group = next((g for g in groups if g.get("pinyin") == pinyin), None)
@@ -1171,7 +1171,7 @@ def api_search(
                 # readings, ZH -> Chinese Wiktionary. CC-CEDICT is both the EN
                 # default and the fallback when that dictionary has no reading
                 # for the query (English words, for example).
-                if anchor != "cedict" and not quoted:
+                if anchor != db.BACKBONE_ANCHOR and not quoted:
                     with pd.stage("db_search"):
                         entries = db.pinyin_prefix_entries(q, anchor, limit)
                     pinyin_match = bool(entries)

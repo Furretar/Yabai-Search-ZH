@@ -22,10 +22,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from yabai_search import db  # noqa: E402
 from yabai_search.db import to_simplified  # noqa: E402
 
-CEDICT = ROOT / "data" / "dictionary-databases" / "cedict.sqlite"
-WIKTIONARY = ROOT / "data" / "dictionary-databases" / "wiktionary.sqlite"
+CEDICT = db.DB_PATH  # the dictionary whose words are "known"
 # Derived indexes live in db.GENERATED_DIR, not in data/ itself.
 GENERATED = ROOT / "data" / "generated-indexes-optimizations"
 OUT = GENERATED / "source_gloss.sqlite"
@@ -42,9 +42,11 @@ def main() -> None:
     }
     cedict.close()
 
-    source = sqlite3.connect(WIKTIONARY)
-    rows = source.execute(
-        "SELECT word, gloss FROM wiktionary WHERE gloss IS NOT NULL"
+    # Every dictionary with the "source_gloss" trait; its words that CEDICT lacks get their gloss text indexed.
+    rows = (
+        row
+        for dictionary in db.sources_with("source_gloss")
+        for row in db.scan_definitions(dictionary)
     )
     if TEMP_OUT.exists():
         TEMP_OUT.unlink()
@@ -80,7 +82,6 @@ def main() -> None:
     if batch:
         out.executemany("INSERT INTO source_gloss VALUES (?, ?)", batch)
         total += len(batch)
-    source.close()
     out.execute(
         "INSERT INTO source_gloss_fts(rowid, word, gloss) "
         "SELECT rowid, word, gloss FROM source_gloss"

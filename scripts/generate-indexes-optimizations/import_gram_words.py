@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,23 +33,13 @@ ROOT = Path(__file__).resolve().parents[2]
 GENERATED = ROOT / "data" / "generated-indexes-optimizations"
 DB_PATH = GENERATED / "gram_words.sqlite"
 TEMP_PATH = GENERATED / "gram_words.sqlite.tmp"
-# One file holds both MOE dictionaries (concise: plain tables, comprehensive: rev_ tables).
-MOE_DB = ROOT / "data" / "dictionary-databases" / "moe-taiwan" / "moe.sqlite"
-MOE_REVISED_DB = MOE_DB
-WIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "wiktionary.sqlite"
-ZHWIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "zhwiktionary.sqlite"
-JPWIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "jpwiktionary.sqlite"
 FREQ_DB = ROOT / "data" / "dictionary-databases" / "corpus_freq.sqlite"
-BAIDU_DB = ROOT / "data" / "dictionary-databases" / "baidu" / "baidu.sqlite"
-SOURCE_FILES = {
-    "moe": MOE_DB,
-    "moe_revised": MOE_REVISED_DB,
-    "wiktionary": WIKTIONARY_DB,
-    "zhwiktionary": ZHWIKTIONARY_DB,
-    "jpwiktionary": JPWIKTIONARY_DB,
-    "freq": FREQ_DB,
-    "baidu": BAIDU_DB,
-}
+# Which dictionaries have a headword gram index comes from the registry in db.py (the "head_grams" trait); the
+# frequency list is not a dictionary but is indexed too.
+sys.path.insert(0, str(ROOT))
+from yabai_search import db  # noqa: E402
+
+SOURCE_FILES = {**db.source_databases("head_grams"), "freq": FREQ_DB}
 
 
 def is_han(char: str) -> bool:
@@ -121,85 +112,18 @@ def build() -> None:
                 insert, [(source, gram, current) for gram in grams]
             )
 
-    if WIKTIONARY_DB.exists():
-        source = sqlite3.connect(WIKTIONARY_DB)
-        try:
-            for (word,) in source.execute(
-                "SELECT DISTINCT word FROM wiktionary "
-                "WHERE gloss IS NOT NULL ORDER BY word"
-            ):
-                add_word("wikt_head", word)
-            add_texts(
-                "wikt_gloss",
-                source.execute(
-                    "SELECT word, gloss FROM wiktionary "
-                    "WHERE gloss IS NOT NULL ORDER BY word"
-                ),
+    # Every dictionary with a headword gram index (the "head_grams" trait), read the same way: its headwords,
+    # and, when it has a "gram_texts" index, its definition text. What each dictionary's tables look like is in
+    # db._SOURCE_SCANS; nothing here names a dictionary.
+    for dictionary in db.sources_with("head_grams"):
+        for word in db.scan_headwords(dictionary):
+            add_word(dictionary["head_grams"], word)
+        texts = dictionary.get("gram_texts")
+        if texts:
+            add_texts(texts, db.scan_definitions(dictionary, visible=True, by_word=True))
+            connection.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, '1')", (f"has:{texts}",)
             )
-        finally:
-            source.close()
-    if MOE_DB.exists():
-        source = sqlite3.connect(MOE_DB)
-        try:
-            for (word,) in source.execute("SELECT DISTINCT word FROM moe ORDER BY word"):
-                add_word("moe_head", word)
-            add_texts(
-                "moe_sense",
-                source.execute("SELECT word, text FROM senses ORDER BY word"),
-            )
-        finally:
-            source.close()
-    if MOE_REVISED_DB.exists():
-        source = sqlite3.connect(MOE_REVISED_DB)
-        try:
-            has_revised = source.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rev_moe'"
-            ).fetchone()
-            if has_revised:
-                for (word,) in source.execute(
-                    "SELECT DISTINCT word FROM rev_moe ORDER BY word"
-                ):
-                    add_word("moe_revised_head", word)
-                # The visible definition only (up to the first "。"): that is what a quoted search
-                # matches, and it keeps the quoted poems and citations out of the index.
-                add_texts(
-                    "moe_revised_sense",
-                    source.execute(
-                        "SELECT word, CASE WHEN instr(text, '。') > 0 "
-                        "THEN substr(text, 1, instr(text, '。')) ELSE text END "
-                        "FROM rev_senses ORDER BY word"
-                    ),
-                )
-                connection.execute(
-                    "INSERT OR REPLACE INTO meta(key, value) VALUES ('has:moe_revised_sense', '1')"
-                )
-        finally:
-            source.close()
-    if ZHWIKTIONARY_DB.exists():
-        source = sqlite3.connect(ZHWIKTIONARY_DB)
-        try:
-            for (word,) in source.execute(
-                "SELECT DISTINCT word FROM headwords ORDER BY word"
-            ):
-                add_word("zhwikt_head", word)
-        finally:
-            source.close()
-    if JPWIKTIONARY_DB.exists():
-        source = sqlite3.connect(JPWIKTIONARY_DB)
-        try:
-            for (word,) in source.execute(
-                "SELECT DISTINCT word FROM headwords ORDER BY word"
-            ):
-                add_word("jpwikt_head", word)
-        finally:
-            source.close()
-    if BAIDU_DB.exists():
-        source = sqlite3.connect(BAIDU_DB)
-        try:
-            for (word,) in source.execute("SELECT word FROM headwords ORDER BY word"):
-                add_word("baidu_head", word)
-        finally:
-            source.close()
     if FREQ_DB.exists():
         source = sqlite3.connect(FREQ_DB)
         try:

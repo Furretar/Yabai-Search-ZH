@@ -291,15 +291,25 @@ def test_frontend_resets_dictionaries_and_forces_compact_mode():
     assert "sourceLang === lang" in js
 
 
-def test_moe_dictionaries_merge_into_one_block():
-    """國語辭典簡編本 and the revised dictionary share one block, concise first."""
+def test_dictionaries_declared_as_merged_share_one_block():
+    """國語辭典簡編本 and the revised dictionary share one block, concise first.
+
+    The pair is declared once (the `merged` trait in db.py); the script merges whatever group the page declares.
+    """
+    from yabai_search import db
+
+    declared = {item["anchor"]: item for item in db.dictionaries()}
+    assert declared["moe"]["merged"] == ["moe", "moe_revised"]  # the lead first
+    assert declared["moe_revised"].get("hidden")  # one visible row for the pair
+    html = (ROOT / "yabai_search/templates/index.html").read_text(encoding="utf-8")
+    assert "data-merged=" in html and "data-shown-as=" in html
     js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
-    assert "function mergeMoeDictionaries" in js
-    assert 'byAnchor.has("moe") && byAnchor.has("moe_revised")' in js
-    # Exact duplicates after trimming are dropped, and compact mode keeps both
-    # anchors so the merge still happens.
+    assert "function mergeDictionaryBlocks(blocks)" in js
+    assert "members.every((member) => byAnchor.has(member))" in js
+    # Exact duplicates after trimming are dropped, and selecting one member keeps the whole group so the
+    # merge still happens.
     assert "seen.has(trimmed)" in js
-    assert 'set.has("moe") && selected.has("moe_revised")' in js
+    assert "const withMergedGroups" in js and "function expandMergedSelection" in js
 
 
 def test_definition_copy_button_does_not_add_line_height():
@@ -583,14 +593,45 @@ def test_frequency_chip_has_rank_tooltip():
     assert "chip.title = FREQ_TOOLTIP" in js
 
 
-def test_chinese_wiktionary_links_to_its_exact_entry():
-    """中文维基词典 opens the word's page on zh.wiktionary.org."""
+def test_each_dictionary_links_to_its_own_site_from_its_traits():
+    """A dictionary's look-up page comes from its lookup_url trait (db.py), not from code in app.js.
+
+    中文维基词典 opens the word's page on zh.wiktionary.org, using the headword that source stored.
+    """
+    from yabai_search import db
+
+    urls = {item["anchor"]: item.get("lookup_url") for item in db.dictionaries()}
+    assert urls["zhwiktionary"] == "https://zh.wiktionary.org/wiki/"
+    assert urls["jpwiktionary"] == "https://ja.wiktionary.org/wiki/"
+    assert urls["wiktionary"] == "https://en.wiktionary.org/wiki/"
+    assert urls["cedict"].startswith("https://cc-cedict.org/")
+    html = (ROOT / "yabai_search/templates/index.html").read_text(encoding="utf-8")
+    assert 'data-lookup-url="{{ d.lookup_url }}"' in html  # the toggle carries it to the page
     js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
-    assert 'const ZH_WIKTIONARY_PAGE = "https://zh.wiktionary.org/wiki/";' in js
-    assert 'source.anchor === "zhwiktionary"' in js
-    assert (
-        "ZH_WIKTIONARY_PAGE + encodeURIComponent(source.headword || word)" in js
-    )
+    assert "lookupUrls.get(source.anchor)" in js
+    assert "lookupUrl + encodeURIComponent(source.headword || word)" in js
+    # No dictionary is named in the link code any more.
+    assert "ZH_WIKTIONARY_PAGE" not in js and "CC_CEDICT_SEARCH" not in js
+
+
+def test_the_page_names_no_dictionary_but_reads_their_declared_capabilities():
+    """What a dictionary can do (variant forms, pronunciation notes, merged spellings) is declared in db.py.
+
+    The script must not decide by a dictionary's name: it reads the capability from the dictionary's toggle.
+    """
+    from yabai_search import db
+
+    declared = {item["anchor"]: item for item in db.dictionaries()}
+    assert declared["cedict"].get("supplies_forms") and declared["cedict"].get("supplies_notes")
+    assert declared["cedict"].get("shared_groups")
+    assert not declared["wiktionary"].get("supplies_forms")
+    html = (ROOT / "yabai_search/templates/index.html").read_text(encoding="utf-8")
+    for attribute in ("data-supplies-forms", "data-supplies-notes", "data-shared-groups"):
+        assert attribute in html
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    for name in ('"cedict"', '"wiktionary"', '"moe"', '"zhwiktionary"', '"jpwiktionary"', '"baidu"', '"unihan"'):
+        assert name not in js, f"app.js decides by the dictionary name {name}"
+    assert "formsAnchors.has(source.anchor)" in js and "notesAnchors.has(anchor)" in js
 
 
 def test_dungan_reading_is_one_muted_line():

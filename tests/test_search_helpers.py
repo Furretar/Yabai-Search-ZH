@@ -152,16 +152,17 @@ def test_is_wildcard_query():
 
 
 def test_rank_by_category_keeps_selected_dictionary_first():
-    """Category 1 rows stay ahead of category 2 rows across the whole list."""
+    """Category 1 rows stay ahead of category 2 rows across the whole list, and category 1 means defined."""
     entries, _ = db.search("gan", 100)
     ranked = db.rank_by_category(entries, {"cedict"})
-    seen_other = False
+    categories = [entry["category"] for entry in ranked]
+    assert categories == sorted(categories)
+    # A row is category 1 exactly when the selected dictionary has a definition for it (a sense row; a bare
+    # "variant of X" pointer has none).
+    words = [word for entry in ranked for word in (entry["traditional"], entry["simplified"])]
+    defined = db._anchor_defined_words("cedict", words)
     for entry in ranked:
-        is_selected = bool(entry.get("english"))
-        if is_selected and seen_other:
-            pytest.fail("a category 1 row followed a category 2 row")
-        if not is_selected:
-            seen_other = True
+        assert (entry["category"] == 1) == (entry["traditional"] in defined or entry["simplified"] in defined)
 
 
 def test_wiktionary_alias_gloss_counts_as_defined():

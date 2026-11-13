@@ -13,7 +13,7 @@ import time
 import unicodedata
 from bisect import bisect_left
 from collections import OrderedDict, defaultdict
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Iterator
 from functools import lru_cache
 from pathlib import Path
 
@@ -58,17 +58,11 @@ def reading_key(pinyin: str | None) -> str:
     return to_numeric(text).replace("v", "ü")
 
 
-# CEDICT cross-reference senses ("variant of 隻|只[zhi1]", "old variant of ...")
-# say where to look, not what a word means. They must not count when choosing
-# the representative reading of a headword, or a reading that is mostly
-# cross-references outranks the real one. (SQL: use with `s.text`/`text`.)
-_XREF_PREFIXES = (
-    "variant of ",
-    "old variant of ",
-    "archaic variant of ",
-    "erhua variant of ",
-    "also written ",
-)
+# Cross-reference senses ("variant of 隻|只[zhi1]", "old variant of ...") say where to look, not what a word
+# means. They must not count when choosing the representative reading of a headword, or a reading that is mostly
+# cross-references outranks the real one. The prefixes are a convention of English definition text (any
+# dictionary's), kept in relevance.py with the other definition-text rules. (SQL: use with `s.text`/`text`.)
+_XREF_PREFIXES = relevance.SQL_XREF_PREFIXES
 _XREF_SQL = " AND ".join(
     f"lower(ltrim(text)) NOT LIKE '{prefix}%'" for prefix in _XREF_PREFIXES
 )
@@ -155,7 +149,7 @@ def _drop_self_references(
 
 
 def is_xref_sense(text: str | None) -> bool:
-    """True for a CEDICT "variant of X" style sense (see `_XREF_PREFIXES`)."""
+    """True for a "variant of X" style sense that only points to another word (see `_XREF_PREFIXES`)."""
     return (text or "").strip().lower().startswith(_XREF_PREFIXES)
 
 
@@ -879,6 +873,81 @@ _SOURCE_QUERIES = [
     },
 ]
 
+
+# Everything else the code needs to know about each dictionary, in one place. Adding a dictionary is one
+# entry in _SOURCE_QUERIES (what it contains) plus one here (how it is treated); nothing else lists dictionaries.
+#   order             position among the dictionaries shown first (the others follow, by language)
+#   lookup_url        a page where the word can be looked up at the dictionary's own site (the page links to it)
+#   head_grams        name of its headword gram index in gram_words.sqlite (it is a negative filter, so a
+#                     dictionary with one must be listed here)
+#   definition_grams  True when its definitions are in definition_grams.sqlite (quoted-phrase search)
+#   backbone          True for the dictionary whose table the main search runs on (exactly one; see BACKBONE_ANCHOR)
+#   clean_english     True when its definition text is English with pronunciation notes to strip and normalise
+#   reading_filtered  True when its senses are stored per reading and a result keeps only its own spelling's readings
+#   matches_row_text  True when a definition search is matched on the row's own text, not by a query of its senses
+#   variant_sense_sql SQL ({ph} = the words) for glosses it stores under another spelling of the same word
+#   supplies_forms    True when it supplies the variant forms ("Other forms") a result lists
+#   supplies_notes    True when it supplies the pronunciation notes ("Taiwan pr.", "also pr.") a result shows
+#   shared_groups     True when its blocks for several spellings of one word merge into one block of readings
+#   gram_texts        name of its definition-text index in gram_words.sqlite (quoted-phrase search)
+#   english_text      True when its definitions feed the "search the English word" list (english_words.sqlite)
+#   readings_are_taiwan  True when its readings are Taiwan readings already (only an override changes them)
+#   source_gloss      True when its words that CEDICT lacks feed source_gloss.sqlite
+#   fts               name of the function that says whether its trigram headword index exists
+#   merged / shown_as / hidden   two registry entries shown as one row of the Dictionaries panel
+_SOURCE_TRAITS: dict[str, dict] = {
+    "cedict": {
+        "order": 0, "english_text": True,
+        "supplies_forms": True, "supplies_notes": True, "shared_groups": True,
+        "backbone": True, "clean_english": True, "reading_filtered": True, "matches_row_text": True,
+        "lookup_url": "https://cc-cedict.org/editor/editor.php?handler=QueryDictionary&querydictionary_search=",
+    },
+    "wiktionary": {
+        "order": 1, "head_grams": "wikt_head", "gram_texts": "wikt_gloss", "definition_grams": True,
+        "english_text": True, "source_gloss": True, "fts": "_has_wiktionary_fts",
+        "lookup_url": "https://en.wiktionary.org/wiki/",
+        # Wiktionary can store a gloss on a different traditional spelling of the same simplified word
+        # (e.g. 寧為 vs 寧爲); these rows attach it under the simplified key too.
+        "variant_sense_sql": (
+            "SELECT r.word, r.simplified, w.gloss FROM readings r JOIN wiktionary w ON w.word = r.word "
+            "WHERE r.simplified IN ({ph}) AND w.gloss IS NOT NULL"
+        ),
+    },
+    "moe": {
+        "order": 2, "head_grams": "moe_head", "gram_texts": "moe_sense", "definition_grams": True,
+        "english_text": True, "readings_are_taiwan": True, "fts": "_has_moe_fts",
+        "merged": ["moe", "moe_revised"], "shown_as": "重編國語辭典修訂本",
+    },
+    "moe_revised": {
+        "order": 3, "head_grams": "moe_revised_head", "gram_texts": "moe_revised_sense", "definition_grams": True,
+        "english_text": True, "readings_are_taiwan": True, "fts": "_has_moe_revised_fts", "hidden": True,
+    },
+    "zhwiktionary": {
+        "head_grams": "zhwikt_head", "definition_grams": True, "fts": "_has_zhwiktionary_fts",
+        "lookup_url": "https://zh.wiktionary.org/wiki/",
+    },
+    "jpwiktionary": {
+        "head_grams": "jpwikt_head", "definition_grams": True, "fts": "_has_jpwiktionary_fts",
+        "lookup_url": "https://ja.wiktionary.org/wiki/",
+    },
+    "baidu": {"head_grams": "baidu_head"},
+    "unihan": {"definition_grams": True},
+}
+for _source in _SOURCE_QUERIES:
+    _source.update(_SOURCE_TRAITS.get(_source["anchor"], {}))
+
+# The dictionary whose table the main (Chinese, pinyin, wildcard) search runs on. Everything that searches it by
+# name should use this, so the day that search reads every dictionary equally there is one place to change.
+BACKBONE_ANCHOR = next(source["anchor"] for source in _SOURCE_QUERIES if source.get("backbone"))
+
+
+def source_databases(trait: str) -> dict[str, Path]:
+    """{anchor: database file} of the dictionaries that have the given trait (see _SOURCE_TRAITS).
+
+    One MOE file serves both MOE entries, so it appears under each anchor that has the trait.
+    """
+    return {source["anchor"]: source["database"] for source in _SOURCE_QUERIES if source.get(trait)}
+
 # --- headword export for the segmenter -------------------------------------
 # The segmenter (parser.py) must know every word search can find, otherwise
 # "it's 缩头缩脑" splits a word that "缩头缩脑" alone finds. Rather than keep a
@@ -887,6 +956,154 @@ _SOURCE_QUERIES = [
 # `all_sql`. A new dictionary added to _SOURCE_QUERIES is therefore segmented
 # automatically; give it a `segment_sql` only when `all_sql` misses script
 # variants it stores in separate columns.
+
+
+# How to read each dictionary IN FULL, for the builders of the gram, word and Taiwan indexes (the registry above
+# answers "which of these words?", this answers "everything"). SQL run on the dictionary's own database:
+#   defined_words        one column: every word the dictionary has a definition for, under that exact spelling
+#   variant_words        optional: more words it defines through another spelling of the same word
+#   headwords            one column: every headword, in order
+#   definitions          (word, text): every definition text, in the dictionary's own row order (scan_definitions
+#                        can ask for word order)
+#   visible_definitions  optional: the same trimmed to the visible definition (what a quoted search matches)
+#   readings             optional: (word, simplified or NULL, pinyin[, english]) rows; without it the
+#                        registry's `pinyin_rows_sql` is used
+#   requires             optional: SQL that must return a row, or the dictionary is skipped (a table it needs)
+_SOURCE_SCANS: dict[str, dict[str, str]] = {
+    "cedict": {
+        "defined_words": "SELECT DISTINCT word FROM senses",
+        "definitions": "SELECT traditional, english FROM entries WHERE english <> ''",
+        "readings": "SELECT traditional, simplified, pinyin, english_normalized FROM entries WHERE pinyin <> ''",
+    },
+    "wiktionary": {
+        "defined_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL",
+        # Wiktionary also stores some glosses under another spelling of the same simplified word (黨群 vs 黨羣).
+        "variant_words": (
+            "SELECT DISTINCT r.simplified FROM readings r JOIN wiktionary w ON w.word = r.word "
+            "WHERE w.gloss IS NOT NULL AND r.simplified IS NOT NULL"
+        ),
+        "headwords": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL ORDER BY word",
+        "definitions": "SELECT word, gloss FROM wiktionary WHERE gloss IS NOT NULL AND gloss <> ''",
+        # Mandarin readings only; the dialect readings have no Taiwan form.
+        "readings": "SELECT word, NULL, pinyin FROM readings WHERE kind = 'mandarin' AND pinyin <> ''",
+    },
+    "moe": {
+        "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
+        "headwords": "SELECT DISTINCT word FROM moe ORDER BY word",
+        "definitions": "SELECT word, text FROM senses WHERE text <> ''",
+    },
+    "moe_revised": {
+        "requires": "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'rev_moe'",
+        "defined_words": "SELECT DISTINCT word FROM rev_senses WHERE text <> ''",
+        "headwords": "SELECT DISTINCT word FROM rev_moe ORDER BY word",
+        "definitions": "SELECT word, text FROM rev_senses WHERE text <> ''",
+        # The visible definition only (up to the first "。"): that is what a quoted search matches, and it
+        # keeps the quoted poems and citations out of the index.
+        "visible_definitions": (
+            "SELECT word, CASE WHEN instr(text, '。') > 0 THEN substr(text, 1, instr(text, '。')) ELSE text END "
+            "FROM rev_senses"
+        ),
+    },
+    "zhwiktionary": {
+        "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
+        "headwords": "SELECT DISTINCT word FROM headwords ORDER BY word",
+        "definitions": "SELECT word, text FROM senses WHERE text <> ''",
+    },
+    "jpwiktionary": {
+        "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
+        "headwords": "SELECT DISTINCT word FROM headwords ORDER BY word",
+        "definitions": "SELECT word, text FROM senses WHERE text <> ''",
+    },
+    "baidu": {"defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''", "headwords": "SELECT word FROM headwords ORDER BY word"},
+    "unihan": {
+        "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
+        "definitions": "SELECT word, text FROM senses WHERE text <> ''",
+    },
+}
+
+
+def sources_with(trait: str) -> list[dict]:
+    """The registry entries that have the given trait (see _SOURCE_TRAITS), in registry order."""
+    return [source for source in _SOURCE_QUERIES if source.get(trait)]
+
+
+def _scan(source: dict, key: str, order_by: str | None = None) -> Iterator[tuple]:
+    """Rows of one full-scan query of a dictionary (nothing when it is absent or lacks the query)."""
+    scan = _SOURCE_SCANS.get(source["anchor"], {})
+    sql = scan.get(key)
+    if not sql or not _source_present(source):
+        return
+    if order_by:
+        sql = f"{sql} ORDER BY {order_by}"
+    connection = sqlite3.connect(source["database"])
+    try:
+        if scan.get("requires") and not connection.execute(scan["requires"]).fetchone():
+            return
+        yield from connection.execute(sql)
+    finally:
+        connection.close()
+
+
+def scan_defined_words(source: dict, variants: bool = False) -> Iterator[str]:
+    """Every word the dictionary has a definition for, under that exact spelling.
+
+    With variants=True: the extra words it defines through another spelling of the same word (those are not
+    its own headwords, so the "*" list leaves them out, but the page shows their definitions).
+    """
+    for (word,) in _scan(source, "variant_words" if variants else "defined_words"):
+        if word:
+            yield word
+
+
+def scan_headwords(source: dict) -> Iterator[str]:
+    """Every headword of a dictionary, in order."""
+    for (word,) in _scan(source, "headwords"):
+        yield word
+
+
+def scan_definitions(source: dict, visible: bool = False, by_word: bool = False) -> Iterator[tuple[str, str]]:
+    """(word, definition text) for every definition of a dictionary.
+
+    With visible=True the text is trimmed to the visible definition where the dictionary defines that. With
+    by_word=True the rows come grouped by word (an index that collects a word's text needs that); otherwise they
+    keep the dictionary's own row order, which is the order the stored indexes have always had.
+    """
+    key = "visible_definitions" if visible and "visible_definitions" in _SOURCE_SCANS.get(source["anchor"], {}) else "definitions"
+    for word, text in _scan(source, key, order_by="word" if by_word else None):
+        yield word, text
+
+
+def scan_readings(source: dict) -> Iterator[tuple[str, str, str, str]]:
+    """(word, simplified, marked pinyin, note text or "") for every reading a dictionary lists (the note text is the definition text, which may note a Taiwan pronunciation).
+
+    The rows come in three shapes: (word, simplified, pinyin, english) from a CEDICT-style table whose
+    pinyin is already marked, (word, simplified or NULL, pinyin) and (word, pinyin) from the others.
+    """
+    records = _scan(source, "readings") if "readings" in _SOURCE_SCANS.get(source["anchor"], {}) else _scan_pinyin_rows(source)
+    for record in records:
+        word = record[0]
+        if len(record) == 4:
+            _word, simplified, pinyin, english = record
+            marked = pinyin
+        else:
+            simplified = record[1] if len(record) > 2 else None
+            pinyin, english = record[-1], ""
+            marked = _split_pinyin(pinyin) if pinyin and source.get("split_pinyin") else pinyin
+        if not word or not pinyin:
+            continue
+        yield word, simplified or to_simplified(word), marked, english or ""
+
+
+def _scan_pinyin_rows(source: dict) -> Iterator[tuple]:
+    """Rows of the registry's own `pinyin_rows_sql` for a dictionary."""
+    sql = source.get("pinyin_rows_sql")
+    if not sql or not _source_present(source):
+        return
+    connection = sqlite3.connect(source["database"])
+    try:
+        yield from connection.execute(sql)
+    finally:
+        connection.close()
 
 
 def source_database_paths() -> list[Path]:
@@ -962,7 +1179,7 @@ def data_version() -> str:
 # of pure-Python OpenCC work.
 # Bumped when the headword list builder changes, so an index from an older build
 # is rebuilt instead of silently winning.
-_SEARCH_INDEX_VERSION = 3
+_SEARCH_INDEX_VERSION = 4  # 4: the definers table (which dictionaries define each exact word)
 # The dialect early-out tables have their own version so adding them does not
 # invalidate the headword/pinyin index (which would force a 110 s rebuild on the
 # tablet just to gain a small lookup table).
@@ -1159,6 +1376,9 @@ def build_search_index(path: Path | None = None) -> dict[str, int]:
             "marked TEXT NOT NULL, numeric TEXT NOT NULL)"
         )
         connection.execute(
+            "CREATE TABLE definers (word TEXT NOT NULL PRIMARY KEY, mask INTEGER NOT NULL) WITHOUT ROWID"
+        )
+        connection.execute(
             "CREATE TABLE dialect_labels (label TEXT PRIMARY KEY)"
         )
         connection.execute(
@@ -1177,6 +1397,9 @@ def build_search_index(path: Path | None = None) -> dict[str, int]:
             "INSERT INTO pinyin "
             "(word, simplified, marked, toneless, numeric) VALUES (?, ?, ?, ?, ?)",
             pinyin_rows,
+        )
+        connection.executemany(
+            "INSERT INTO definers (word, mask) VALUES (?, ?)", sorted(_definer_masks_built.items())
         )
         connection.executemany(
             "INSERT INTO dialect_labels (label) VALUES (?)",
@@ -1334,11 +1557,17 @@ def dictionaries() -> list[dict]:
             "anchor": source["anchor"],
             "lang": source["lang"],
         }
-        if source["anchor"] == "moe":
-            item["label"] = "重編國語辭典修訂本"
-            item["merged"] = ["moe", "moe_revised"]
-        elif source["anchor"] == "moe_revised":
+        if source.get("shown_as"):
+            item["label"] = source["shown_as"]
+        if source.get("merged"):
+            item["merged"] = source["merged"]
+        if source.get("hidden"):
             item["hidden"] = True
+        if source.get("lookup_url"):
+            item["lookup_url"] = source["lookup_url"]
+        for capability in ("supplies_forms", "supplies_notes", "shared_groups"):
+            if source.get(capability):
+                item[capability] = True
         items.append(item)
     return items
 
@@ -2657,7 +2886,7 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                 reading = row[3] if len(row) > 3 else ""  # CEDICT only
                 if text and text.strip():
                     value = text.strip()
-                    if anchor == "cedict":
+                    if source.get("clean_english"):
                         value = normalize_english(_strip_pron_notes(value))
                         # A classifier inside a sense is written "(CL:棵[ke1])";
                         # spell out the label for the numbered definition.
@@ -2669,17 +2898,11 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                     # "surname Gan"): keep it once per reading.
                     if item not in bucket:
                         bucket.append(item)
-            if anchor == "wiktionary":
-                # Wiktionary can store a gloss on a different traditional
-                # spelling of the same simplified word (e.g. 寧為 vs 寧爲).
-                # Attach those glosses under the simplified key too.
+            if source.get("variant_sense_sql"):
+                # Glosses the dictionary stores under another spelling of the same word: attach them under the
+                # simplified key too.
                 extra_glosses = connection.execute(
-                    "SELECT r.word, r.simplified, w.gloss FROM readings r "
-                    "JOIN wiktionary w ON w.word = r.word "
-                    "WHERE r.simplified IN ({ph}) AND w.gloss IS NOT NULL".format(
-                        ph=placeholders
-                    ),
-                    params,
+                    source["variant_sense_sql"].format(ph=placeholders), params
                 )
                 for word, simplified, text in extra_glosses:
                     value = (text or "").strip()
@@ -2744,7 +2967,7 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
         for source in _SOURCE_QUERIES:
             anchor = source["anchor"]
             headword, values = for_senses(senses[anchor], entry)
-            if anchor == "cedict" and values:
+            if source.get("reading_filtered") and values:
                 # Only this spelling's own readings (see `_own_readings`). Never
                 # filter down to nothing: a reading we cannot match keeps all.
                 if variant_index.is_redirect(
@@ -3127,7 +3350,7 @@ def _ids_images_for(word: str) -> list[str]:
 
 # CC-CEDICT's own Taiwan reading note, e.g. "Taiwan pr. [xia4 hai2]".
 _TAIWAN_PR_RE = gen_taiwan_readings.TAIWAN_PR_RE
-_cedict_taiwan_reading = gen_taiwan_readings.cedict_taiwan_reading
+_taiwan_note_reading = gen_taiwan_readings.taiwan_note_reading
 
 
 def _decorate(entries: list[dict]) -> list[dict]:
@@ -3710,7 +3933,8 @@ def _cedict_heads() -> set[str]:
 # How the UI prioritizes sources: English (CC-CEDICT, Wiktionary) before
 # Mainland, then Taiwan. Used to order the secondary-source results.
 _LANG_ORDER = {"english": 0, "mainland": 1, "taiwan": 2}
-_ANCHOR_ORDER = ["cedict", "wiktionary", "moe", "moe_revised"]
+# Anchors with an "order" trait come first, in that order (see _SOURCE_TRAITS).
+_ANCHOR_ORDER = [s["anchor"] for s in sorted((s for s in _SOURCE_QUERIES if "order" in s), key=lambda s: s["order"])]
 
 
 def _source_rank(source: dict) -> tuple[int, int]:
@@ -3784,7 +4008,7 @@ def _source_only_entries(
         return len(heads) >= limit
 
     for source in sorted(_SOURCE_QUERIES, key=_source_rank):
-        if source["anchor"] == "cedict" or not _source_present(source):
+        if source["anchor"] == BACKBONE_ANCHOR or not _source_present(source):
             continue
         database = _connect(source["database"])
         query_stage = pd.stage(f"src:{source['anchor']}:query")
@@ -3814,14 +4038,7 @@ def _source_only_entries(
                 # column (their senses_fts table); Wiktionary has its own.
                 fts_sql = source.get("head_fts_sql") or source.get("like_sql_fts")
                 use_fts = bool(fts_sql) and _source_has_fts(source)
-                head_source = {
-                    "wiktionary": "wikt_head",
-                    "moe": "moe_head",
-                    "moe_revised": "moe_revised_head",
-                    "zhwiktionary": "zhwikt_head",
-                    "jpwiktionary": "jpwikt_head",
-                    "baidu": "baidu_head",
-                }.get(source["anchor"], "")
+                head_source = source.get("head_grams", "")
                 for form, pattern in pairs:
                     candidates = (
                         _gram_candidates(head_source, form)
@@ -4696,13 +4913,7 @@ def _file_sha256(path: Path) -> str:
 
 def _definition_grams_sources() -> dict[str, Path]:
     """The source databases definition_grams.sqlite is built from (keep in step with import_definition_grams.py)."""
-    return {
-        "moe": MOE_DB_PATH,
-        "wiktionary": WIKTIONARY_DB_PATH,
-        "zhwiktionary": ZHWIKTIONARY_DB_PATH,
-        "jpwiktionary": JPWIKTIONARY_DB_PATH,
-        "unihan": UNIHAN_DB_PATH,
-    }
+    return source_databases("definition_grams")
 
 
 def _definition_grams_current(connection: sqlite3.Connection) -> bool:
@@ -4809,15 +5020,7 @@ def _gram_words_version_ok() -> bool:
         stored = {}
     finally:
         connection.close()
-    sources = {
-        "moe": MOE_DB_PATH,
-        "moe_revised": MOE_REVISED_DB_PATH,
-        "wiktionary": WIKTIONARY_DB_PATH,
-        "zhwiktionary": ZHWIKTIONARY_DB_PATH,
-        "jpwiktionary": JPWIKTIONARY_DB_PATH,
-        "freq": FREQ_DB_PATH,
-        "baidu": BAIDU_DB_PATH,
-    }
+    sources = {**source_databases("head_grams"), "freq": FREQ_DB_PATH}
     # Both MOE entries are the same file; _file_sha256 hashes each file once.
     for name, path in sources.items():
         if not path.exists():
@@ -5093,19 +5296,9 @@ def _has_freq_fts() -> bool:
 
 
 def _source_has_fts(source: dict) -> bool:
-    """True when this source's trigram headword index is available."""
-    anchor = source["anchor"]
-    if anchor == "moe":
-        return _has_moe_fts()
-    if anchor == "moe_revised":
-        return _has_moe_revised_fts()
-    if anchor == "wiktionary":
-        return _has_wiktionary_fts()
-    if anchor == "zhwiktionary":
-        return _has_zhwiktionary_fts()
-    if anchor == "jpwiktionary":
-        return _has_jpwiktionary_fts()
-    return False
+    """True when this source's trigram headword index is available (the check is named in its traits)."""
+    check = source.get("fts")
+    return bool(check) and bool(globals()[check]())
 
 
 def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
@@ -5793,6 +5986,8 @@ ALL_PAGE_SIZE = 25
 # Cache of (every distinct simplified headword, its tier group) across all
 # sources. Both lists are built together so they cannot drift apart.
 _all_headwords_cache: tuple[list[str], list[int], list[int]] | None = None
+# {exact word: bit mask of the dictionaries that define it}, from the last build of the list (see build_search_index).
+_definer_masks_built: dict[str, int] = {}
 # The anchors that can give a headword a definition, in bit order for the masks
 # stored beside the "*" headword list. Filled from the index (or a live build).
 _def_anchors: list[str] = []
@@ -5918,11 +6113,7 @@ def _build_all_headwords_list() -> list[str]:
         # Which headwords actually have a definition, per source: the "*" list is
         # reordered for a dictionary selection so the selected sources' words come
         # first (see all_headwords).
-        def_by_anchor: dict[str, set[str]] = {
-            "cedict": {
-                row[0] for row in connection.execute("SELECT DISTINCT word FROM senses")
-            }
-        }
+        def_by_anchor: dict[str, set[str]] = {}  # filled from the scans below
         # Both MOE dictionaries are tables of the attached "moe" database; the
         # comprehensive one adds headwords the concise one lacks. Only words that
         # actually have a sense (definition) count.
@@ -5934,12 +6125,6 @@ def _build_all_headwords_list() -> list[str]:
                     f"SELECT word FROM moe.{prefix}moe WHERE pinyin <> ''"
                 )
             )
-            def_by_anchor["moe_revised" if prefix else "moe"] = {
-                row[0]
-                for row in connection.execute(
-                    f"SELECT DISTINCT word FROM moe.{prefix}senses WHERE text <> ''"
-                )
-            }
         if WIKTIONARY_DB_PATH.exists():
             _attach_database(connection, "wikt", WIKTIONARY_DB_PATH)
             # A Wiktionary headword with no gloss has nothing to show; leave it
@@ -5965,13 +6150,6 @@ def _build_all_headwords_list() -> list[str]:
                     "WHERE pinyin <> '' AND kind <> 'mandarin'"
                 )
             )
-            def_by_anchor["wiktionary"] = {
-                row[0]
-                for row in connection.execute(
-                    "SELECT DISTINCT word FROM wikt.wiktionary "
-                    "WHERE gloss IS NOT NULL"
-                )
-            }
         if ZHWIKTIONARY_DB_PATH.exists():
             _attach_database(connection, "zhwikt", ZHWIKTIONARY_DB_PATH)
             # Chinese Wiktionary headwords, plus their readings and definitions.
@@ -5982,12 +6160,6 @@ def _build_all_headwords_list() -> list[str]:
                     "SELECT word FROM zhwikt.headwords WHERE pinyin <> ''"
                 )
             )
-            def_by_anchor["zhwiktionary"] = {
-                row[0]
-                for row in connection.execute(
-                    "SELECT DISTINCT word FROM zhwikt.senses WHERE text <> ''"
-                )
-            }
         if JPWIKTIONARY_DB_PATH.exists():
             _attach_database(connection, "jpwikt", JPWIKTIONARY_DB_PATH)
             # Japanese Wiktionary headwords, plus their readings and definitions.
@@ -5998,23 +6170,11 @@ def _build_all_headwords_list() -> list[str]:
                     "SELECT word FROM jpwikt.headwords WHERE pinyin <> ''"
                 )
             )
-            def_by_anchor["jpwiktionary"] = {
-                row[0]
-                for row in connection.execute(
-                    "SELECT DISTINCT word FROM jpwikt.senses WHERE text <> ''"
-                )
-            }
         if BAIDU_DB_PATH.exists():
             _attach_database(connection, "baidu", BAIDU_DB_PATH)
             # Baidu contributes all of its headwords, including the ones with no
             # definition: the user asked to exclude nothing.
             parts.append("SELECT DISTINCT word FROM baidu.headwords WHERE word <> ''")
-            def_by_anchor["baidu"] = {
-                row[0]
-                for row in connection.execute(
-                    "SELECT DISTINCT word FROM baidu.senses WHERE text <> ''"
-                )
-            }
         if UNIHAN_DB_PATH.exists():
             _attach_database(connection, "unihan", UNIHAN_DB_PATH)
             parts.append("SELECT DISTINCT word FROM unihan.headwords WHERE word <> ''")
@@ -6025,12 +6185,20 @@ def _build_all_headwords_list() -> list[str]:
                     "WHERE mandarin IS NOT NULL AND mandarin <> ''"
                 )
             )
-            def_by_anchor["unihan"] = {
-                row[0]
-                for row in connection.execute(
-                    "SELECT DISTINCT word FROM unihan.senses WHERE text <> ''"
-                )
-            }
+        # Which dictionary defines which word: one scan per dictionary (db._SOURCE_SCANS), the same meaning of
+        # "defined" the category ranking uses.
+        def_by_anchor = {
+            source["anchor"]: set(scan_defined_words(source))
+            for source in _SOURCE_QUERIES
+            if _source_present(source) and "defined_words" in _SOURCE_SCANS.get(source["anchor"], {})
+        }
+        # Per exact word (spelled as a dictionary spells it), the bit mask of the dictionaries that define it, in
+        # the order of def_by_anchor. This becomes the "definers" table of the search index.
+        literal_masks: dict[str, int] = {}
+        by_anchor = {source["anchor"]: source for source in _SOURCE_QUERIES}
+        for bit, anchor in enumerate(def_by_anchor):
+            for word in set(def_by_anchor[anchor]) | set(scan_defined_words(by_anchor[anchor], variants=True)):
+                literal_masks[word] = literal_masks.get(word, 0) | (1 << bit)
         # Use the CEDICT map so variants OpenCC misses (e.g. 寳 -> 宝,
         # 砲 -> 炮) still collapse onto their simplified form, and therefore
         # get the same tier as the word they belong to.
@@ -6080,6 +6248,8 @@ def _build_all_headwords_list() -> list[str]:
         for word in def_by_anchor[anchor]:
             masks[word] = masks.get(word, 0) | (1 << bit)
     sels = [masks.get(head, 0) for head in heads]
+    global _definer_masks_built
+    _definer_masks_built = literal_masks
     _all_headwords_cache = (heads, groups, sels)
     return heads
 
@@ -6137,6 +6307,32 @@ def all_headwords_labeled(
         (1 if sels[i] & mask else 2 if sels[i] else 3, groups[i]) for i in page
     ]
     return [heads[i] for i in page], len(heads), labels
+
+
+def definer_masks(words: Iterable[str]) -> dict[str, int] | None:
+    """{word: bit mask of the dictionaries that define it}, read from the search index; None when it is not usable.
+
+    The bits follow `_def_anchors` (the dictionaries in registry order). A word no dictionary defines is absent.
+    This is what the category ranking reads instead of asking every dictionary on every request.
+    """
+    if not _search_index_ok():
+        return None
+    _all_headwords_list()  # loads _def_anchors from the index
+    if not _def_anchors:
+        return None
+    wanted = sorted(set(words))
+    masks: dict[str, int] = {}
+    connection = _connect(SEARCH_INDEX_DB_PATH)
+    try:
+        for start in range(0, len(wanted), 400):
+            chunk = wanted[start : start + 400]
+            holes = ",".join("?" * len(chunk))
+            masks.update(connection.execute(f"SELECT word, mask FROM definers WHERE word IN ({holes})", chunk))
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    return masks
 
 
 def _selection_mask(selected: list[str] | None) -> int:
@@ -6270,7 +6466,7 @@ def prefix_entries(query: str, anchor: str, limit: int = 25) -> list[dict]:
     forms = _script_forms(query)
     exact = set(forms)
 
-    if anchor == "cedict":
+    if anchor == BACKBONE_ANCHOR:
         clauses = []
         params: list[str] = []
         for form in forms:
@@ -6498,16 +6694,12 @@ def _anchor_defined_words(anchor: str, words: list[str]) -> set[str]:
             except sqlite3.Error:
                 # Older source databases may predate the senses table.
                 pass
-            if anchor == "wiktionary":
+            if source.get("variant_sense_sql"):
                 try:
                     rows = connection.execute(
-                        "SELECT DISTINCT r.simplified FROM readings r "
-                        "JOIN wiktionary w ON w.word = r.word "
-                        f"WHERE r.simplified IN ({holes}) "
-                        "AND w.gloss IS NOT NULL",
-                        tuple(chunk),
+                        source["variant_sense_sql"].format(ph=holes), tuple(chunk)
                     ).fetchall()
-                    found.update(row[0] for row in rows)
+                    found.update(row[1] for row in rows)  # the simplified spelling it defines
                 except sqlite3.Error:
                     pass
     finally:
@@ -6567,7 +6759,8 @@ def _definition_match_anchors(entries: list[dict], query: str) -> list[set[str]]
     for i, entry in enumerate(entries):
         text = (entry.get("english_normalized") or entry.get("english") or "").lower()
         if text and any(pattern_re.search(text) for pattern_re in pattern_res):
-            matches[i].add("cedict")
+            # The row carries the text of the dictionary the main search runs on (matches_row_text trait).
+            matches[i].add(BACKBONE_ANCHOR)
     likes = [_like_pattern(f"*{form}*") for form in forms]
     words = sorted(
         {entry["traditional"] for entry in entries if entry.get("traditional")}
@@ -6583,7 +6776,7 @@ def _definition_match_anchors(entries: list[dict], query: str) -> list[set[str]]
     )
     for source in _SOURCE_QUERIES:
         anchor = source["anchor"]
-        if anchor == "cedict" or not _source_present(source):
+        if source.get("matches_row_text") or not _source_present(source):
             continue
         sql = _DEFINITION_MATCH_SQL.get(anchor, _SENSE_TEXT_MATCH_SQL)
         found: set[str] = set()
@@ -6765,6 +6958,40 @@ def _match_tier_context(
     return 3 if client_key in reading else None
 
 
+def _definition_flags(
+    entries: list[dict], words: list[str], selected: Collection[str]
+) -> tuple[list[bool], list[bool]]:
+    """For each entry: (defined by a selected dictionary, defined by any dictionary).
+
+    Read from the search index's `definers` table (which dictionaries define each exact word, built once); when
+    that is not usable, each dictionary is asked in turn. No dictionary is treated differently from another.
+    """
+
+    def forms(entry: dict) -> list[str]:
+        return [word for word in (entry.get("traditional"), entry.get("simplified")) if word]
+
+    masks = definer_masks(words)
+    if masks is not None:
+        selected_mask = _selection_mask(list(selected))
+        combined = [_or_masks(masks.get(word, 0) for word in forms(entry)) for entry in entries]
+        return [bool(mask & selected_mask) for mask in combined], [mask != 0 for mask in combined]
+    defined = {source["anchor"]: _anchor_defined_words(source["anchor"], words) for source in _SOURCE_QUERIES}
+    in_selected = [
+        any(word in defined[anchor] for anchor in selected if anchor in defined for word in forms(entry))
+        for entry in entries
+    ]
+    in_any = [any(word in found for found in defined.values() for word in forms(entry)) for entry in entries]
+    return in_selected, in_any
+
+
+def _or_masks(masks: Iterable[int]) -> int:
+    """The bitwise OR of some masks."""
+    result = 0
+    for mask in masks:
+        result |= mask
+    return result
+
+
 def rank_by_category(
     entries: list[dict],
     selected: Collection[str],
@@ -6810,37 +7037,8 @@ def rank_by_category(
     def listed(entry: dict, defined: set[str]) -> bool:
         return entry.get("traditional") in defined or entry.get("simplified") in defined
 
-    has_cedict = [bool(entry.get("english")) for entry in entries]
-    category1 = [
-        "cedict" in selected and has_cedict[i] for i in range(len(entries))
-    ]
-    other_selected = [anchor for anchor in selected if anchor != "cedict"]
-    other_defined = {
-        anchor: _anchor_defined_words(anchor, words) for anchor in other_selected
-    }
-    for i, entry in enumerate(entries):
-        if not category1[i]:
-            category1[i] = any(listed(entry, d) for d in other_defined.values())
-    # Rows outside category 1 with no CEDICT text may still have a definition
-    # in a dictionary that is not selected; that decides tier 5/6 vs. category 2.
-    need_any = [
-        i for i, entry in enumerate(entries) if not category1[i] and not has_cedict[i]
-    ]
-    any_defined: set[str] = set()
-    if need_any:
-        probe = sorted(
-            {
-                word
-                for i in need_any
-                for word in (entries[i].get("traditional"), entries[i].get("simplified"))
-                if word
-            }
-        )
-        for source in _SOURCE_QUERIES:
-            if source["anchor"] in other_defined:
-                any_defined |= other_defined[source["anchor"]] & set(probe)
-            else:
-                any_defined |= _anchor_defined_words(source["anchor"], probe)
+    # For each entry: defined by a selected dictionary (category 1), and defined by any dictionary at all.
+    category1, defined_any = _definition_flags(entries, words, selected)
 
     # An English definition search arrives already ordered by relevance.py.
     # Keep that order inside a category; only annotate the category the page
@@ -6868,12 +7066,7 @@ def rank_by_category(
             category1[i] = bool(matched[i] & selected)
         ranked: list[tuple[int, int, dict]] = []
         for i, entry in enumerate(entries):
-            defined = (
-                category1[i]
-                or has_cedict[i]
-                or bool(matched[i])
-                or listed(entry, any_defined)
-            )
+            defined = category1[i] or defined_any[i] or bool(matched[i])
             category = 1 if category1[i] else 2 if defined else 3
             entry["category"] = category
             if matched[i]:
@@ -6894,9 +7087,7 @@ def rank_by_category(
         entry = entries[index]
         has_reading = bool(entry.get("pinyin"))
         dialect = bool(entry.get("pinyin_label") or entry.get("pinyin_no_tone"))
-        defined = (
-            category1[index] or has_cedict[index] or listed(entry, any_defined)
-        )
+        defined = category1[index] or defined_any[index]
         if dialect:
             tier = 4
         elif not defined:

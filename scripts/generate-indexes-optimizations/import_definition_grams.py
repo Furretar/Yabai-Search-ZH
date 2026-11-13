@@ -18,31 +18,19 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 # Derived indexes live in db.GENERATED_DIR, not in data/ itself.
 DB_PATH = ROOT / "data" / "generated-indexes-optimizations" / "definition_grams.sqlite"
-MOE_DB = ROOT / "data" / "dictionary-databases" / "moe-taiwan" / "moe.sqlite"  # both MOE dictionaries
-WIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "wiktionary.sqlite"
-ZHWIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "zhwiktionary.sqlite"
-JPWIKTIONARY_DB = ROOT / "data" / "dictionary-databases" / "jpwiktionary.sqlite"
-UNIHAN_DB = ROOT / "data" / "dictionary-databases" / "unihan.sqlite"  # its glosses can name other characters
-# Keep in step with db._definition_grams_sources(): every database whose definitions are read below.
-SOURCE_FILES = {
-    "moe": MOE_DB,
-    "wiktionary": WIKTIONARY_DB,
-    "zhwiktionary": ZHWIKTIONARY_DB,
-    "jpwiktionary": JPWIKTIONARY_DB,
-    "unihan": UNIHAN_DB,
-}
+# Which dictionaries' definitions are indexed comes from the registry in db.py (the "definition_grams" trait), so
+# this builder and the app can never disagree about it.
+sys.path.insert(0, str(ROOT))
+from yabai_search import db  # noqa: E402
 
+SOURCE_FILES = db.source_databases("definition_grams")
 
-
-def moe_sense_tables(source: sqlite3.Connection) -> list[str]:
-    """Sense tables of the merged MOE database: concise `senses`, comprehensive `rev_senses`."""
-    names = {row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    return [table for table in ("senses", "rev_senses") if table in names]
 
 
 def is_han(char: str) -> bool:
@@ -81,49 +69,11 @@ def build() -> None:
         DB_PATH.unlink()
     grams: set[str] = set()
 
-    if MOE_DB.exists():
-        source = sqlite3.connect(MOE_DB)
-        try:
-            for table in moe_sense_tables(source):
-                for (text,) in source.execute(f"SELECT text FROM {table} WHERE text <> ''"):
-                    add_text(text, grams)
-        finally:
-            source.close()
-    if WIKTIONARY_DB.exists():
-        source = sqlite3.connect(WIKTIONARY_DB)
-        try:
-            for (gloss,) in source.execute(
-                "SELECT gloss FROM wiktionary WHERE gloss IS NOT NULL AND gloss <> ''"
-            ):
-                add_text(gloss, grams)
-        finally:
-            source.close()
-    if ZHWIKTIONARY_DB.exists():
-        source = sqlite3.connect(ZHWIKTIONARY_DB)
-        try:
-            for (text,) in source.execute(
-                "SELECT text FROM senses WHERE text <> ''"
-            ):
-                add_text(text, grams)
-        finally:
-            source.close()
-    if JPWIKTIONARY_DB.exists():
-        source = sqlite3.connect(JPWIKTIONARY_DB)
-        try:
-            for (text,) in source.execute(
-                "SELECT text FROM senses WHERE text <> ''"
-            ):
-                add_text(text, grams)
-        finally:
-            source.close()
-
-    if UNIHAN_DB.exists():
-        source = sqlite3.connect(UNIHAN_DB)
-        try:
-            for (text,) in source.execute("SELECT text FROM senses WHERE text <> ''"):
-                add_text(text, grams)
-        finally:
-            source.close()
+    # Every dictionary whose definitions are searched by a quoted phrase (the "definition_grams" trait): the
+    # text of each of its definitions. What its tables look like is in db._SOURCE_SCANS.
+    for dictionary in db.sources_with("definition_grams"):
+        for _word, text in db.scan_definitions(dictionary):
+            add_text(text, grams)
 
     connection = sqlite3.connect(DB_PATH)
     connection.execute("PRAGMA journal_mode=OFF")

@@ -107,6 +107,15 @@ def test_relevance_order_is_kept_inside_a_category(moe_lists_every_headword):
     assert {entry["category"] for entry in ranked} == {2}
 
 
+@pytest.fixture(autouse=True)
+def _ask_each_dictionary(monkeypatch):
+    """These tests build small fake dictionaries, so the ranking must ask each dictionary in turn.
+
+    The precomputed `definers` table describes the real data and cannot know about them.
+    """
+    monkeypatch.setattr(db, "definer_masks", lambda words: None)
+
+
 def test_selected_source_definition_beats_other_dictionary_rows(
     monkeypatch, tmp_path
 ):
@@ -242,6 +251,11 @@ const anchorLang = new Map([
   ["cedict", "english"], ["wiktionary", "english"],
   ["moe", "taiwan"], ["moe_revised", "taiwan"],
 ]);
+// What the page builds from the dictionary toggles (the traits in db.py): the pair shown as one row, and the
+// dictionary that supplies variant forms.
+const mergedMembers = new Map([["moe", ["moe", "moe_revised"]], ["moe_revised", ["moe", "moe_revised"]]]);
+const formsAnchors = new Set(["cedict"]);
+const anyEnabled = (enabled, anchors) => [...anchors].some((anchor) => enabled.has(anchor));
 %(slice)s
 %(has_selected)s
 const block = (anchor) => ({anchor, lang: anchorLang.get(anchor)});

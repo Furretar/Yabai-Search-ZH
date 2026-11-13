@@ -60,6 +60,29 @@ const customDictsButton = document.getElementById("custom-dicts-button");
 const dictToggles = [...document.querySelectorAll(".dict-toggle")];
 // Anchor -> language group, from the Dictionaries panel markup.
 const anchorLang = new Map(dictToggles.map((toggle) => [toggle.dataset.anchor, groupFor(toggle)]));
+// The dictionaries that declare a capability (db.py _SOURCE_TRAITS, a data attribute on their toggle).
+const togglesWith = (attribute) =>
+    new Set(dictToggles.filter((toggle) => toggle.dataset[attribute]).map((toggle) => toggle.dataset.anchor));
+const formsAnchors = togglesWith("suppliesForms"); // they supply the variant forms ("Other forms")
+const notesAnchors = togglesWith("suppliesNotes"); // they supply the pronunciation notes ("Taiwan pr.")
+const sharedGroupAnchors = togglesWith("sharedGroups"); // their blocks for several spellings merge into one
+// Dictionaries shown as ONE row (the "merged" trait in db.py, on the lead's toggle as data-merged="a,b"): selecting
+// one selects them all, and a result merges their definitions into one block, the lead's header first.
+const mergedMembers = new Map(); // anchor -> every anchor of its group, the lead first
+for (const toggle of dictToggles) {
+    if (!toggle.dataset.merged) continue;
+    const members = toggle.dataset.merged.split(",");
+    for (const anchor of members) mergedMembers.set(anchor, members);
+}
+const membersOf = (anchor) => mergedMembers.get(anchor) || [anchor];
+const mergedRowLabels = new Map(
+    dictToggles.filter((toggle) => toggle.dataset.shownAs).map((toggle) => [toggle.dataset.anchor, toggle.dataset.shownAs]),
+);
+const anyEnabled = (enabled, anchors) => [...anchors].some((anchor) => enabled.has(anchor));
+// Anchor -> the dictionary's own look-up page (a data attribute on its toggle, from the lookup_url trait in db.py).
+const lookupUrls = new Map(
+    dictToggles.filter((toggle) => toggle.dataset.lookupUrl).map((toggle) => [toggle.dataset.anchor, toggle.dataset.lookupUrl]),
+);
 // The whole "Dictionaries" disclosure, shown only when "Custom dictionaries" is on.
 const dictPanel = document.querySelector(".options.dictionaries");
 
@@ -1743,7 +1766,7 @@ function definitionBody(source, taiwanRefs, copy) {
     // CC-CEDICT variant forms ("Other forms") belong under the reading they are
     // pronounced with, not at the bottom of the whole entry.
     const forms =
-        source.anchor === "cedict" && copy && copy.forms ? copy.forms : [];
+        formsAnchors.has(source.anchor) && copy && copy.forms ? copy.forms : [];
     const formKey = (form) => readingKey(form.pinyin || "");
 
     // Senses, grouped by reading. CEDICT polyphonic words get a header per
@@ -1877,16 +1900,6 @@ function definitionBody(source, taiwanRefs, copy) {
     return body;
 }
 
-// Search URL for the CC-CEDICT editor; the word is appended URL-encoded.
-const CC_CEDICT_SEARCH =
-    "https://cc-cedict.org/editor/editor.php?handler=QueryDictionary&querydictionary_search=";
-
-// Page URL for an English Wiktionary entry.
-const WIKTIONARY_PAGE = "https://en.wiktionary.org/wiki/";
-
-// Page URL for a Chinese Wiktionary entry.
-const ZH_WIKTIONARY_PAGE = "https://zh.wiktionary.org/wiki/";
-
 // A labeled block showing one dictionary's definitions for a result. CC-CEDICT
 // and Wiktionary names open that word in the source; other names link to their
 // section on the About page.
@@ -1900,25 +1913,11 @@ function definitionsBlock(source, taiwanRefs, word, reading, forms = []) {
     }
     const name = document.createElement("a");
     name.className = "def-source-name";
-    if (source.anchor === "cedict") {
-        name.href = CC_CEDICT_SEARCH + encodeURIComponent(word);
-        name.target = "_blank";
-        name.rel = "noopener";
-    } else if (source.anchor === "wiktionary") {
-        name.href = WIKTIONARY_PAGE + encodeURIComponent(word);
-        name.target = "_blank";
-        name.rel = "noopener";
-    } else if (source.anchor === "jpwiktionary") {
-        name.href =
-            "https://ja.wiktionary.org/wiki/" +
-            encodeURIComponent(source.headword || word);
-        name.target = "_blank";
-        name.rel = "noopener";
-    } else if (source.anchor === "zhwiktionary") {
-        // Open the exact entry in Chinese Wiktionary, using the headword the
-        // source stored (traditional or simplified as that page spells it).
-        name.href =
-            ZH_WIKTIONARY_PAGE + encodeURIComponent(source.headword || word);
+    // Each dictionary can name a page where the word is looked up at its own site (the lookup_url trait
+    // in db.py, carried on its toggle); the headword the source stored is used when it has one.
+    const lookupUrl = lookupUrls.get(source.anchor);
+    if (lookupUrl) {
+        name.href = lookupUrl + encodeURIComponent(source.headword || word);
         name.target = "_blank";
         name.rel = "noopener";
     } else if (source.anchor.startsWith("custom-")) {
@@ -1994,8 +1993,10 @@ function initialDictSelection(entry) {
                 source.lang || anchorLang.get(source.anchor) || "";
             if (sourceLang === lang) selected.add(source.anchor);
         }
-        if ((entry.forms || []).length && lang === "english") {
-            selected.add("cedict");
+        if ((entry.forms || []).length) {
+            for (const anchor of formsAnchors) {
+                if (anchorLang.get(anchor) === lang) selected.add(anchor);
+            }
         }
         const defined = (entry.definitions || []).map((source) => source.anchor);
         if (isOtherDefinitionMatch(entry)) {
@@ -2017,12 +2018,15 @@ function initialDictSelection(entry) {
         if (!byLang.has(lang)) byLang.set(lang, []);
         byLang.get(lang).push(source.anchor);
     }
-    // The two MOE dictionaries are displayed as one merged block, so compact
-    // mode keeps both when both are selected even though it normally keeps only
-    // one dictionary per language.
-    const withMoePair = (set) => {
-        if (set.has("moe") && selected.has("moe_revised")) set.add("moe_revised");
-        if (set.has("moe_revised") && selected.has("moe")) set.add("moe");
+    // Dictionaries shown as one merged block keep all their members when they are selected, even though
+    // compact mode normally keeps only one dictionary per language.
+    const withMergedGroups = (set) => {
+        for (const members of new Set(mergedMembers.values())) {
+            for (const anchor of members) {
+                if (!set.has(anchor)) continue;
+                for (const other of members) if (selected.has(other)) set.add(other);
+            }
+        }
         return set;
     };
     if (fallback) {
@@ -2030,7 +2034,7 @@ function initialDictSelection(entry) {
         const lang =
             FALLBACK_LANG_ORDER.find((name) => byLang.has(name)) ||
             byLang.keys().next().value;
-        return withMoePair(
+        return withMergedGroups(
             new Set(lang === undefined ? [] : [topAnchor(byLang.get(lang), lang)]),
         );
     }
@@ -2038,7 +2042,7 @@ function initialDictSelection(entry) {
     for (const [lang, anchors] of byLang) {
         result.add(topAnchor(anchors, lang));
     }
-    return withMoePair(result);
+    return withMergedGroups(result);
 }
 
 // Language code -> the definition language it selects (used for ordering).
@@ -2065,11 +2069,8 @@ function visibleDicts(entry) {
 // Toggle one dictionary's definitions for a single result row (not globally).
 function toggleEntryDict(row, entry, anchor) {
     const enabled = entryDicts(entry);
-    // The two MOE Taiwan sources share one chip.
-    const anchors =
-        anchor === "moe" || anchor === "moe_revised"
-            ? ["moe", "moe_revised"]
-            : [anchor];
+    // Dictionaries shown as one row share one chip.
+    const anchors = membersOf(anchor);
     const turnOn = !enabled.has(anchor);
     for (const name of anchors) {
         if (turnOn) enabled.add(name);
@@ -2323,15 +2324,14 @@ function mergeVariantBlocks(blocks) {
     return { ...base, groups, defs: [], classifiers };
 }
 
-// Merge 國語辭典簡編本 and 重編國語辭典修訂本 into one block. The concise
-// dictionary supplies the header and comes first; comprehensive senses are
-// appended unless the exact same trimmed definition is already present.
-function mergeMoeDictionaries(concise, revised) {
+// Merge the blocks of dictionaries that are shown as one row into one block. The first (the lead) supplies the
+// header and comes first; later senses are appended unless the exact same trimmed definition is already present.
+function mergeDictionaryBlocks(blocks) {
     const groups = [];
     const seen = new Set();
     const sameTitle = (a, b) =>
         JSON.stringify(a.variantTitle || null) === JSON.stringify(b.variantTitle || null);
-    for (const block of [concise, revised]) {
+    for (const block of blocks) {
         const blockGroups =
             block.groups && block.groups.length
                 ? block.groups
@@ -2358,7 +2358,7 @@ function mergeMoeDictionaries(concise, revised) {
         }
     }
     const classifiers = [];
-    for (const block of [concise, revised]) {
+    for (const block of blocks) {
         for (const classifier of block.classifiers || []) {
             const key = JSON.stringify(classifier);
             if (!classifiers.some((item) => JSON.stringify(item) === key)) {
@@ -2367,7 +2367,7 @@ function mergeMoeDictionaries(concise, revised) {
         }
     }
     return {
-        ...concise,
+        ...blocks[0],
         groups,
         defs: groups.flatMap((group) => group.senses),
         classifiers,
@@ -2583,11 +2583,13 @@ function fillEntryRow(row, entry) {
         const chipAnchors = new Set();
         for (const source of definitions) {
             if (chipAnchors.has(source.anchor)) continue;
-            // The revised MOE source shares the visible 國語辭典 chip whenever
-            // this entry has both sources, whether the merged chip is on or off.
+            // A group member that is not the lead shares the lead's chip whenever this entry has
+            // the lead, whether the merged chip is on or off.
+            const members = membersOf(source.anchor);
             if (
-                source.anchor === "moe_revised" &&
-                definitions.some((item) => item.anchor === "moe")
+                members.length > 1 &&
+                source.anchor !== members[0] &&
+                definitions.some((item) => item.anchor === members[0])
             ) {
                 continue;
             }
@@ -2596,8 +2598,7 @@ function fillEntryRow(row, entry) {
             chip.type = "button";
             chip.className = enabled.has(source.anchor) ? "source on" : "source";
             chip.dataset.anchor = source.anchor;
-            chip.textContent =
-                source.anchor === "moe" ? "重編國語辭典修訂本" : source.label;
+            chip.textContent = mergedRowLabels.get(source.anchor) || source.label;
             chip.addEventListener("click", () => toggleEntryDict(row, entry, source.anchor));
             box.append(chip);
         }
@@ -2612,7 +2613,7 @@ function fillEntryRow(row, entry) {
     // "Taiwan pr." / "also pr." / variant-form notes (all CC-CEDICT data), shown
     // only while CC-CEDICT is on for this row, right after its block.
     const notes = [];
-    if (enabled.has("cedict")) {
+    if (anyEnabled(enabled, notesAnchors)) {
         const prons = extractPronunciations(entry.english_normalized);
         // With Taiwan readings already active, the separate Taiwan note is
         // redundant, so hide it.
@@ -2656,33 +2657,37 @@ function fillEntryRow(row, entry) {
                 (variantOrder.get(b.traditional ?? "") ?? 0),
         );
         return blocks.length > 1
-            ? anchor === "cedict"
+            ? sharedGroupAnchors.has(anchor)
                 ? mergeSharedGroups(blocks, displayWord(entry))
                 : mergeVariantBlocks(blocks)
             : blocks[0];
     };
-    const mergedMoe =
-        byAnchor.has("moe") && byAnchor.has("moe_revised")
-            ? mergeMoeDictionaries(
-                  blockFor("moe", byAnchor.get("moe")),
-                  blockFor("moe_revised", byAnchor.get("moe_revised")),
-              )
-            : null;
+    // A group of dictionaries shown as one row, every member present in this result, is drawn as one block.
+    const mergedBlocks = new Map(); // the lead's anchor -> the merged block
+    for (const members of new Set(mergedMembers.values())) {
+        if (members.every((member) => byAnchor.has(member))) {
+            mergedBlocks.set(
+                members[0],
+                mergeDictionaryBlocks(members.map((member) => blockFor(member, byAnchor.get(member)))),
+            );
+        }
+    }
     let notesPlaced = false;
-    let mergedMoeDrawn = false;
+    const mergedDrawn = new Set();
     for (const [anchor, blocks] of byAnchor) {
-        if (mergedMoe && (anchor === "moe" || anchor === "moe_revised")) {
-            if (!mergedMoeDrawn) {
+        const lead = membersOf(anchor)[0];
+        if (mergedBlocks.has(lead)) {
+            if (!mergedDrawn.has(lead)) {
                 defsBox.append(
-                    definitionsBlock(mergedMoe, entry.taiwan_refs, primary, reading, entry.forms || []),
+                    definitionsBlock(mergedBlocks.get(lead), entry.taiwan_refs, primary, reading, entry.forms || []),
                 );
-                mergedMoeDrawn = true;
+                mergedDrawn.add(lead);
             }
             continue;
         }
         const source = blockFor(anchor, blocks);
         defsBox.append(definitionsBlock(source, entry.taiwan_refs, primary, reading, entry.forms || []));
-        if (anchor === "cedict" && notes.length) {
+        if (notesAnchors.has(anchor) && notes.length) {
             defsBox.append(...notes);
             notesPlaced = true;
         }
@@ -2952,7 +2957,7 @@ function hasSelectedDefs(entry) {
     if ((entry.definitions || []).some((s) => enabled.has(s.anchor))) return true;
     // A "see X" variant has no senses - only "other forms" (CC-CEDICT) - but it
     // should still show when CC-CEDICT is on.
-    return (entry.forms || []).length > 0 && enabled.has("cedict");
+    return (entry.forms || []).length > 0 && anyEnabled(enabled, formsAnchors);
 }
 
 function hasAnyDefs(entry) {
@@ -4896,7 +4901,7 @@ function loadPrefs() {
         // language's defaults (EN -> every English dictionary). A custom order
         // belongs to
         // the custom setup, so drop it too.
-        state.dicts = expandMoeSelection(
+        state.dicts = expandMergedSelection(
             stored === null || !state.customDicts
                 ? defaultDictsForLanguage(state.lang)
                 : new Set(stored),
@@ -5295,11 +5300,8 @@ function syncGroups() {
 for (const toggle of dictToggles) {
     toggle.addEventListener("change", () => {
         const anchor = toggle.dataset.anchor;
-        // 國語辭典簡編本 and 重編國語辭典修訂本 share one visible checkbox.
-        const anchors =
-            anchor === "moe" || anchor === "moe_revised"
-                ? ["moe", "moe_revised"]
-                : [anchor];
+        // Dictionaries shown as one row share one visible checkbox.
+        const anchors = membersOf(anchor);
         for (const name of anchors) {
             if (toggle.checked) state.dicts.add(name);
             else state.dicts.delete(name);
@@ -5413,14 +5415,15 @@ function setLangOpen(open) {
 
 // The dictionaries a search language uses by default.
 function defaultDictsForLanguage(lang) {
-    return new Set(langDefaults[lang] || langDefaults.EN || ["cedict"]);
+    return new Set(langDefaults[lang] || langDefaults.EN || []);
 }
 
-// The two MOE dictionaries share one visible checkbox. Selecting either one
-// selects both, so the client can merge their definitions.
-function expandMoeSelection(dicts) {
-    if (dicts.has("moe")) dicts.add("moe_revised");
-    if (dicts.has("moe_revised")) dicts.add("moe");
+// Dictionaries shown as one row share one visible checkbox. Selecting any member selects them all, so the
+// client can merge their definitions.
+function expandMergedSelection(dicts) {
+    for (const members of new Set(mergedMembers.values())) {
+        if (members.some((anchor) => dicts.has(anchor))) for (const anchor of members) dicts.add(anchor);
+    }
     return dicts;
 }
 
@@ -5430,7 +5433,7 @@ function applyDictDefaults(value) {
     if (!(value in langDefaults)) return;
     // Start from a clean slate: every dictionary in the new language category,
     // and compact mode (one definition per language).
-    state.dicts = expandMoeSelection(defaultDictsForLanguage(value));
+    state.dicts = expandMergedSelection(defaultDictsForLanguage(value));
     for (const toggle of dictToggles) {
         toggle.checked = state.dicts.has(toggle.dataset.anchor);
     }
@@ -5443,7 +5446,7 @@ function applyDictDefaults(value) {
 // Reset every dictionary setting: selection, per-entry toggles and the custom
 // drag order. The search language itself stays as the user chose it.
 function resetDictSettings() {
-    state.dicts = expandMoeSelection(defaultDictsForLanguage(state.lang));
+    state.dicts = expandMergedSelection(defaultDictsForLanguage(state.lang));
     for (const toggle of dictToggles) {
         toggle.checked = state.dicts.has(toggle.dataset.anchor);
     }

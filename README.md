@@ -256,7 +256,8 @@ The local host will change if another host is at least 20% faster for longer tha
 - check for security issues
 - add audio to details page
 - add example sentences
-- ai generate missing definitions for jp
+- ai generate missing definitions for jp and en
+- regenerate the frequency list with baidu headwords
 - remove lines like filepaths, check if i should push deploy directory to github 
 
 ---

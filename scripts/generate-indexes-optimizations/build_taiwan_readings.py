@@ -63,39 +63,12 @@ def moe_readings() -> dict[str, list[str]]:
 
 
 def source_rows(anchor: str):
-    """Yield (word, simplified, marked reading, english_normalized) for a source."""
+    """Yield (word, simplified, marked reading, note text) for a dictionary (the text may note a Taiwan pronunciation).
+
+    How each dictionary's readings are read is described in db._SOURCE_SCANS / the registry; this names none.
+    """
     source = next(item for item in db._SOURCE_QUERIES if item["anchor"] == anchor)
-    if not db._source_present(source):
-        return
-    connection = db._connect(source["database"])
-    try:
-        if anchor == "cedict":
-            sql = (
-                "SELECT traditional, simplified, pinyin, english_normalized "
-                "FROM entries WHERE pinyin <> ''"
-            )
-            for word, simplified, pinyin, english in connection.execute(sql):
-                yield word, simplified, pinyin, english or ""
-            return
-        if anchor == "wiktionary":
-            # Mandarin readings only; the dialect readings have no Taiwan form.
-            sql = (
-                "SELECT word, pinyin FROM readings "
-                "WHERE kind = 'mandarin' AND pinyin <> ''"
-            )
-            rows = ((word, None, pinyin) for word, pinyin in connection.execute(sql))
-        else:
-            rows = (
-                (record[0], record[1] if len(record) > 2 else None, record[-1])
-                for record in connection.execute(source["pinyin_rows_sql"])
-            )
-        for word, simplified, pinyin in rows:
-            if not word or not pinyin:
-                continue
-            marked = db._split_pinyin(pinyin) if source.get("split_pinyin") else pinyin
-            yield word, simplified or db.to_simplified(word), marked, ""
-    finally:
-        connection.close()
+    yield from db.scan_readings(source)
 
 
 def build(output: Path, samples: int = 8) -> None:
@@ -103,7 +76,6 @@ def build(output: Path, samples: int = 8) -> None:
     counts = db._reading_counts()
     char_map = db._moe_char_map()
     options_by_word = moe_readings()
-    moe_anchors = {"moe", "moe_revised"}
 
     temporary = output.with_name(output.name + ".tmp")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -122,7 +94,7 @@ def build(output: Path, samples: int = 8) -> None:
             if (word, marked) in seen:
                 continue
             seen.add((word, marked))
-            if anchor in moe_anchors:
+            if source.get("readings_are_taiwan"):
                 # MOE readings ARE Taiwan readings; only an override changes them.
                 reading = TAIWAN_READINGS.get(word) or TAIWAN_READINGS.get(simplified)
             else:
