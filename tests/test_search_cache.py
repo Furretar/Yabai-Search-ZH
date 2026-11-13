@@ -283,3 +283,31 @@ def test_the_local_result_cache_stays_under_its_size_cap(tmp_path, monkeypatch):
             local=result_cache.ROOT / "deploy" / "run" / "result_cache.sqlite",
             shipped=result_cache.ROOT / "data" / "generated-indexes-optimizations" / "result_cache.sqlite",
         )
+
+
+def test_the_prebuilt_result_cache_ranks_the_queries_by_how_searched_they_are():
+    """The build keeps the most searched searches when the size budget cuts the file.
+
+    A character is ranked by its corpus frequency and a pinyin syllable by the most common
+    character that has it, so the common queries come first and the budget keeps them.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts" / "generate-indexes-optimizations" / "build_result_cache.py"
+    )
+    spec = importlib.util.spec_from_file_location("build_result_cache", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    ranked = dict(module.queries(3000))
+    assert ranked, "no queries to prebuild"
+    # The everyday characters and their syllables are near the front.
+    for common in ("的", "在", "是", "我", "有", "和", "de", "shi"):
+        assert common in ranked, common
+        assert ranked[common] < 200, f"{common} is not among the common queries"
+    # A rare character is further back than the common ones.
+    rare = max(ranked.values())
+    assert rare > 200

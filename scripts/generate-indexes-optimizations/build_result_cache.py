@@ -8,8 +8,9 @@ when its key (query, dictionaries, data version, code version) matches exactly, 
 never wrong, only useless: rebuild it after any data or search-code change (rebuild_all.py does).
 
 Queries: the most frequent single characters (both scripts) and every pinyin syllable, with and
-without its tone number. Only lists that took at least --min-ms to
-compute are kept, and of those the slowest that fit in --max-mb.
+without its tone number, ranked by how searched they are (a syllable counts as common as the most
+common character that has it). Only lists that took at least --min-ms to compute are kept, and of
+those the most searched ones that fit in --max-mb.
 
 Usage (from the project root):
     uv run python scripts/generate-indexes-optimizations/build_result_cache.py [--chars 1000] [--max-mb 200] [--jobs 12]
@@ -32,40 +33,62 @@ os.environ.setdefault("YABAI_WARM_LOOKUPS", "0")
 os.environ.setdefault("YABAI_WARM_PAGE_CACHE", "0")
 os.environ.setdefault("YABAI_SQL_LOG", "0")
 
+# The corpus rank of a word nobody has seen yet: it sorts last.
+_NO_RANK = 10**9
 
-def queries(chars: int) -> list[str]:
+
+def queries(chars: int) -> list[tuple[str, int]]:
+    """The searches to prebuild, most searched first, as (query, rank).
+
+    The rank is the position in that order, and the size budget keeps the first ones, so what
+    is shipped is what people ask for. A character is ranked by its corpus frequency; a pinyin
+    syllable by the most common character that has it, so the two kinds interleave the way
+    people search them.
+    """
     from yabai_search import db  # noqa: PLC0415
 
-    out: list[str] = []
-    seen: set[str] = set()
+    scored: dict[str, int] = {}
 
-    def add(text: str) -> None:
+    def add(text: str, score: int) -> None:
+        """Remember the query with its best score (the lowest corpus rank)."""
         text = (text or "").strip()
-        if text and text not in seen:
-            seen.add(text)
-            out.append(text)
+        if not text:
+            return
+        if text not in scored or score < scored[text]:
+            scored[text] = score
 
     connection = sqlite3.connect(f"file:{db.DB_PATH}?mode=ro", uri=True)
     try:
         column = db.FREQ_RANK_COLUMN
-        for simplified, traditional in connection.execute(
-            "SELECT simplified, traditional FROM entries WHERE length(simplified) = 1 "
+        for simplified, traditional, rank in connection.execute(
+            "SELECT simplified, traditional, "
+            f"MIN({column}) FROM entries WHERE length(simplified) = 1 "
             f"GROUP BY simplified, traditional ORDER BY MIN({column}) IS NULL, MIN({column}) LIMIT ?",
             (chars,),
         ):
-            add(simplified)
-            add(traditional)
-        for toneless, numeric in connection.execute(
-            "SELECT DISTINCT pinyin_toneless, lower(pinyin_numeric) FROM entries "
-            "WHERE length(simplified) = 1"
+            score = _NO_RANK if rank is None else int(rank)
+            add(simplified, score)
+            add(traditional, score)
+        # A syllable is as common as the most common character that has it, and its tone form
+        # as common as the syllable: the score is the best of the group, not of one row.
+        syllable_scores: dict[str, int] = {}
+        for toneless, numeric, rank in connection.execute(
+            "SELECT pinyin_toneless, lower(pinyin_numeric), "
+            f"MIN({column}) FROM entries WHERE length(simplified) = 1 "
+            "GROUP BY pinyin_toneless, lower(pinyin_numeric)"
         ):
+            score = _NO_RANK if rank is None else int(rank)
             if toneless and toneless.isalpha():
-                add(toneless)
+                if toneless not in syllable_scores or score < syllable_scores[toneless]:
+                    syllable_scores[toneless] = score
             if numeric and " " not in numeric and numeric[-1:].isdigit():
-                add(numeric)
+                add(numeric, score)
+        for toneless, score in syllable_scores.items():
+            add(toneless, score)
     finally:
         connection.close()
-    return out
+    ranked = sorted(scored, key=lambda text: (scored[text], text))
+    return [(text, rank) for rank, text in enumerate(ranked)]
 
 
 def _start() -> None:
@@ -77,10 +100,10 @@ def _start() -> None:
     result_cache.capture = []
 
 
-def _run(job: tuple[str, str, str]) -> list:
+def _run(job: tuple[int, str, str, str]) -> tuple[int, list]:
     from yabai_search import result_cache, services  # noqa: PLC0415
 
-    query, lang, dicts = job
+    rank, query, lang, dicts = job
     result_cache.capture.clear()
     try:
         services.api_search(
@@ -89,7 +112,7 @@ def _run(job: tuple[str, str, str]) -> list:
         )
     except Exception as exc:  # noqa: BLE001  (one bad query must not stop the build)
         print(f"  skipped {query!r} ({lang}): {exc!r}", flush=True)
-    return list(result_cache.capture)
+    return rank, list(result_cache.capture)
 
 
 def main() -> None:
@@ -110,36 +133,45 @@ def main() -> None:
 
     words = queries(args.chars)
     jobs = [
-        (word, lang, ",".join(DEFAULTS[lang])) for lang in ("EN", "ZH", "TW") for word in words
+        (rank, word, lang, ",".join(DEFAULTS[lang]))
+        for lang in ("EN", "ZH", "TW")
+        for word, rank in words
     ]
     started = time.time()
     temp = result_cache.SHIPPED_PATH.with_suffix(".tmp")
     temp.parent.mkdir(parents=True, exist_ok=True)
     temp.unlink(missing_ok=True)
     out = sqlite3.connect(temp)
-    out.execute(result_cache._SCHEMA)
+    # The rank of the query (how searched it is) is kept beside the list: the size budget
+    # drops the least searched lists first.
+    out.execute(
+        "CREATE TABLE results (key TEXT PRIMARY KEY, at REAL NOT NULL, seconds REAL NOT NULL, "
+        "query TEXT NOT NULL, size INTEGER NOT NULL, body BLOB NOT NULL, rank INTEGER NOT NULL)"
+    )
     out.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     out.execute("INSERT INTO meta VALUES ('version', ?)", (services.search_version(),))
     kept = 0
     with multiprocessing.Pool(args.jobs, initializer=_start) as pool:
-        for done, rows in enumerate(pool.imap_unordered(_run, jobs, chunksize=8), start=1):
+        for done, (rank, rows) in enumerate(pool.imap_unordered(_run, jobs, chunksize=8), start=1):
             for digest, seconds, query, blob in rows:
                 out.execute(
-                    "INSERT OR REPLACE INTO results (key, at, seconds, query, size, body) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (digest, time.time(), seconds, query, len(blob), blob),
+                    "INSERT OR REPLACE INTO results (key, at, seconds, query, size, body, rank) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (digest, time.time(), seconds, query, len(blob), blob, rank),
                 )
                 kept += 1
             if done % 2000 == 0:
                 out.commit()
                 print(f"  {done:,}/{len(jobs):,} searches, {kept:,} kept", flush=True)
     out.commit()
-    # Keep the slowest lists that fit the size budget: they are the ones worth shipping.
+    # Keep the most searched lists that fit the size budget: they are the ones worth shipping.
     budget = int(args.max_mb * 1024 * 1024)
     total = out.execute("SELECT COALESCE(SUM(size), 0) FROM results").fetchone()[0]
     dropped = 0
     if total > budget:
-        for rowid, size in out.execute("SELECT rowid, size FROM results ORDER BY seconds").fetchall():
+        for rowid, size in out.execute(
+            "SELECT rowid, size FROM results ORDER BY rank DESC, seconds DESC"
+        ).fetchall():
             out.execute("DELETE FROM results WHERE rowid = ?", (rowid,))
             total -= size
             dropped += 1
