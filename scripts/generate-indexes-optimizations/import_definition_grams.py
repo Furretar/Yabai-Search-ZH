@@ -6,7 +6,7 @@ unigram (1-character query) or bigram (longer query) of a query is missing, the
 substring cannot occur, so the expensive scan is skipped. It never causes a
 false negative: a missing gram means the scan would have found nothing.
 
-Sources are both MOE dictionaries' and Chinese Wiktionary's sense texts and English
+Sources are both MOE dictionaries', Unihan's and Chinese Wiktionary's sense texts and English
 Wiktionary's glosses, matching _source_definition_entries(). The output is one
 `grams` table; the app loads it as an in-memory set once per process.
 
@@ -16,6 +16,7 @@ Usage (from the project root):
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -26,6 +27,15 @@ MOE_DB = ROOT / "data" / "moe-taiwan" / "moe.sqlite"  # both MOE dictionaries
 WIKTIONARY_DB = ROOT / "data" / "wiktionary.sqlite"
 ZHWIKTIONARY_DB = ROOT / "data" / "zhwiktionary.sqlite"
 JPWIKTIONARY_DB = ROOT / "data" / "jpwiktionary.sqlite"
+UNIHAN_DB = ROOT / "data" / "unihan.sqlite"  # its glosses can name other characters
+# Keep in step with db._definition_grams_sources(): every database whose definitions are read below.
+SOURCE_FILES = {
+    "moe": MOE_DB,
+    "wiktionary": WIKTIONARY_DB,
+    "zhwiktionary": ZHWIKTIONARY_DB,
+    "jpwiktionary": JPWIKTIONARY_DB,
+    "unihan": UNIHAN_DB,
+}
 
 
 
@@ -107,6 +117,14 @@ def build() -> None:
         finally:
             source.close()
 
+    if UNIHAN_DB.exists():
+        source = sqlite3.connect(UNIHAN_DB)
+        try:
+            for (text,) in source.execute("SELECT text FROM senses WHERE text <> ''"):
+                add_text(text, grams)
+        finally:
+            source.close()
+
     connection = sqlite3.connect(DB_PATH)
     connection.execute("PRAGMA journal_mode=OFF")
     connection.execute("PRAGMA synchronous=OFF")
@@ -115,6 +133,15 @@ def build() -> None:
         "INSERT OR IGNORE INTO grams (gram) VALUES (?)",
         ((gram,) for gram in grams),
     )
+    # The index is an exact negative filter, so it must never outlive its sources: the app compares these
+    # hashes with the current files (db._definition_grams_current) and ignores the index when they differ.
+    connection.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT) WITHOUT ROWID")
+    for name, path in SOURCE_FILES.items():
+        if path.exists():
+            connection.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?)",
+                (f"source:{name}", hashlib.sha256(path.read_bytes()).hexdigest()),
+            )
     connection.commit()
     connection.close()
     print(

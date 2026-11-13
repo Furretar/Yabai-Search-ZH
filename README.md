@@ -97,13 +97,20 @@ The separator line below each entry will glow a certain color when hovered accor
 
 You can also search for English words and phrases in the search bar. A search will match dictionary definitions if it doesn't match any pinyin readings, or if the query was surrounded by quotes `""`.
 
-Definition searches have 6 tiers:
+Definition searches have 2 categories and 6 tiers:
+
+Category 1:
+
 1. Entries with Latin text inside a Chinese headword (e.g. `word姐` for `word`)
 2. Entries with an exact matching definition (articles stripped, so `speak` still matches `to speak` etc)
 3. Entries containing the query in their definitions, excluding notes
 4. Entries containing the query in their definitions, only inside notes/parentheses
 5. Entries containing the substring (e.g. `word` matches `sword`)
 6. Entries containing the query in a reference (`variant of...`)
+
+Category 2:
+
+1. Entries with 
 
 #### Pinyin
 

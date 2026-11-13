@@ -25,6 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+
 from opencc import OpenCC
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -326,4 +327,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import _indexes  # rebuilds the derived indexes when the import is done (--no-indexes skips it)
+
+    sys.exit(_indexes.run(main))

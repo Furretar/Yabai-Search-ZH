@@ -71,6 +71,20 @@ _XREF_SQL = " AND ".join(
 )
 
 
+def _gloss_count(alias: str = "") -> str:
+    """SQL for how many ";"-separated glosses one `senses` row holds (1 for a plain sense).
+
+    A CEDICT sense is one "/"-separated definition and may hold several close glosses ("to split the bill;
+    to go Dutch"). The readings of a word are ranked by how many senses each has, and that crude ranking
+    only works on gloss counts: counted as grouped senses it would make 那 lead with nuó (not nà), 只 with
+    zhī (not zhǐ), 地方 with dì fāng (not dì fang) and 干 with gàn (not gān). So grouping glosses into one
+    displayed sense must not change it: count the glosses, not the rows.
+    """
+    text = f"COALESCE({alias}text, '')"
+    return f"(1 + length({text}) - length(replace({text}, ';', '')))"
+
+
+
 def _preferred_key(pinyin: str | None) -> str:
     """Comparison key for a preferred reading (tone-aware)."""
     return reading_key(pinyin)
@@ -247,7 +261,7 @@ ZHWIKTIONARY_DB_PATH = DATA_DIR / "zhwiktionary.sqlite"
 JPWIKTIONARY_DB_PATH = DATA_DIR / "jpwiktionary.sqlite"
 
 # Path to the Baidu pinyin crawler headwords (300k, CC-CEDICT-unlicensed
-# scrape), built by data/baidu/scripts/import_baidu.py. Contributes a source chip only.
+# scrape), built by ~/Desktop/ai/baidu-scraper/scripts/import_baidu.py. Contributes a source chip only.
 BAIDU_DB_PATH = DATA_DIR / "baidu.sqlite"
 
 # Path to the Chinese parts of the Unicode Han Database (Unihan: per-character readings,
@@ -1287,7 +1301,7 @@ def dictionaries() -> list[dict]:
             "lang": source["lang"],
         }
         if source["anchor"] == "moe":
-            item["label"] = "國語辭典（簡編本＋修訂本）"
+            item["label"] = "重編國語辭典修訂本"
             item["merged"] = ["moe", "moe_revised"]
         elif source["anchor"] == "moe_revised":
             item["hidden"] = True
@@ -2052,7 +2066,7 @@ def _classifier_readings(forms: set[str]) -> dict[str, str]:
         # Prefer the reading whose own definition is about classifiers (e.g. 只
         # zhī, not zhǐ), then the reading with the most senses.
         "ORDER BY (instr(lower(english), 'classifier') > 0) DESC, "
-        "(SELECT COUNT(*) FROM senses s "
+        f"(SELECT SUM({_gloss_count('s.')}) FROM senses s "
         " WHERE s.word = entries.simplified AND s.reading = entries.pinyin) DESC, "
         "entries.id"
     )
@@ -2194,7 +2208,7 @@ def _set_variant_fields(entries: list[dict], form_rows_all: list[tuple]) -> list
     return entries
 
 
-_SENSE_COUNTS_VERSION = 3
+_SENSE_COUNTS_VERSION = 4  # 4: counts are glosses (";"-separated), not grouped senses
 _sense_counts_ok_cache: bool | None = None
 
 
@@ -2251,8 +2265,8 @@ def build_sense_counts(
         rows = connection.execute(
             "SELECT word, reading, "
             "SUM(CASE WHEN text IS NOT NULL AND TRIM(text) <> '' "
-            f"AND {_XREF_SQL} THEN 1 ELSE 0 END), "
-            f"SUM(CASE WHEN {_XREF_SQL} THEN 1 ELSE 0 END) "
+            f"AND {_XREF_SQL} THEN {_gloss_count()} ELSE 0 END), "
+            f"SUM(CASE WHEN {_XREF_SQL} THEN {_gloss_count()} ELSE 0 END) "
             "FROM senses GROUP BY word, reading"
         ).fetchall()
     finally:
@@ -2347,7 +2361,7 @@ def _cedict_reading_counts(words: list[str]) -> dict[str, dict[str, int]]:
             placeholders = ",".join("?" * len(chunk))
             try:
                 rows = connection.execute(
-                    "SELECT word, reading, COUNT(*) FROM senses "
+                    f"SELECT word, reading, SUM({_gloss_count()}) FROM senses "
                     f"WHERE word IN ({placeholders}) "
                     "AND text IS NOT NULL AND TRIM(text) <> '' "
                     f"AND {_XREF_SQL} "
@@ -3205,7 +3219,7 @@ def _lookup_uncached(words: list[str]) -> dict[str, list[dict]]:
                 f"SELECT {columns} FROM entries "
                 f"WHERE simplified IN ({placeholders}) "
                 f"OR traditional IN ({placeholders}) "
-                "ORDER BY (SELECT COUNT(*) FROM senses s "
+                f"ORDER BY (SELECT SUM({_gloss_count('s.')}) FROM senses s "
                 "          WHERE s.word = entries.simplified "
                 "          AND s.reading = entries.pinyin "
                 f"          AND {_XREF_SQL}) DESC, "
@@ -3313,7 +3327,7 @@ def lookup_reading(word: str) -> list[dict]:
         rows = connection.execute(
             "SELECT simplified, traditional, pinyin, english, english_normalized "
             "FROM entries WHERE simplified = ? OR traditional = ? "
-            "ORDER BY (SELECT COUNT(*) FROM senses s "
+            f"ORDER BY (SELECT SUM({_gloss_count('s.')}) FROM senses s "
             "          WHERE s.word = entries.simplified "
             "          AND s.reading = entries.pinyin "
             f"          AND {_XREF_SQL}) DESC, "
@@ -3492,6 +3506,13 @@ def _freq_rank_ready() -> bool:
             connection.close()
         _freq_rank_ready_cache = bool(column) and flag is not None and flag[0] == "1"
     return _freq_rank_ready_cache
+
+
+def _freq_rank_select(prefix: str = "") -> str:
+    """SQL for the rank column, or NULL when no frequency data is set up."""
+    if FREQ_DB_PATH.exists() and _freq_rank_ready():
+        return prefix + FREQ_RANK_COLUMN
+    return "NULL"
 
 
 _has_alt_prons_cache: bool | None = None
@@ -4433,15 +4454,62 @@ def _source_gloss_entries(query: str, limit: int = 20) -> list[dict]:
 _definition_grams_cache: set[str] | None = None
 
 
+_file_sha256_cache: dict[Path, str] = {}
+
+
+def _file_sha256(path: Path) -> str:
+    """sha256 of a file, read once per process: several index checks hash the same large databases."""
+    if path not in _file_sha256_cache:
+        _file_sha256_cache[path] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return _file_sha256_cache[path]
+
+
+def _definition_grams_sources() -> dict[str, Path]:
+    """The source databases definition_grams.sqlite is built from (keep in step with import_definition_grams.py)."""
+    return {
+        "moe": MOE_DB_PATH,
+        "wiktionary": WIKTIONARY_DB_PATH,
+        "zhwiktionary": ZHWIKTIONARY_DB_PATH,
+        "jpwiktionary": JPWIKTIONARY_DB_PATH,
+        "unihan": UNIHAN_DB_PATH,
+    }
+
+
+def _definition_grams_current(connection: sqlite3.Connection) -> bool:
+    """True when the gram index was built from the current source files.
+
+    The index is an exact NEGATIVE filter: a gram missing from it makes the definition scans skip, so an
+    index built before a source changed (a new dictionary, new definitions) would hide results that
+    exist. Each source's sha256 is stored at build time (`meta`, key `source:<name>`); any difference,
+    or a source without a stored hash, makes the index unusable and the search falls back to the scans.
+    """
+    try:
+        stored = dict(connection.execute("SELECT key, value FROM meta WHERE key LIKE 'source:%'"))
+    except sqlite3.Error:
+        stored = {}
+    for name, path in _definition_grams_sources().items():
+        if not path.exists():
+            continue
+        if stored.get(f"source:{name}") != _file_sha256(path):
+            print(
+                f"definition_grams.sqlite is stale for {name}; scanning definitions without it "
+                "(run scripts/generate-indexes-optimizations/rebuild_all.py)",
+                file=sys.stderr,
+            )
+            return False
+    return True
+
+
 def _definition_grams() -> set[str]:
-    """Han unigrams/bigrams seen in any definition (empty when not built)."""
+    """Han unigrams/bigrams seen in any definition (empty when not built or stale)."""
     global _definition_grams_cache
     if _definition_grams_cache is None:
         grams: set[str] = set()
         if DEFINITION_GRAMS_DB_PATH.exists():
             connection = _connect(DEFINITION_GRAMS_DB_PATH)
             try:
-                grams = {row[0] for row in connection.execute("SELECT gram FROM grams")}
+                if _definition_grams_current(connection):
+                    grams = {row[0] for row in connection.execute("SELECT gram FROM grams")}
             finally:
                 connection.close()
         _definition_grams_cache = grams
@@ -4519,15 +4587,12 @@ def _gram_words_version_ok() -> bool:
         "jpwiktionary": JPWIKTIONARY_DB_PATH,
         "freq": FREQ_DB_PATH,
     }
-    # Both MOE entries are the same file: hash each file once.
-    digests: dict[Path, str] = {}
+    # Both MOE entries are the same file; _file_sha256 hashes each file once.
     for name, path in sources.items():
         if not path.exists():
             continue
-        if path not in digests:
-            digests[path] = hashlib.sha256(path.read_bytes()).hexdigest()
         value = stored.get(f"source:{name}")
-        if not value or digests[path] != value:
+        if not value or _file_sha256(path) != value:
             print(
                 f"gram_words.sqlite is stale for {name}; using legacy scans",
                 file=sys.stderr,
@@ -4743,8 +4808,8 @@ def _source_has_fts(source: dict) -> bool:
 def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
     """Headwords whose definition text contains `query` (quoted search).
 
-    Unlike `_source_gloss_entries`, this also searches MOE's Chinese definitions,
-    so quoting a Chinese phrase (e.g. "一種中藥。") finds the word it defines.
+    Unlike `_source_gloss_entries`, this also searches MOE's Chinese definitions and
+    Unihan's glosses, so quoting a Chinese phrase (e.g. "一種中藥。") finds the word it defines.
     Returns undecorated rows for the caller to decorate.
     """
     text = (query or "").strip()
@@ -4776,6 +4841,20 @@ def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
     for prefix in _moe_prefixes():
         connection = _connect(MOE_DB_PATH)
         try:
+            if prefix == "rev_":
+                # The revised dictionary appends examples and citations to each sense, and the page shows
+                # only the definition (up to the first "。"). Match that visible part, so a quoted phrase
+                # does not find a word through a poem quoted under it. Fetch more candidates than the
+                # limit, because the citation hits are thrown away.
+                for form, pattern in pairs:
+                    for word, text in connection.execute(
+                        "SELECT word, text FROM rev_senses WHERE text LIKE ? ESCAPE '\\' LIMIT ?",
+                        (pattern, limit * 40),
+                    ):
+                        end = text.find("。")
+                        if form in (text[: end + 1] if end >= 0 else text):
+                            add(word)
+                continue
             use_fts = _has_moe_fts(prefix)
             for form, pattern in pairs:
                 # The gram index is built from the concise dictionary only, so
@@ -4880,6 +4959,19 @@ def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
                     )
                     params = (pattern, limit)
                 for (word,) in connection.execute(sql, params):
+                    add(word)
+        finally:
+            connection.close()
+    if UNIHAN_DB_PATH.exists():
+        # Unihan's short glosses can name another character ("(same as 艖) small boat"), so a quoted
+        # Han character finds the characters defined by it. The table is small: a plain scan.
+        connection = _connect(UNIHAN_DB_PATH)
+        try:
+            for form, pattern in pairs:
+                for (word,) in connection.execute(
+                    "SELECT DISTINCT word FROM senses WHERE text LIKE ? ESCAPE '\\' LIMIT ?",
+                    (pattern, limit),
+                ):
                     add(word)
         finally:
             connection.close()
@@ -7010,7 +7102,9 @@ def _tw_cedict_rows(
         connection,
         "SELECT entries.id AS id, entries.simplified AS simplified, "
         "entries.traditional AS traditional, entries.pinyin AS pinyin, "
-        "tw_numeric AS pinyin_numeric, 0 AS alt "
+        "tw_numeric AS pinyin_numeric, 0 AS alt, "
+        # NULL when the rank column was never built (small test databases).
+        f"{_freq_rank_select('entries.')} AS freq_rank "
         f"FROM {_TW_CEDICT_FROM} WHERE tw_source = 'cedict' AND {where}",
         params,
         "pinyin_lookup_taiwan",
@@ -7190,7 +7284,15 @@ def _search_core(
                             row["pinyin_numeric"], letters, tones, boundaries
                         )
                         if rank is not None:
-                            ranked.append((rank, len(row["simplified"]), row["id"]))
+                            ranked.append(
+                            (
+                                rank,
+                                len(row["simplified"]),
+                                # Unlisted words sort after every ranked one.
+                                row["freq_rank"] if row["freq_rank"] is not None else 1 << 60,
+                                row["id"],
+                            )
+                        )
                     if len(ranked) >= limit:
                         break
                     continue
@@ -7222,7 +7324,8 @@ def _search_core(
                 rows = _fetchall(
                     connection,
                     "SELECT id, simplified, traditional, pinyin, pinyin_numeric, "
-                    "instr(english_normalized, ?) > 0 AS alt FROM entries "
+                    "instr(english_normalized, ?) > 0 AS alt, "
+                    f"{_freq_rank_select()} AS freq_rank FROM entries "
                     f"WHERE {where} OR {_note_or()}",
                     params,
                     "pinyin_lookup",
@@ -7251,11 +7354,21 @@ def _search_core(
                     if rank is None and row["alt"]:
                         rank = 0
                     if rank is not None:
-                        ranked.append((rank, len(row["simplified"]), row["id"]))
+                        ranked.append(
+                            (
+                                rank,
+                                len(row["simplified"]),
+                                # Unlisted words sort after every ranked one.
+                                row["freq_rank"] if row["freq_rank"] is not None else 1 << 60,
+                                row["id"],
+                            )
+                        )
                 if not taiwan and len(ranked) >= limit:
                     break
-            ranked.sort(key=lambda item: item[:3])
-            top_ids = [item[2] for item in ranked[:limit]]
+            # Same reading fit and length: the more frequent word first (用 before 佣),
+            # then id as the final tie-break.
+            ranked.sort(key=lambda item: item[:4])
+            top_ids = [item[3] for item in ranked[:limit]]
             full: dict[int, dict] = {}
             if top_ids:
                 holes = ",".join("?" * len(top_ids))
@@ -7269,7 +7382,7 @@ def _search_core(
         finally:
             connection.close()
         top = []
-        for rank, _length, _id in ranked[:limit]:
+        for rank, _length, _freq, _id in ranked[:limit]:
             row = full[_id]
             row["_search_rank"] = rank
             top.append(row)

@@ -2586,7 +2586,7 @@ function fillEntryRow(row, entry) {
             chip.className = enabled.has(source.anchor) ? "source on" : "source";
             chip.dataset.anchor = source.anchor;
             chip.textContent =
-                source.anchor === "moe" ? "國語辭典（簡編本＋修訂本）" : source.label;
+                source.anchor === "moe" ? "重編國語辭典修訂本" : source.label;
             chip.addEventListener("click", () => toggleEntryDict(row, entry, source.anchor));
             box.append(chip);
         }

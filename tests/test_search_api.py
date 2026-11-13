@@ -484,7 +484,8 @@ def test_zhi_spellings_keep_their_own_cedict_senses(search):
 
     assert classifier and all("classifier" in sense for sense in classifier)
     assert grain == ["grain that has begun to ripen"]
-    assert only == ["only", "merely", "just"]
+    # One CEDICT definition ("only; merely; just") is one sense: ";" separates close glosses, "/" senses.
+    assert only == ["only; merely; just"]
     assert not any("grain" in sense for sense in classifier)
     assert not any("classifier" in sense for sense in grain)
 

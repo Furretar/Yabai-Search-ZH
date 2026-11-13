@@ -20,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 
+
 # Run as a file (python scripts/create-dict-db/NAME.py), so the project root is not
 # on the import path by default.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -250,4 +251,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import _indexes  # rebuilds the derived indexes when the import is done (--no-indexes skips it)
+
+    sys.exit(_indexes.run(main))

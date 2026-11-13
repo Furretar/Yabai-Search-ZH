@@ -2,7 +2,8 @@
 # Fast deploy from this dev checkout to every serving copy.
 #
 # Usage: deploy/deploy-all.sh [--data] [--fast] [--pc]
-#   --data   also copy data/*.sqlite to the laptop and tablet
+#   --data   also copy the databases to the laptop and tablet: data/*.sqlite, the MOE database and the
+#            generated indexes. Refuses to run when an index is stale (rebuild_all.py --check).
 #   --fast   skip the test suite
 #   --pc     restart the Windows scheduled task after the sync
 #
@@ -54,6 +55,17 @@ if [ -d /nix/store ] && ! "$PYTHON" -c "import opencc" >/dev/null 2>&1; then
     done
 fi
 
+if [ "$SYNC_DATA" = 1 ]; then
+    # The derived indexes (definition_grams, gram_words, head_grams, ...) are built from the source
+    # databases, and several of them are exact negative filters: a stale one hides results that exist.
+    # Importers rebuild them when they finish; this makes sure nothing stale ships.
+    echo "== indexes are current?"
+    "$PYTHON" scripts/generate-indexes-optimizations/rebuild_all.py --check || {
+        echo "Stale indexes: run scripts/generate-indexes-optimizations/rebuild_all.py, then deploy again." >&2
+        exit 1
+    }
+fi
+
 if [ "$RUN_TESTS" = 1 ] && [ -x .venv/bin/python ]; then
     echo "== tests"
     .venv/bin/python -m pytest -q
@@ -85,6 +97,9 @@ echo "== laptop"
 rsync -a --delete "${COMMON_EXCLUDES[@]}" "$ROOT/" "$LAPTOP_DIR/"
 if [ "$SYNC_DATA" = 1 ]; then
     rsync -a data/*.sqlite "$LAPTOP_DIR/data/"
+    mkdir -p "$LAPTOP_DIR/data/moe-taiwan" "$LAPTOP_DIR/data/generated-indexes-optimizations"
+    rsync -a data/moe-taiwan/moe.sqlite "$LAPTOP_DIR/data/moe-taiwan/"
+    rsync -a data/generated-indexes-optimizations/*.sqlite "$LAPTOP_DIR/data/generated-indexes-optimizations/"
 fi
 systemctl --user restart yabai-app@laptop
 
@@ -94,8 +109,11 @@ adb -s "$TABLET_ADB" forward "tcp:$TABLET_PORT" tcp:"$TABLET_PORT" >/dev/null 2>
 rsync -a --delete -e "ssh -p $TABLET_PORT -i $TABLET_KEY -o StrictHostKeyChecking=no" \
     "${COMMON_EXCLUDES[@]}" "$ROOT/" "$TABLET_SSH:$TABLET_DIR/"
 if [ "$SYNC_DATA" = 1 ]; then
-    rsync -a -e "ssh -p $TABLET_PORT -i $TABLET_KEY -o StrictHostKeyChecking=no" \
-        data/*.sqlite "$TABLET_SSH:$TABLET_DIR/data/"
+    TABLET_RSH="ssh -p $TABLET_PORT -i $TABLET_KEY -o StrictHostKeyChecking=no"
+    $TABLET_RSH "$TABLET_SSH" "mkdir -p $TABLET_DIR/data/moe-taiwan $TABLET_DIR/data/generated-indexes-optimizations"
+    rsync -a -e "$TABLET_RSH" data/*.sqlite "$TABLET_SSH:$TABLET_DIR/data/"
+    rsync -a -e "$TABLET_RSH" data/moe-taiwan/moe.sqlite "$TABLET_SSH:$TABLET_DIR/data/moe-taiwan/"
+    rsync -a -e "$TABLET_RSH" data/generated-indexes-optimizations/*.sqlite "$TABLET_SSH:$TABLET_DIR/data/generated-indexes-optimizations/"
 fi
 ssh -p "$TABLET_PORT" -i "$TABLET_KEY" -o StrictHostKeyChecking=no \
     "$TABLET_SSH" "pgrep -f '[g]unicorn yabai_site' | xargs -r kill"

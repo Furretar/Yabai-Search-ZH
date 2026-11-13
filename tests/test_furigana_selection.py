@@ -442,7 +442,8 @@ def test_traditional_zhi_spellings_keep_their_own_senses(search_server, tmp_path
     by_trad = {row["head"][-1]: row for row in rows if row["head"][-1:] in "隻秖只"}
     assert "classifier for birds" in by_trad["隻"]["lines"][0]
     assert by_trad["秖"]["lines"] == ["1.grain that has begun to ripen"]
-    assert by_trad["只"]["lines"] == ["1.only", "2.merely", "3.just"]
+    # CEDICT's one definition "only; merely; just" is one sense (";" separates close glosses, "/" senses).
+    assert by_trad["只"]["lines"] == ["1.only; merely; just"]
 
     # The definitions differ now, so the identical-row fold must not run.
     assert "Other forms: 只, 秖" not in by_trad["隻"]["notes"]

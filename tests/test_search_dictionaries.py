@@ -69,6 +69,9 @@ requires_all_sources = pytest.mark.skipif(
 requires_baidu = pytest.mark.skipif(
     not (DATA / "baidu.sqlite").exists(), reason="Baidu database not built"
 )
+requires_unihan = pytest.mark.skipif(
+    not (DATA / "unihan.sqlite").exists(), reason="Unihan database not built"
+)
 
 
 def _anchors(entry):
@@ -278,7 +281,9 @@ def test_source_chips_are_unique_and_in_registry_order(search, find_result):
     entry = find_result(search("垃圾"), "垃圾")
     anchors = _anchors(entry)
     assert len(anchors) == len(set(anchors))
-    expected = ["cedict", "moe", "moe_revised", "wiktionary", "zhwiktionary", "jpwiktionary"]
+    expected = [
+        "cedict", "moe", "moe_revised", "wiktionary", "zhwiktionary", "jpwiktionary", "baidu", "unihan",
+    ]
     assert anchors == [anchor for anchor in expected if anchor in anchors]
 
 
@@ -296,3 +301,73 @@ def test_sources_metadata_reports_all_built_dictionaries():
 def test_default_dictionaries_include_both_taiwan_sources():
     """The TW default switches on the concise and comprehensive MOE dictionaries."""
     assert DEFAULTS["TW"] == ["moe", "moe_revised"]
+
+
+@requires_unihan
+@requires_revised
+def test_quoted_han_character_finds_the_characters_it_defines(search):
+    """A quoted Han character searches definitions, Unihan's glosses included: "艖" finds 䑡 ("same as 艖").
+
+    艖 also appears in a poem quoted under 小船。 and 切意's 全心全意。 in the revised MOE dictionary, but
+    the page shows only the definition (up to the first 。), so those words must not be results.
+    """
+    data = search('"艖"')
+    assert [entry["simplified"] for entry in data["results"]] == ["䑡"]
+    defs = [d for d in data["results"][0]["definitions"] if d["anchor"] == "unihan"]
+    assert defs and any("艖" in sense for sense in defs[0]["defs"])
+
+
+def test_stale_definition_grams_are_ignored(tmp_path, monkeypatch):
+    """The gram index is a negative filter: built from other files than the current ones, it must not be used."""
+    import sqlite3
+
+    from yabai_search import db
+
+    path = tmp_path / "definition_grams.sqlite"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE grams (gram TEXT PRIMARY KEY)")
+    connection.execute("INSERT INTO grams VALUES ('艖')")
+    connection.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    source = tmp_path / "source.sqlite"
+    source.write_bytes(b"current contents")
+    monkeypatch.setattr(db, "DEFINITION_GRAMS_DB_PATH", path)
+    monkeypatch.setattr(db, "_definition_grams_sources", lambda: {"fake": source})
+    monkeypatch.setattr(db, "_file_sha256_cache", {})
+
+    def grams():
+        monkeypatch.setattr(db, "_definition_grams_cache", None)
+        return db._definition_grams()
+
+    connection.execute("INSERT INTO meta VALUES ('source:fake', 'not-the-current-hash')")
+    connection.commit()
+    assert grams() == set()  # stale: no filtering, the scans run
+
+    connection.execute("UPDATE meta SET value = ?", (db._file_sha256(source),))
+    connection.commit()
+    connection.close()
+    assert grams() == {"艖"}  # built from the current file: used
+
+
+def test_reading_ranking_counts_glosses_not_grouped_senses():
+    """Grouping ";" glosses into one displayed sense must not change which reading leads a word.
+
+    The ranking only works on gloss counts: as grouped senses 那 would lead with nuó, 只 with zhī,
+    地方 with dì fāng and 干 with gàn. Checked on the SQL helper, so it needs no database.
+    """
+    import sqlite3
+
+    from yabai_search import db
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE senses (word TEXT, reading TEXT, position INTEGER, text TEXT)")
+    connection.executemany(
+        "INSERT INTO senses VALUES (?, ?, ?, ?)",
+        [("只", "zhǐ", 1, "only; merely; just"), ("只", "zhī", 1, "classifier for birds"), ("只", "zhī", 2, "single")],
+    )
+    counts = dict(
+        ((reading), count)
+        for reading, count in connection.execute(
+            f"SELECT reading, SUM({db._gloss_count()}) FROM senses GROUP BY reading"
+        )
+    )
+    assert counts == {"zhǐ": 3, "zhī": 2}  # three glosses in one sense still outweigh two plain senses

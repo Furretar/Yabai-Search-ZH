@@ -18,6 +18,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+
 # Run as a file (python scripts/create-dict-db/NAME.py), so the project root is not
 # on the import path by default.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -276,6 +277,20 @@ def also_written_target(item: str) -> tuple[str, str, str] | None:
     return traditional, simplified, pinyin
 
 
+def definition_items(line: str) -> list[str]:
+    """The slash-separated definitions of one CEDICT line, normalized.
+
+    CEDICT's convention: a "/" starts a new sense, while a ";" inside one definition only separates
+    close glosses of that same sense ("to split the bill; to go Dutch"). The stored `english` column
+    joins the definitions with "; ", which loses that difference, so the senses are built from
+    these items instead of from the joined text.
+    """
+    match = LINE_RE.match(line)
+    if not match:
+        return []
+    return [normalize_english(d) for d in match.group(4).split("/") if d]
+
+
 def split_senses(text: str) -> list[str]:
     """Split a joined definition into clean, numbered senses.
 
@@ -408,23 +423,29 @@ def build(source: Path, db_path: Path, limit: int | None) -> None:
                 # words can be shown per reading. An "also written X" note is a
                 # form, not a sense, so it becomes a display-only forms row.
                 senses = []
-                for item in split_senses(normalized):
-                    note = also_written_target(item)
-                    if note:
-                        note_trad, note_simp, note_pinyin = note
-                        form_rows.append(
-                            (
-                                note_trad,
-                                note_simp,
-                                traditional,
-                                simplified,
-                                note_pinyin,
-                                "",
-                                0,
+                for definition in definition_items(line.rstrip("\n")):
+                    kept_parts = []
+                    # split_senses drops empty parts, "CL:" and pronunciation notes
+                    for item in split_senses(definition):
+                        note = also_written_target(item)
+                        if note:
+                            note_trad, note_simp, note_pinyin = note
+                            form_rows.append(
+                                (
+                                    note_trad,
+                                    note_simp,
+                                    traditional,
+                                    simplified,
+                                    note_pinyin,
+                                    "",
+                                    0,
+                                )
                             )
-                        )
-                    else:
-                        senses.append(item)
+                        else:
+                            kept_parts.append(item)
+                    if kept_parts:
+                        # one CEDICT definition ("/"-separated) is one sense; its inner ";" stays
+                        senses.append("; ".join(kept_parts))
                 for position, sense in enumerate(senses, start=1):
                     sense_rows.append((simplified, pinyin, position, sense))
                 for trad, simp in extract_classifiers(english):
@@ -509,4 +530,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import _indexes  # rebuilds the derived indexes when the import is done (--no-indexes skips it)
+
+    sys.exit(_indexes.run(main))

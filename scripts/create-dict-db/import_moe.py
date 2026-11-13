@@ -27,6 +27,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[2]
 # Raw downloads (the zips) live here; the merged database lives in moe-taiwan/.
 DL_DIR = ROOT / "data" / "dl-base-dictionaries"
@@ -382,4 +383,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import _indexes  # rebuilds the derived indexes when the import is done (--no-indexes skips it)
+
+    sys.exit(_indexes.run(main))

@@ -29,6 +29,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+
 from opencc import OpenCC
 
 # Run as a file (python scripts/create-dict-db/NAME.py), so the project root is not
@@ -591,4 +592,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import _indexes  # rebuilds the derived indexes when the import is done (--no-indexes skips it)
+
+    sys.exit(_indexes.run(main))

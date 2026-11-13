@@ -34,6 +34,7 @@ import sys
 import zipfile
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ZIP = ROOT / "data" / "unihan" / "Unihan.zip"
 DEFAULT_DB = ROOT / "data" / "unihan.sqlite"
@@ -180,4 +181,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import _indexes  # rebuilds the derived indexes when the import is done (--no-indexes skips it)
+
+    sys.exit(_indexes.run(main))

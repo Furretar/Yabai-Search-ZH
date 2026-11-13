@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build the temporary FineWeb2 frequency source for Yabai Search.
 
-The input is the unpruned merged list from the FineWeb2 project:
+The input is the unpruned merged list from the FineWeb2 project (the full 4-shard run):
 
-    combined_merged_all.tsv
+    combined20_merged_all.tsv
     rank, word, count, df, per_million, forms, variants
 
 Every row becomes a frequency row keyed by the merged simplified form. Each
@@ -23,21 +23,27 @@ Usage:
 
 from __future__ import annotations
 
+import sys
 import argparse
 import csv
 import sqlite3
 import time
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[2]
+# The full 4-shard FineWeb2 run (5.1 billion tokens, 7.8 million documents, 332,959 ranks). NOT
+# combined_merged_all.tsv in the same folder: that is the 3 x 1 GB sample run (0.5 billion tokens, 270,160
+# ranks, an untuned prior), which ranks rare words much less reliably and splits words such as 不是.
 DEFAULT_INPUT = (
     Path.home()
-    / "Documents"
+    / "Desktop"
+    / "ai"
     / "FineWeb2-Mandarin-Frequency-List"
     / "data"
     / "work"
     / "results"
-    / "combined_merged_all.tsv"
+    / "combined20_merged_all.tsv"
 )
 DEFAULT_DB = ROOT / "data" / "corpus_freq.sqlite"
 CEDICT_DB = ROOT / "data" / "cedict.sqlite"
@@ -186,4 +192,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import _indexes  # rebuilds the derived indexes when the import is done (--no-indexes skips it)
+
+    sys.exit(_indexes.run(main))
