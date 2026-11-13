@@ -77,7 +77,7 @@ The 3 categories in order are:
 1. Results with at least 1 definition in any dictionary in the currently selected language
     - When Custom Dictionaries is enabled, this includes all selected dictionaries
 
-2. Results with matches only in dictionaries in other languages
+2. Results with matches only in dictionaries in other languages (`Other Dictionaries`)
     - When Custom Dictionaries is enabled, this includes all unselected dictionaries
 
 3. Fuzzy matches when searching with tones and pinyin (`shi2shi4`)
@@ -110,7 +110,7 @@ Category 1:
 
 Category 2:
 
-1. Entries with 
+Same as category 1, but for entries in unselected dictionaries. These are displayed in the `Other Dictionaries` section.
 
 #### Pinyin
 

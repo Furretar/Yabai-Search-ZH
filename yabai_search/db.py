@@ -3696,6 +3696,7 @@ def _source_only_entries(
                     "moe_revised": "moe_revised_head",
                     "zhwiktionary": "zhwikt_head",
                     "jpwiktionary": "jpwikt_head",
+                    "baidu": "baidu_head",
                 }.get(source["anchor"], "")
                 for form, pattern in pairs:
                     candidates = (
@@ -4460,7 +4461,11 @@ _file_sha256_cache: dict[Path, str] = {}
 def _file_sha256(path: Path) -> str:
     """sha256 of a file, read once per process: several index checks hash the same large databases."""
     if path not in _file_sha256_cache:
-        _file_sha256_cache[path] = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:  # in chunks: some sources are hundreds of MB
+            for chunk in iter(lambda: handle.read(1 << 22), b""):
+                digest.update(chunk)
+        _file_sha256_cache[path] = digest.hexdigest()
     return _file_sha256_cache[path]
 
 
@@ -4586,6 +4591,7 @@ def _gram_words_version_ok() -> bool:
         "zhwiktionary": ZHWIKTIONARY_DB_PATH,
         "jpwiktionary": JPWIKTIONARY_DB_PATH,
         "freq": FREQ_DB_PATH,
+        "baidu": BAIDU_DB_PATH,
     }
     # Both MOE entries are the same file; _file_sha256 hashes each file once.
     for name, path in sources.items():
@@ -6055,7 +6061,14 @@ _SENSE_TEXT_MATCH_SQL = (
 _DEFINITION_MATCH_SQL = {
     "wiktionary": (
         "SELECT DISTINCT word FROM wiktionary WHERE word IN ({ph}) "
-        "AND gloss IS NOT NULL AND lower(gloss) LIKE ? ESCAPE '\\'"
+        "AND gloss IS NOT NULL AND gloss NOT LIKE 'only used in %' AND lower(gloss) LIKE ? ESCAPE '\\'"
+    ),
+    # The revised MOE dictionary appends examples and citations to each sense; the page shows (and a
+    # quoted search matches) only the definition, up to the first "。".
+    "moe_revised": (
+        "SELECT DISTINCT word FROM rev_senses WHERE word IN ({ph}) "
+        "AND lower(CASE WHEN instr(text, '。') > 0 THEN substr(text, 1, instr(text, '。')) "
+        "ELSE text END) LIKE ? ESCAPE '\\'"
     ),
 }
 
@@ -6083,15 +6096,25 @@ def _definition_match_anchors(entries: list[dict], query: str) -> list[set[str]]
     matches: list[set[str]] = [set() for _ in entries]
     if not needle or not entries:
         return matches
-    pattern_re = _query_regex(needle)
+    # A Chinese query is searched in both scripts (會 also finds 会), so it must be verified in both.
+    forms = _script_forms(needle) if has_cjk(needle) else (needle,)
+    pattern_res = [_query_regex(form) for form in forms]
     for i, entry in enumerate(entries):
-        text = entry.get("english_normalized") or entry.get("english") or ""
-        if text and pattern_re.search(text.lower()):
+        text = (entry.get("english_normalized") or entry.get("english") or "").lower()
+        if text and any(pattern_re.search(text) for pattern_re in pattern_res):
             matches[i].add("cedict")
-    like = _like_pattern(f"*{needle}*")
+    likes = [_like_pattern(f"*{form}*") for form in forms]
     words = sorted(
         {entry["traditional"] for entry in entries if entry.get("traditional")}
         | {entry["simplified"] for entry in entries if entry.get("simplified")}
+        | {word for entry in entries for word in entry.get("found_as") or []}
+        | {
+            word
+            for entry in entries
+            for form in entry.get("forms") or []
+            for word in (form.get("traditional"), form.get("simplified"))
+            if word
+        }
     )
     for source in _SOURCE_QUERIES:
         anchor = source["anchor"]
@@ -6104,19 +6127,26 @@ def _definition_match_anchors(entries: list[dict], query: str) -> list[set[str]]
             for chunk in _chunks(words):
                 holes = ",".join("?" * len(chunk))
                 try:
-                    rows = connection.execute(
-                        sql.format(ph=holes), (*chunk, like)
-                    ).fetchall()
+                    for like in likes:
+                        rows = connection.execute(
+                            sql.format(ph=holes), (*chunk, like)
+                        ).fetchall()
+                        found.update(row[0] for row in rows)
                 except sqlite3.Error:
                     # Older source databases may predate the senses table.
                     break
-                found.update(row[0] for row in rows)
         finally:
             connection.close()
         if not found:
             continue
         for i, entry in enumerate(entries):
-            if entry.get("traditional") in found or entry.get("simplified") in found:
+            names = {entry.get("traditional"), entry.get("simplified")}
+            names.update(entry.get("found_as") or [])
+            names.update(
+                word for form in entry.get("forms") or []
+                for word in (form.get("traditional"), form.get("simplified"))
+            )
+            if names & found:
                 matches[i].add(anchor)
     return matches
 
@@ -6350,7 +6380,8 @@ def rank_by_category(
     # An English definition search arrives already ordered by relevance.py.
     # Keep that order inside a category; only annotate the category the page
     # needs for its "Other Dictionaries" heading and keep the relevance tier.
-    if definition_search and any(entry.get("_relevance") for entry in entries):
+    quoted = len((query or "").strip()) >= 2 and query.strip().startswith('"') and query.strip().endswith('"')
+    if definition_search and (quoted or any(entry.get("_relevance") for entry in entries)):
         # A row found by its definition belongs to the selected dictionaries
         # only when a SELECTED dictionary's definition contains the query. That
         # a selected dictionary also lists the headword is irrelevant: with
@@ -6360,7 +6391,14 @@ def rank_by_category(
         # definition match cannot be verified keep the headword rule above.
         matched = _definition_match_anchors(entries, query)
         for i, entry in enumerate(entries):
-            if entry.pop("_head_match", False) or not matched[i]:
+            stub = entry.pop("_stub", False)
+            if entry.pop("_head_match", False):
+                continue
+            if not matched[i]:
+                # Found through a source's definition but not verified in any: it must not count as a
+                # selected-dictionary match just because CEDICT knows the headword.
+                if stub:
+                    category1[i] = False
                 continue
             category1[i] = bool(matched[i] & selected)
         ranked: list[tuple[int, int, dict]] = []
@@ -7111,6 +7149,44 @@ def _tw_cedict_rows(
     )
 
 
+def _with_cedict_rows(rows: list[dict]) -> list[dict]:
+    """Give headword-only rows (found in a source's definitions) their CC-CEDICT row.
+
+    A row built from a source definition has no reading, and _decorate would then borrow whichever
+    reading a source lists first (會 as guì, which no definition belongs to). A word CC-CEDICT knows
+    is shown with its best-supported CEDICT reading instead, the way a plain search shows it.
+    """
+    stubs = [r for r in rows if not r.get("pinyin") and not r.get("english")]
+    if not stubs:
+        return rows
+    words = sorted({w for r in stubs for w in (r.get("traditional"), r.get("simplified")) if w})
+    best: dict[str, dict] = {}
+    connection = connect()
+    try:
+        for chunk in _chunks(words):
+            holes = ",".join("?" * len(chunk))
+            for row in connection.execute(
+                "SELECT simplified, traditional, pinyin, english, english_normalized FROM entries "
+                f"WHERE traditional IN ({holes}) OR simplified IN ({holes})",
+                (*chunk, *chunk),
+            ):
+                row = dict(row)
+                score = (row["english"] or "").count("/") + (row["english"] or "").count(";")
+                for key in (row["traditional"], row["simplified"]):
+                    current = best.get(key)
+                    if current is None or score > current[0]:
+                        best[key] = (score, row)
+    finally:
+        connection.close()
+    out = []
+    for r in rows:
+        found = None
+        if r in stubs:
+            found = best.get(r.get("traditional")) or best.get(r.get("simplified"))
+        out.append({**found[1], "_stub": True} if found else r)
+    return out
+
+
 def _search_core(
     query: str,
     limit: int = 50,
@@ -7212,6 +7288,7 @@ def _search_core(
                 continue
             seen_source.add(key)
             source_rows.append(entry)
+        source_rows = _with_cedict_rows(source_rows)
         if not fts_unique and not source_rows:
             # A quoted Chinese headword or pinyin may not occur in any
             # definition. Fall back to the normal search so quoting does not
@@ -7655,12 +7732,17 @@ def _search_core(
             # tie (德 should show dé before Dé), matching lookup()'s rule.
             _sense_words = sorted({e.get("simplified") for e in entries if e.get("simplified")})
             _sense_counts = _cedict_reading_counts(_sense_words) if _sense_words else {}
+            # Sense count only orders the readings of ONE word (it must not reorder different
+            # words, which would undo the frequency order of the query above).
+            _word_pos: dict = {}
             for _i, _e in enumerate(entries):
                 _e["_orig"] = _i
                 _e["_sense_count"] = _entry_sense_count(_sense_counts, _e)
+                _word_pos.setdefault(_e.get("simplified"), _i)
             entries.sort(
                 key=lambda _e: (
                     pinyin_rank(_e),
+                    _word_pos.get(_e.get("simplified"), 0),
                     -_e.get("_sense_count", 0),
                     _e.get("_orig", 0),
                 )

@@ -231,6 +231,31 @@ _SENSE_NUM_RE = re.compile(r"^\s*\d+\s*[.、]\s*")
 _POS_RE = re.compile(r"^\s*\[[^\]]+\]\s*")
 
 
+# "(1)", "(2)" ... (half or full width) number the uses inside one 量詞 sense.
+_SUBSENSE_RE = re.compile(r"[(（]\s*\d+\s*[)）]")
+
+
+def split_classifier_sense(item: str) -> list[str]:
+    """Split "量詞：(1)計算A。[例]x (2)計算B。" into "量詞：計算A。[例]x" and "量詞：計算B。".
+
+    The text before "(1)" (the revised dictionary's "量詞：同「隻」。") is its own sense. A sense
+    without numbered parts is returned unchanged.
+    """
+    parts = _SUBSENSE_RE.split(item)
+    if len(parts) < 2:
+        return [item]
+    head = parts[0].strip()
+    prefix = re.match(r"量詞\s*[：:。]?", head).group(0).rstrip("。").strip()
+    prefix = prefix if prefix.endswith(("：", ":")) else "量詞："
+    out = []
+    # Text between "量詞：" and "(1)" (e.g. "同「隻」。") stands alone.
+    lead = head[len(re.match(r"量詞\s*[：:。]?", head).group(0)):].strip()
+    if lead:
+        out.append(f"{prefix}{lead}")
+    out.extend(f"{prefix}{part.strip()}" for part in parts[1:] if part.strip())
+    return out
+
+
 def split_senses(
     definition: str, revised: bool = False
 ) -> tuple[list[str], list[str]]:
@@ -252,7 +277,9 @@ def split_senses(
         if not item:
             continue
         if item.startswith("量詞"):
-            notes.append(item)
+            # A 量詞 sense says what the word IS ("計算船隻的單位"), so it stays a numbered sense; the
+            # Classifier line is for the classifiers a word takes. A "(1)…(2)…" run becomes one sense each.
+            senses.extend(split_classifier_sense(item))
         elif revised and not numbered and senses:
             senses[-1] = f"{senses[-1]} {item}".strip()
         else:

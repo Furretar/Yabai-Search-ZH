@@ -2093,19 +2093,20 @@ html.theme-light .defs {
     border-color: var(--accent);
 }
 
-/* The import target appears below the last dictionary only while the
-   language's list is expanded and hovered; it reserves no space otherwise. */
+/* The import button sits in the language's header, in the blank space to the right of its name, and
+   shows only while the list is expanded. It takes no room from the dictionary list. */
 .dict-add-dict {
     display: none;
-    margin: .4rem auto 0;
+    flex: 0 0 auto;
+    width: 1.3rem;
+    height: 1.3rem;
+    margin: 0 0 0 .25rem;
+    font-size: 1rem;
     border-style: dashed;
 }
 
-.dict-column.add-visible .dict-add-dict,
-.dict-column.open:has(.dict-items label:last-child:hover) .dict-add-dict,
-.dict-column.open:has(.dict-items label:last-child.dict-dragging) .dict-add-dict,
-.dict-column.open .dict-add-dict:focus-visible {
-    display: flex;
+.dict-column.open .dict-add-dict {
+    display: inline-flex;
 }
 
 /* Delete controls for user-added languages and dictionaries. */
@@ -2331,7 +2332,6 @@ html.theme-light .defs {
    Only the handle starts a drag, so the switch and label still toggle. */
 .dict-items label {
     position: relative;
-    transition: padding-left .15s ease;
 }
 
 .dict-name-label {
@@ -2340,14 +2340,9 @@ html.theme-light .defs {
     overflow-wrap: anywhere;
 }
 
-.dict-items label:not(.dict-loading):hover,
-.dict-items label:not(.dict-loading).dict-dragging {
-    padding-left: 1.3rem;
-}
-
 .dict-handle {
     position: absolute;
-    left: 0;
+    right: 0;
     top: 50%;
     transform: translateY(-50%);
     display: inline-flex;
@@ -2388,10 +2383,9 @@ html.theme-light .defs {
         visibility: visible;
     }
 
-    .dict-items label:not(.dict-loading),
-    .dict-items label:not(.dict-loading):hover,
-    .dict-items label:not(.dict-loading).dict-dragging {
-        padding-left: 1.7rem;
+    /* The grips are always visible here, so keep the names clear of them. */
+    .dict-items label:not(.dict-loading) .dict-name-label {
+        padding-right: 1.4rem;
     }
 }
 

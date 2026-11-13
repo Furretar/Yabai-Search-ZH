@@ -5367,7 +5367,7 @@ for (const column of document.querySelectorAll(".dict-column")) {
     const head = column.querySelector(".dict-column-head");
     if (head) {
         head.addEventListener("click", (event) => {
-            if (event.target.closest(".dict-disclosure, .dict-remove")) return;
+            if (event.target.closest(".dict-disclosure, .dict-remove, .dict-add-dict")) return;
             button.click();
         });
     }

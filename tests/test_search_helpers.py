@@ -644,3 +644,34 @@ def test_report_settings_ignore_unknown_and_oversized_values():
     assert len(cleaned["script"]) == 80
     assert len(cleaned["selectedDictionaries"]) == 100
     assert "unknown" not in cleaned
+
+
+import_moe = _load_script("scripts/create-dict-db/import_moe.py")
+
+
+def test_moe_classifier_words_keep_their_measure_word_senses_as_senses():
+    """A 量詞 sense says what the word is, so it stays a numbered sense (the Classifier line is for words
+    that take a classifier); "(1)(2)" parts become one sense each."""
+    senses, notes = import_moe.split_senses(
+        "1.孤獨的、單獨的。\n2.量詞：(1) 計算飛禽走獸等動物的單位。[例]一隻雞 (2)計算物體件數的單位。[例]一隻小船"
+    )
+    assert notes == []
+    assert senses == [
+        "孤獨的、單獨的。",
+        "量詞：計算飛禽走獸等動物的單位。[例]一隻雞",
+        "量詞：計算物體件數的單位。[例]一隻小船",
+    ]
+    senses, notes = import_moe.split_senses(
+        "[名]\n量詞：同「隻」。(1)計算成對物品。如：「一隻襪子」。(2)計算船隻。", revised=True
+    )
+    assert notes == []
+    assert senses == ["量詞：同「隻」。", "量詞：計算成對物品。如：「一隻襪子」。", "量詞：計算船隻。"]
+
+
+def test_definition_only_rows_get_their_cedict_row_and_common_reading():
+    """A row found only through a source definition is shown with its best CC-CEDICT reading (會 huì, never guì)."""
+    stub = {"simplified": "会", "traditional": "會", "pinyin": "", "english": "", "english_normalized": ""}
+    other = {"simplified": "zzzz", "traditional": "zzzz", "pinyin": "", "english": "", "english_normalized": ""}
+    rows = db._with_cedict_rows([stub, other])
+    assert rows[0]["pinyin"] == "huì" and rows[0]["_stub"] is True
+    assert rows[1] is other  # not in CC-CEDICT: unchanged

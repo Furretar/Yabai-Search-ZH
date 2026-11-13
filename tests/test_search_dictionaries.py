@@ -371,3 +371,62 @@ def test_reading_ranking_counts_glosses_not_grouped_senses():
         )
     )
     assert counts == {"zhǐ": 3, "zhī": 2}  # three glosses in one sense still outweigh two plain senses
+
+
+@requires_revised
+def test_quoted_definition_search_puts_unselected_matches_under_other_dictionaries(search):
+    """A row whose definition matches only in an unselected dictionary is category 2 ("Other Dictionaries").
+
+    "會" is found in many MOE definitions. With only CC-CEDICT selected, the rows that match in CEDICT come
+    first (category 1) and every row found through MOE alone is category 2 with its matching dictionaries
+    listed. The match is verified in both scripts (會 also finds 会) and through the headword a row was
+    found as (the MOE entry 公安 is shown as CEDICT's 公安县), so no row is left unverified.
+    """
+    rows = []
+    for offset in range(0, 1000, 25):  # category 2 starts after the CEDICT matches
+        rows += search('"會"', dicts="cedict", lang="EN", offset=offset)["results"]
+    categories = [row["category"] for row in rows]
+    assert categories == sorted(categories)  # category 1 first, then 2
+    assert 2 in categories
+    for row in rows:
+        if row["category"] == 1:  # never category 1 without a verified match in a selected dictionary
+            assert "cedict" in row.get("match_anchors", []), row["simplified"]
+        else:
+            assert "cedict" not in row.get("match_anchors", [])
+    # With the dictionaries that hold the matches selected, the same rows are category 1.
+    moe = search('"會"', dicts="moe,moe_revised", lang="EN")["results"]
+    assert moe and all(row["category"] == 1 for row in moe)
+
+
+def test_toneless_pinyin_search_keeps_frequency_order(search):
+    """A toneless pinyin query lists the matching words by frequency, not by how many senses each has."""
+    ranks = [
+        row["freq"]["rank"]
+        for row in search("zhi", dicts="cedict,wiktionary", lang="EN")["results"]
+        if row.get("freq")
+    ]
+    assert len(ranks) >= 10
+    assert ranks == sorted(ranks)
+
+
+@requires_revised
+def test_quoted_definition_search_shows_the_common_reading_and_hides_unshown_glosses(search):
+    """會 is listed under "Other Dictionaries" with huì (never guì), since the Wiktionary gloss
+    "only used in 會稽" that contains it is not shown on the page."""
+    rows = []
+    for offset in range(0, 3900, 25):
+        rows = [r for r in search('"會"', dicts="cedict,wiktionary", lang="EN", offset=offset)["results"] if r["traditional"] == "會"]
+        if rows:
+            break
+    assert rows
+    assert rows[0]["pinyin"] == "huì"
+    assert rows[0]["category"] == 2
+
+
+def test_baidu_headwords_use_the_gram_index():
+    """百度汉语 headwords are in gram_words (a 1-2 character query is one lookup, not a scan of 550k rows)."""
+    if not (db.BAIDU_DB_PATH.exists() and db.GRAM_WORDS_DB_PATH.exists()):
+        pytest.skip("Baidu or gram_words database not built")
+    assert db._gram_words_version_ok()
+    assert "美味" in db._gram_candidates("baidu_head", "美味")
+    assert db._gram_candidates("baidu_head", "美") is None or "美味" in db._gram_candidates("baidu_head", "美")

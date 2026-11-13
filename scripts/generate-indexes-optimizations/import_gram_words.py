@@ -8,6 +8,7 @@ the query up here instead of scanning whole tables. Each row is
     wikt_head   Wiktionary headwords that have a gloss
     wikt_gloss  words whose Wiktionary gloss contains the gram
     moe_head    MOE headwords
+    baidu_head  百度汉语 headwords
     moe_sense   words whose MOE sense contains the gram
 
 A 2-character query is one bigram lookup, a 1-character query one unigram
@@ -37,6 +38,7 @@ WIKTIONARY_DB = ROOT / "data" / "wiktionary.sqlite"
 ZHWIKTIONARY_DB = ROOT / "data" / "zhwiktionary.sqlite"
 JPWIKTIONARY_DB = ROOT / "data" / "jpwiktionary.sqlite"
 FREQ_DB = ROOT / "data" / "corpus_freq.sqlite"
+BAIDU_DB = ROOT / "data" / "baidu.sqlite"
 SOURCE_FILES = {
     "moe": MOE_DB,
     "moe_revised": MOE_REVISED_DB,
@@ -44,6 +46,7 @@ SOURCE_FILES = {
     "zhwiktionary": ZHWIKTIONARY_DB,
     "jpwiktionary": JPWIKTIONARY_DB,
     "freq": FREQ_DB,
+    "baidu": BAIDU_DB,
 }
 
 
@@ -174,6 +177,13 @@ def build() -> None:
                 "SELECT DISTINCT word FROM headwords ORDER BY word"
             ):
                 add_word("jpwikt_head", word)
+        finally:
+            source.close()
+    if BAIDU_DB.exists():
+        source = sqlite3.connect(BAIDU_DB)
+        try:
+            for (word,) in source.execute("SELECT word FROM headwords ORDER BY word"):
+                add_word("baidu_head", word)
         finally:
             source.close()
     if FREQ_DB.exists():

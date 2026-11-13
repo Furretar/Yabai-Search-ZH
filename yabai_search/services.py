@@ -734,10 +734,15 @@ def _expand_variants(results: list[dict]) -> list[dict]:
                 ) or on_target
         else:
             shown = [entry]
+        # A row found through another headword (the MOE entry 公安 became CEDICT's 公安县) remembers
+        # the headwords it was found as: a definition search must verify the match against those.
+        found_as = [w for w in (entry.get("traditional"), entry.get("simplified")) if w]
         for e in shown:
             # De-duplicate by headword, not reading: the capitalized (surname) and
             # plain versions of a word (e.g. 阮 Ruǎn / ruǎn) collapse to one.
             key = (e["traditional"], e["simplified"])
+            if found_as and (e is not entry or e.get("main")):
+                e = {**e, "found_as": sorted(set(found_as) | set(e.get("found_as") or []))}
             score = _reading_count(e) + _preferred_bonus(e)
             if key not in best:
                 best[key] = (score, e)

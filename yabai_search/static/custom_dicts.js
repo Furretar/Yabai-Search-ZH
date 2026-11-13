@@ -2912,7 +2912,7 @@
         button.title = `Import a dictionary for ${label}`;
         button.setAttribute("aria-label", `Import a dictionary for ${label}`);
         button.addEventListener("click", () => openImportModal(lang, label));
-        column.append(button);
+        (column.querySelector(".dict-column-head") || column).append(button);
     }
 
     function addLanguageColumn(language) {
@@ -2966,7 +2966,7 @@
             }
         });
         head.addEventListener("click", (event) => {
-            if (event.target.closest(".dict-disclosure, .dict-remove")) return;
+            if (event.target.closest(".dict-disclosure, .dict-remove, .dict-add-dict")) return;
             disclosure.click();
         });
         column.classList.add("open");
