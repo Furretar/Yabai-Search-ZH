@@ -142,3 +142,32 @@ test("/__probe times each host and names the writer", async () => {
   assert.equal(typeof body.t.laptop, "number");
   assert.equal(body.writer, "laptop");
 });
+
+test("a search with a data version is answered from the edge cache the second time", async () => {
+  const net = fakeNet();
+  net.reply = () => new Response("{}", { status: 200, headers: { "Cache-Control": "public, max-age=86400" } });
+  const store = new Map();
+  globalThis.caches = { default: {
+    match: async (key) => { const hit = store.get(key.url); return hit ? hit.clone() : undefined; },
+    put: async (key, res) => { store.set(key.url, res); },
+  } };
+  try {
+    const env = makeEnv();
+    const first = await worker.fetch(req("/api/search?q=zhi&dv=abc", { headers: { Cookie: "sessionid=1" } }), env);
+    assert.equal(first.headers.get("X-Edge-Cache"), "MISS");
+    const asked = net.log.filter((entry) => entry.path === "/api/search").length;
+    const second = await worker.fetch(req("/api/search?q=zhi&dv=abc"), env);
+    assert.equal(second.headers.get("X-Edge-Cache"), "HIT");
+    assert.equal(await second.text(), "{}");
+    assert.equal(net.log.filter((entry) => entry.path === "/api/search").length, asked); // no host asked
+    // Another data version, a search without one, and an uncacheable answer all go to a host.
+    await worker.fetch(req("/api/search?q=zhi&dv=other"), env);
+    await worker.fetch(req("/api/search?q=zhi"), env);
+    assert.equal(net.log.filter((entry) => entry.path === "/api/search").length, asked + 2);
+    net.reply = () => new Response("{}", { status: 200, headers: { "Cache-Control": "no-store" } });
+    await worker.fetch(req("/api/search?q=no&dv=abc"), env);
+    assert.equal(store.has("https://yabaisearch.org/api/search?q=no&dv=abc"), false);
+  } finally {
+    delete globalThis.caches;
+  }
+});

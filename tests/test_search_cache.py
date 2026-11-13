@@ -199,3 +199,87 @@ def test_frontend_uses_the_data_version_and_parallel_tiers():
     # Three pages are warmed on each side of the current page.
     assert "const PREFETCH_RADIUS = 3;" in source
     assert "function prefetchAround(" in source
+
+
+def test_a_repeated_page_is_answered_from_the_finished_response(client):
+    """The second identical request returns the stored bytes; another page or data version does not."""
+    from yabai_search import services
+
+    services.response_cache_clear()
+    url = "/api/search?q=%E4%BD%A0%E5%A5%BD&dicts=cedict&lang=EN"
+    first = client.get(url)
+    assert first.status_code == 200 and "X-Response-Cache" not in first.headers
+    second = client.get(url)
+    assert second.headers["X-Response-Cache"] == "hit"
+    assert second.content == first.content
+    assert "Server-Timing" in second.headers
+    assert "X-Response-Cache" not in client.get(url + "&offset=25").headers
+    # A new data or code version never reuses an old answer.
+    old = services.search_version
+    try:
+        services.search_version = lambda: "other-version"
+        assert "X-Response-Cache" not in client.get(url).headers
+    finally:
+        services.search_version = old
+    services.response_cache_clear()
+
+
+def test_a_slow_ranked_list_is_kept_on_disk_and_read_back(tmp_path, monkeypatch):
+    """A slow search is stored under its exact key; a restart reads it instead of computing it."""
+    from yabai_search import result_cache, services
+
+    monkeypatch.setattr(result_cache, "MAX_BYTES", 64 * 1024 * 1024)
+    monkeypatch.setattr(result_cache, "MIN_SECONDS", 0.0)
+    result_cache.reset_for_tests(local=tmp_path / "local.sqlite", shipped=tmp_path / "shipped.sqlite")
+    try:
+        key = ("zhi", False, ("cedict",), 25, "version-a")
+        value = ([{"simplified": "之", "pinyin": "zhī"}], [], True, False)
+        calls = []
+
+        def compute():
+            calls.append(1)
+            return value
+
+        with services._rank_cache_lock:
+            services._rank_cache.clear()
+        assert services._rank_cache_get_or_compute(key, compute) == (value, "miss")
+        with services._rank_cache_lock:
+            services._rank_cache.clear()  # a restart: memory is empty, the disk is not
+        assert services._rank_cache_get_or_compute(key, compute) == (value, "disk")
+        assert len(calls) == 1
+        # Another data or code version is another key.
+        other = (*key[:4], "version-b")
+        assert services._rank_cache_get_or_compute(other, compute)[1] == "miss"
+        # A quick search is not written.
+        monkeypatch.setattr(result_cache, "MIN_SECONDS", 60.0)
+        result_cache.put(("quick",), value, 0.01)
+        assert result_cache.get(("quick",)) is None
+    finally:
+        with services._rank_cache_lock:
+            services._rank_cache.clear()
+        result_cache.reset_for_tests(
+            local=result_cache.ROOT / "deploy" / "run" / "result_cache.sqlite",
+            shipped=result_cache.ROOT / "data" / "generated-indexes-optimizations" / "result_cache.sqlite",
+        )
+
+
+def test_the_local_result_cache_stays_under_its_size_cap(tmp_path, monkeypatch):
+    from yabai_search import result_cache
+
+    monkeypatch.setattr(result_cache, "MAX_BYTES", 40_000)
+    monkeypatch.setattr(result_cache, "MIN_SECONDS", 0.0)
+    result_cache.reset_for_tests(local=tmp_path / "local.sqlite", shipped=tmp_path / "none.sqlite")
+    try:
+        import os
+
+        for i in range(12):
+            result_cache.put((f"q{i}",), os.urandom(6000), 1.0)  # incompressible, about 6 KB each
+        total = result_cache._open_local().execute("SELECT SUM(size) FROM results").fetchone()[0]
+        assert total <= 40_000
+        assert result_cache.get(("q11",)) is not None  # the newest survive
+        assert result_cache.get(("q0",)) is None
+    finally:
+        result_cache.reset_for_tests(
+            local=result_cache.ROOT / "deploy" / "run" / "result_cache.sqlite",
+            shipped=result_cache.ROOT / "data" / "generated-indexes-optimizations" / "result_cache.sqlite",
+        )

@@ -169,6 +169,7 @@ def _index_page(request, q="", page="", lang="EN", word_query="", exact=False):
         get_token(request)  # make sure the csrftoken cookie exists for fetch() calls
     context = {
         "asset_version": services.asset_version(),
+        "static": services.static_paths(),
         "sources": db.sources(),
         "dictionaries": db.dictionaries(),
         "defaults": DEFAULTS,
@@ -211,6 +212,7 @@ def about(request):
         "about.html",
         {
             "asset_version": services.asset_version(),
+            "static": services.static_paths(),
             "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
             "content": content,
         },
@@ -243,6 +245,7 @@ def reports_page(request):
         "reports.html",
         {
             "asset_version": services.asset_version(),
+            "static": services.static_paths(),
             "variables_css": (_STATIC_DIR / "variables.css").read_text(encoding="utf-8"),
             "reports": reports,
             "labels": {
@@ -372,23 +375,34 @@ def api_search(request):
         if value is None:
             return _invalid(name, "Input should be a valid boolean")
         flags[name] = value
+    call = {
+        "q": params.get("q", ""),
+        "limit": limit,
+        "taiwan": flags["taiwan"],
+        "offset": offset,
+        "part": params.get("part", "all"),
+        "lang": params.get("lang", "EN"),
+        "exact": flags["exact"],
+        "dicts": params.get("dicts", ""),
+        "script": params.get("script", "simplified"),
+        "merge": flags["merge"],
+    }
+    # A repeat of the same page is answered from the finished response.
+    key = services.response_cache_key(call)
+    hit = services.response_cache_get(key)
+    if hit is not None:
+        response = HttpResponse(hit[0], content_type="application/json")
+        for name, value in hit[1].items():
+            response[name] = value
+        response["X-Response-Cache"] = "hit"
+        return response
     headers = services.HeaderBag()
-    payload = services.api_search(
-        headers,
-        q=params.get("q", ""),
-        limit=limit,
-        taiwan=flags["taiwan"],
-        offset=offset,
-        part=params.get("part", "all"),
-        lang=params.get("lang", "EN"),
-        exact=flags["exact"],
-        dicts=params.get("dicts", ""),
-        script=params.get("script", "simplified"),
-        merge=flags["merge"],
-    )
+    payload = services.api_search(headers, **call)
     response = _json(payload)
     for name, value in headers.headers.items():
         response[name] = value
+    if response.status_code == 200:
+        services.response_cache_put(key, response.content, headers.headers)
     return response
 
 

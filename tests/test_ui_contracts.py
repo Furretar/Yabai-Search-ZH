@@ -343,8 +343,52 @@ def test_custom_dicts_script_loads_only_after_an_import():
     html = (ROOT / "yabai_search/templates/index.html").read_text(encoding="utf-8")
     assert 'need = on || url || has === "true";' in html
     # glyphs.js no longer blocks parsing; it still runs before app.js (defer
-    # preserves document order).
-    assert 'src="/static/glyphs.js?v={{ asset_version }}" defer' in html
+    # preserves document order). The path comes from the view, so the page can
+    # link the minified copy.
+    assert 'src="{{ static.glyphs_js }}?v={{ asset_version }}" defer' in html
+
+
+def test_the_minified_assets_match_their_sources():
+    """The shipped minified copies must be built from the current sources.
+
+    scripts/build_static.py writes yabai_search/static/min/ and the manifest there holds the
+    sha256 of the source each copy came from. A source edited without a rebuild would otherwise
+    ship old code, so this fails until build_static.py runs again.
+    """
+    import hashlib
+    import json
+
+    static = ROOT / "yabai_search" / "static"
+    manifest_path = static / "min" / "manifest.json"
+    assert manifest_path.is_file(), (
+        "yabai_search/static/min/manifest.json is missing: run python scripts/build_static.py"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for name, digest in manifest.items():
+        source = static / name
+        assert source.is_file(), f"{name} is missing"
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == digest, (
+            f"{name} changed since the minified copy was built: run python scripts/build_static.py"
+        )
+        assert (static / "min" / name).is_file(), f"min/{name} is missing"
+
+
+def test_the_page_links_the_minified_assets_when_they_are_current():
+    """A fresh minified copy is linked; an out-of-date one falls back to the source."""
+    from yabai_search import services
+
+    services._min_state.clear()
+    assert services.static_path("app.js") == "/static/min/app.js"
+    # Pretend the source changed after the build: the source itself is served again.
+    original = services._MIN_DIR / "manifest.json"
+    backup = original.read_text(encoding="utf-8")
+    try:
+        original.write_text("{}", encoding="utf-8")
+        services._min_state.clear()
+        assert services.static_path("app.js") == "/static/app.js"
+    finally:
+        original.write_text(backup, encoding="utf-8")
+        services._min_state.clear()
 
 
 def test_frontend_wildcard_tier_parity_with_backend():

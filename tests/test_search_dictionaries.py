@@ -430,3 +430,29 @@ def test_baidu_headwords_use_the_gram_index():
     assert db._gram_words_version_ok()
     assert "美味" in db._gram_candidates("baidu_head", "美味")
     assert db._gram_candidates("baidu_head", "美") is None or "美味" in db._gram_candidates("baidu_head", "美")
+
+
+def test_gram_filtered_heads_match_the_like_scan_they_replace():
+    """A wildcard or mixed headword pattern answered from the gram index gives the scan's exact rows."""
+    import sqlite3
+
+    from yabai_search import db
+
+    if not (db.BAIDU_DB_PATH.exists() and db._gram_words_version_ok()):
+        pytest.skip("Baidu database or gram index not built")
+    connection = sqlite3.connect(f"file:{db.BAIDU_DB_PATH}?mode=ro", uri=True)
+    connection.execute("PRAGMA case_sensitive_like=ON")
+    try:
+        for form, anywhere in (("乐*", False), ("?后", False), ("*美*", False), ("不*不*", False), ("卡拉OK", True), ("图书馆", True)):
+            pattern = db._like_pattern(f"*{form}*" if anywhere else form)
+            scanned = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT word FROM headwords WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+                    (pattern,),
+                )
+            ]
+            assert db._gram_filtered_heads("baidu_head", form) == scanned, form
+    finally:
+        connection.close()
+    assert db._gram_filtered_heads("baidu_head", "abc*") is None  # no Han character: scan

@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from yabai_search import db, merge as merge_results, segment
+from yabai_search import db, merge as merge_results, result_cache, segment
 from yabai_search import perf_debug as pd
 from yabai_search.default_dictionaries import DEFAULTS
 from yabai_search.overrides import PREFERRED_READINGS
@@ -80,6 +80,13 @@ _RESULT_ENV_FLAGS = (
     "YABAI_SEARCH_INDEX",
     "YABAI_GLOSS_LEGACY",
     "YABAI_RELEVANCE",
+    # The legacy switches of the faster paths (they must give the same rows, but a cache
+    # must not outlive the switch that produced it).
+    "YABAI_GRAM_FILTER_LEGACY",
+    "YABAI_HEAD_READINGS_LEGACY",
+    "YABAI_REV_GRAM_LEGACY",
+    "YABAI_REV_FTS_LEGACY",
+    "YABAI_SENSE_COUNT_LEGACY",
 )
 
 
@@ -104,6 +111,51 @@ _CODE_VERSION = _code_fingerprint()
 def search_version() -> str:
     """Cache version for /api/search: data fingerprint plus code fingerprint."""
     return f"{db.data_version()}-{_CODE_VERSION}"
+
+
+# Finished /api/search responses (the JSON bytes and the response headers), keyed by every request
+# parameter plus the data and code version. The ranked list is cached already (_rank_cache), but
+# each repeat of a page still rebuilt its 25 rows: about 200 ms on a tablet. Bounded by bytes.
+_RESPONSE_CACHE_BYTES = int(float(os.environ.get("YABAI_RESPONSE_CACHE_MB", "24")) * 1024 * 1024)
+_response_cache: "collections.OrderedDict[tuple, tuple[bytes, dict]]" = collections.OrderedDict()
+_response_cache_size = 0
+_response_cache_lock = threading.Lock()
+
+
+def response_cache_key(params: dict) -> tuple:
+    return (search_version(), tuple(sorted(params.items())))
+
+
+def response_cache_get(key: tuple) -> tuple[bytes, dict] | None:
+    if _RESPONSE_CACHE_BYTES <= 0:
+        return None
+    with _response_cache_lock:
+        hit = _response_cache.get(key)
+        if hit is not None:
+            _response_cache.move_to_end(key)
+        return hit
+
+
+def response_cache_put(key: tuple, body: bytes, headers: dict) -> None:
+    global _response_cache_size
+    if _RESPONSE_CACHE_BYTES <= 0 or len(body) > _RESPONSE_CACHE_BYTES // 8:
+        return
+    with _response_cache_lock:
+        old = _response_cache.pop(key, None)
+        if old is not None:
+            _response_cache_size -= len(old[0])
+        _response_cache[key] = (body, dict(headers))
+        _response_cache_size += len(body)
+        while _response_cache_size > _RESPONSE_CACHE_BYTES and _response_cache:
+            _, (dropped, _headers) = _response_cache.popitem(last=False)
+            _response_cache_size -= len(dropped)
+
+
+def response_cache_clear() -> None:
+    global _response_cache_size
+    with _response_cache_lock:
+        _response_cache.clear()
+        _response_cache_size = 0
 
 
 # The two merged layouts for a page, cached across identical requests. The key
@@ -203,8 +255,17 @@ def _rank_cache_get_or_compute(key: tuple, compute):
                 _rank_cache_events[key] = event
                 break
         event.wait()
+    status = "miss"
     try:
-        value = compute()
+        # A list this machine (or the prebuild) already computed for this exact data and code
+        # version is read from disk; otherwise compute it and keep it for the next restart.
+        value = result_cache.get(key)
+        if value is not None:
+            status = "disk"
+        else:
+            started = time.perf_counter()
+            value = compute()
+            result_cache.put(key, value, time.perf_counter() - started)
     except BaseException:
         with _rank_cache_lock:
             _rank_cache_events.pop(key, None)
@@ -218,7 +279,7 @@ def _rank_cache_get_or_compute(key: tuple, compute):
             _rank_cache[key] = value
             _rank_cache.move_to_end(key)
             _evict_rank_cache_locked()
-    return value, "miss"
+    return value, status
 
 
 def _page_groups_copy(
@@ -519,6 +580,50 @@ def asset_version() -> str:
         return "0"
     return str(int(newest))
 
+
+
+# Minified copies of the page's scripts and stylesheet (scripts/build_static.py), used only while
+# they match their source: {name: (source mtime, usable)}.
+_MIN_DIR = _STATIC_DIR / "min"
+_min_state: dict[str, tuple[float, bool]] = {}
+
+
+def static_path(name: str) -> str:
+    """ "/static/min/<name>" when a minified copy of this exact source exists, else "/static/<name>".
+
+    The manifest holds the sha256 of the source each copy was built from, so an edited source is
+    served as it is until build_static.py runs again. YABAI_STATIC_MIN=0 always serves the source.
+    """
+    plain = f"/static/{name}"
+    if os.environ.get("YABAI_STATIC_MIN", "1") == "0":
+        return plain
+    source = _STATIC_DIR / name
+    try:
+        mtime = source.stat().st_mtime
+    except OSError:
+        return plain
+    known = _min_state.get(name)
+    if known is None or known[0] != mtime:
+        usable = False
+        try:
+            manifest = json.loads((_MIN_DIR / "manifest.json").read_text(encoding="utf-8"))
+            usable = (
+                (_MIN_DIR / name).is_file()
+                and manifest.get(name) == hashlib.sha256(source.read_bytes()).hexdigest()
+            )
+        except (OSError, ValueError):
+            usable = False
+        known = (mtime, usable)
+        _min_state[name] = known
+    return f"/static/min/{name}" if known[1] else plain
+
+
+def static_paths() -> dict[str, str]:
+    """Template names for the minifiable assets: {"app_js": "/static/min/app.js", ...}."""
+    return {
+        name.replace(".", "_"): static_path(name)
+        for name in ("app.js", "custom_dicts.js", "glyphs.js", "inline_furigana.js", "hosts.js", "style.css")
+    }
 
 
 def warm_caches() -> None:

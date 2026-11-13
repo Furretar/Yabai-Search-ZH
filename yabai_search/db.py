@@ -38,6 +38,7 @@ from yabai_search.pinyin import (
 )
 
 
+@lru_cache(maxsize=200_000)
 def reading_key(pinyin: str | None) -> str:
     """A tone-aware identity for one reading: 'zhī' / 'zhi1' / 'Zhi1' -> 'zhi1'.
 
@@ -3731,6 +3732,24 @@ def _source_only_entries(
                         sql = fts_sql
                         query_pattern = f"%{form}%"
                     else:
+                        # The scan this would run reads every headword (551k in 百度汉语). The gram
+                        # index narrows it to the words sharing a gram with the pattern first.
+                        narrowed = (
+                            _gram_filtered_heads(
+                                head_source,
+                                form,
+                            )
+                            if head_source
+                            and not source_head_legacy
+                            and os.environ.get("YABAI_GRAM_FILTER_LEGACY") != "1"
+                            else None
+                        )
+                        if narrowed is not None:
+                            for head in narrowed:
+                                if head not in seen_rows:
+                                    seen_rows.add(head)
+                                    rows.append((head,))
+                            continue
                         sql = source["like_sql"]
                         query_pattern = pattern
                     for (head,) in database.execute(sql, (query_pattern,)):
@@ -3743,6 +3762,60 @@ def _source_only_entries(
             query_stage.__exit__(None, None, None)
             read_stage = pd.stage(f"src:{source['anchor']}:readings")
             read_stage.__enter__()
+            # One query per headword (two with both scripts) was most of a wildcard search: a pattern
+            # with thousands of matches ran thousands of point lookups. Look the readings up in
+            # batches instead, a window of headwords at a time so an early stop wastes little. The
+            # first row per word is the row the single-word query (LIMIT 1) returns.
+            pending = [head for (head,) in rows if head and head not in known]
+            loaded: set[str] = set()
+            first_pinyin: dict[str, str] = {}
+            first_other: dict[str, tuple] = {}
+            cursor_at = 0
+
+            def load_window() -> None:
+                nonlocal cursor_at
+                forms_now: list[str] = []
+                while cursor_at < len(pending) and len(forms_now) < 400:
+                    for form in _script_forms(pending[cursor_at]):
+                        if form not in loaded:
+                            loaded.add(form)
+                            forms_now.append(form)
+                    cursor_at += 1
+                if not forms_now:
+                    return
+                holes = ",".join("?" * len(forms_now))
+                for word, value in database.execute(
+                    source["pinyin_batch_sql"].format(ph=holes), tuple(forms_now)
+                ):
+                    if value and word not in first_pinyin:
+                        first_pinyin[word] = value
+                if source.get("pinyin_fallback_batch_sql"):
+                    for word, value, label in database.execute(
+                        source["pinyin_fallback_batch_sql"].format(ph=holes), tuple(forms_now)
+                    ):
+                        if word not in first_other:
+                            first_other[word] = (value, label)
+
+            batched = bool(source.get("pinyin_batch_sql")) and (
+                os.environ.get("YABAI_HEAD_READINGS_LEGACY") != "1"
+            )
+
+            def first_reading(form: str) -> str:
+                if not batched:
+                    row = database.execute(source["pinyin_sql"], (form,)).fetchone()
+                    return row[0] if row and row[0] else ""
+                while form not in loaded and cursor_at < len(pending):
+                    load_window()
+                if form not in loaded:  # a head outside `pending` (should not happen): ask directly
+                    row = database.execute(source["pinyin_sql"], (form,)).fetchone()
+                    return row[0] if row and row[0] else ""
+                return first_pinyin.get(form, "")
+
+            def first_fallback(form: str):
+                if not (batched and source.get("pinyin_fallback_batch_sql")) or form not in loaded:
+                    return database.execute(source["pinyin_fallback_sql"], (form,)).fetchone()
+                return first_other.get(form)
+
             for (head,) in rows:
                 # CEDICT (or an earlier source) already covers this head: skip it
                 # before running any reading lookups. Equivalent to add()'s check,
@@ -3757,9 +3830,9 @@ def _source_only_entries(
                     # "20 Guó Jítuán" while 20国集团 also has "Èrshí Guó Jítuán").
                     candidates = []
                     for form in _script_forms(head):
-                        row = database.execute(source["pinyin_sql"], (form,)).fetchone()
-                        if row and row[0]:
-                            candidates.append(row[0])
+                        value = first_reading(form)
+                        if value:
+                            candidates.append(value)
                     # A reading with digits is not really a reading; prefer one
                     # that spells them out when available.
                     pinyin = next(
@@ -3775,9 +3848,7 @@ def _source_only_entries(
                     # No Mandarin reading: fall back to a dialect reading (Wu,
                     # Shanghainese, Xiang), shown as-is and left uncoloured.
                     for form in _script_forms(head):
-                        row = database.execute(
-                            source["pinyin_fallback_sql"], (form,)
-                        ).fetchone()
+                        row = first_fallback(form)
                         if row and row[0]:
                             pinyin = row[0]
                             label = row[1] or ""
@@ -4655,7 +4726,7 @@ def _gram_words_version_ok() -> bool:
     return True
 
 
-def _gram_candidates(source: str, form: str) -> list[str] | None:
+def _gram_candidates(source: str, form: str, cap: int | None = None) -> list[str] | None:
     """Words containing a 1-2 Han-character `form`, or None to fall back.
 
     The inverted index turns a 1-2 character query into one lookup. None means
@@ -4675,15 +4746,87 @@ def _gram_candidates(source: str, form: str) -> list[str] | None:
         rows = connection.execute(
             "SELECT word FROM gram_words WHERE source = ? AND gram = ? "
             "ORDER BY word LIMIT ?",
-            (source, form, _GRAM_CANDIDATE_CAP + 1),
+            (source, form, (cap or _GRAM_CANDIDATE_CAP) + 1),
         ).fetchall()
     finally:
         connection.close()
     if not rows:
         return []
-    if len(rows) > _GRAM_CANDIDATE_CAP:
+    if len(rows) > (cap or _GRAM_CANDIDATE_CAP):
         return None
     return [row[0] for row in rows]
+
+
+# Words read back from the revised MOE dictionary through the gram index: beyond this many, the
+# plain scan is as fast.
+_REV_SENSE_GRAM_CAP = 12_000
+_gram_words_has_cache: dict[str, bool] = {}
+
+
+def _gram_words_has(source: str) -> bool:
+    """True when gram_words.sqlite was built with this source (an older file lacks newer ones, and
+    an absent source must not read as "occurs nowhere")."""
+    if source not in _gram_words_has_cache:
+        ok = False
+        if GRAM_WORDS_DB_PATH.exists() and _gram_words_version_ok():
+            connection = _connect(GRAM_WORDS_DB_PATH)
+            try:
+                ok = (
+                    connection.execute(
+                        "SELECT 1 FROM meta WHERE key = ? AND value = '1'", (f"has:{source}",)
+                    ).fetchone()
+                    is not None
+                )
+            except sqlite3.Error:
+                ok = False
+            finally:
+                connection.close()
+        _gram_words_has_cache[source] = ok
+    return _gram_words_has_cache[source]
+
+
+# Candidates that are filtered in Python need no SQL IN list, so they may be many more.
+_GRAM_FILTER_CAP = 60_000
+
+
+def _gram_filtered_heads(source: str, form: str) -> list[str] | None:
+    """Headwords of `source` a headword pattern matches, through the gram index, or None to scan.
+
+    Covers what _gram_candidates cannot answer directly: a wildcard pattern ("乐*", "?后") or a
+    longer or mixed word ("BP机"). Every match must contain each literal Han run of the pattern, so
+    the words containing one gram of it (a bigram when there is one, they are rarer) are a superset;
+    the pattern is then tested on each, with the same rules as the SQL LIKE it replaces: "*" any
+    run, "?" one character, case-sensitive, and a pattern without wildcards may match anywhere.
+    The result is sorted by word, like that query's ORDER BY.
+    """
+    glob = _normalize_wildcards(form)
+    wild = "*" in glob or "?" in glob
+    runs = re.findall(r"[^*?]+", glob)
+    han_runs = ["".join(run) for piece in runs for run in _han_runs(piece)]
+    if not han_runs:
+        return None
+    gram = next((run[:2] for run in han_runs if len(run) >= 2), han_runs[0][:1])
+    candidates = _gram_candidates(source, gram, cap=_GRAM_FILTER_CAP)
+    if candidates is None:
+        return None
+    if wild:
+        return [word for word in candidates if _glob_match(glob, word)]
+    return [word for word in candidates if glob in word]
+
+
+def _han_runs(text: str) -> list[str]:
+    """The maximal runs of Han characters in `text`."""
+    runs: list[str] = []
+    current = ""
+    for char in text:
+        if _is_han(char):
+            current += char
+        elif current:
+            runs.append(current)
+            current = ""
+    if current:
+        runs.append(current)
+    return runs
 
 
 _cedict_trigram_cache: bool | None = None
@@ -4898,11 +5041,43 @@ def _source_definition_entries(query: str, limit: int = 20) -> list[dict]:
                 # only the definition (up to the first "。"). Match that visible part, so a quoted phrase
                 # does not find a word through a poem quoted under it. Fetch more candidates than the
                 # limit, because the citation hits are thrown away.
+                rev_fts = _has_moe_fts("rev_") and os.environ.get("YABAI_REV_FTS_LEGACY") != "1"
                 for form, pattern in pairs:
-                    for word, text in connection.execute(
-                        "SELECT word, text FROM rev_senses WHERE text LIKE ? ESCAPE '\\' LIMIT ?",
-                        (pattern, limit * 40),
-                    ):
+                    narrowed = (
+                        _gram_candidates("moe_revised_sense", form, cap=_REV_SENSE_GRAM_CAP)
+                        if _gram_words_has("moe_revised_sense")
+                        and os.environ.get("YABAI_REV_GRAM_LEGACY") != "1"
+                        else None
+                    )
+                    if narrowed is not None:
+                        # One or two characters: the gram index names the words whose visible
+                        # definition contains them. Read just those words' senses, then put the
+                        # rows back in table order so the result is the scan's, row for row.
+                        hits: list[tuple] = []
+                        for chunk in _chunks(narrowed):
+                            holes = ",".join("?" * len(chunk))
+                            hits.extend(
+                                connection.execute(
+                                    "SELECT rowid, word, text FROM rev_senses "
+                                    f"WHERE word IN ({holes}) AND text LIKE ? ESCAPE '\\'",
+                                    (*chunk, pattern),
+                                )
+                            )
+                        hits.sort()
+                        found = [(word, text) for _rowid, word, text in hits[: limit * 40]]
+                    elif rev_fts and len(form) >= 3 and _simple_form(form):
+                        # Three or more characters: the trigram index finds the rows instead of a
+                        # scan of every sense (the scan was half of a pasted sentence's search).
+                        found = connection.execute(
+                            "SELECT word, text FROM rev_senses_fts WHERE text LIKE ? LIMIT ?",
+                            (f"%{form}%", limit * 40),
+                        )
+                    else:
+                        found = connection.execute(
+                            "SELECT word, text FROM rev_senses WHERE text LIKE ? ESCAPE '\\' LIMIT ?",
+                            (pattern, limit * 40),
+                        )
+                    for word, text in found:
                         end = text.find("。")
                         if form in (text[: end + 1] if end >= 0 else text):
                             add(word)
@@ -7211,9 +7386,12 @@ def _with_cedict_rows(rows: list[dict]) -> list[dict]:
     try:
         for chunk in _chunks(words):
             holes = ",".join("?" * len(chunk))
+            # Two indexed lookups: "traditional IN (...) OR simplified IN (...)" scans the whole table.
             for row in connection.execute(
                 "SELECT simplified, traditional, pinyin, english, english_normalized FROM entries "
-                f"WHERE traditional IN ({holes}) OR simplified IN ({holes})",
+                f"WHERE traditional IN ({holes}) UNION "
+                "SELECT simplified, traditional, pinyin, english, english_normalized FROM entries "
+                f"WHERE simplified IN ({holes})",
                 (*chunk, *chunk),
             ):
                 row = dict(row)
@@ -7224,10 +7402,11 @@ def _with_cedict_rows(rows: list[dict]) -> list[dict]:
                         best[key] = (score, row)
     finally:
         connection.close()
+    stub_ids = {id(r) for r in stubs}  # by identity: comparing row dicts made this quadratic
     out = []
     for r in rows:
         found = None
-        if r in stubs:
+        if id(r) in stub_ids:
             found = best.get(r.get("traditional")) or best.get(r.get("simplified"))
         out.append({**found[1], "_stub": True} if found else r)
     return out
@@ -7797,9 +7976,18 @@ def _search_core(
                 (i for i, entry in enumerate(entries) if pinyin_rank(entry) == 2),
                 len(entries),
             )
+            # One lookup for all the source rows (it was one query per row: 4,000 for "zhi").
+            _source_words = sorted({e.get("simplified") for e in source_rows if e.get("simplified")})
+            _one_by_one = os.environ.get("YABAI_SENSE_COUNT_LEGACY") == "1"
+            _source_counts = (
+                _cedict_reading_counts(_source_words) if _source_words and not _one_by_one else {}
+            )
             for _e in source_rows:
                 _w = _e.get("simplified")
-                _sc = _cedict_reading_counts([_w]) if _w else {}
+                if _one_by_one:
+                    _sc = _cedict_reading_counts([_w]) if _w else {}
+                else:
+                    _sc = {_w: _source_counts[_w]} if _w in _source_counts else {}
                 _e["_sense_count"] = _entry_sense_count(_sc, _e)
             source_prefix = [e for e in source_rows if pinyin_rank(e) <= 1]
             source_contains = [e for e in source_rows if pinyin_rank(e) == 2]

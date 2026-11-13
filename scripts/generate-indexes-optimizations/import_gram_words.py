@@ -10,6 +10,7 @@ the query up here instead of scanning whole tables. Each row is
     moe_head    MOE headwords
     baidu_head  百度汉语 headwords
     moe_sense   words whose MOE sense contains the gram
+    moe_revised_sense  the same for the revised MOE dictionary's visible definitions
 
 A 2-character query is one bigram lookup, a 1-character query one unigram
 lookup. The candidates are exact (they contain the query), and the app still
@@ -159,6 +160,19 @@ def build() -> None:
                     "SELECT DISTINCT word FROM rev_moe ORDER BY word"
                 ):
                     add_word("moe_revised_head", word)
+                # The visible definition only (up to the first "。"): that is what a quoted search
+                # matches, and it keeps the quoted poems and citations out of the index.
+                add_texts(
+                    "moe_revised_sense",
+                    source.execute(
+                        "SELECT word, CASE WHEN instr(text, '。') > 0 "
+                        "THEN substr(text, 1, instr(text, '。')) ELSE text END "
+                        "FROM rev_senses ORDER BY word"
+                    ),
+                )
+                connection.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES ('has:moe_revised_sense', '1')"
+                )
         finally:
             source.close()
     if ZHWIKTIONARY_DB.exists():

@@ -21,7 +21,7 @@
     <!-- Colour scheme variables; edit variables.css to retheme. -->
     <style>{{ variables_css | safe }}</style>
     <!-- Stylesheet served from the /static mount (yabai_search/static/style.css). -->
-    <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="{{ static.style_css }}?v={{ asset_version }}">
     {% if word_query %}
     <!-- Exact-word view: app.js opens this word through the exact API. -->
     <script>window.__wordQuery = {{ word_query | tojson }};window.__exactSearch = true;try{document.documentElement.classList.add("initial-search-pending")}catch(e){}</script>
@@ -39,7 +39,7 @@
        search hook can wait for the imported term index. -->
     <script>
     (function () {
-        window.__customDictsSrc = "/static/custom_dicts.js?v={{ asset_version }}";
+        window.__customDictsSrc = "{{ static.custom_dicts_js }}?v={{ asset_version }}";
         var need = true;
         try {
             var on = localStorage.getItem("yabai-search-custom-dicts") === "true";
@@ -61,15 +61,15 @@
     </script>
     <!-- MOE glyph pictures: defines renderGlyphs() that app.js calls after
        building each result row. -->
-    <script src="/static/glyphs.js?v={{ asset_version }}" defer></script>
+    <script src="{{ static.glyphs_js }}?v={{ asset_version }}" defer></script>
     <!-- Front-end script served from the /static mount (static/app.js). -->
-    <script src="/static/app.js?v={{ asset_version }}" defer></script>
+    <script src="{{ static.app_js }}?v={{ asset_version }}" defer></script>
     <!-- Local scanner: moves inline pinyin in definition text into furigana. -->
-    <script src="/static/inline_furigana.js?v={{ asset_version }}" defer></script>
+    <script src="{{ static.inline_furigana_js }}?v={{ asset_version }}" defer></script>
     <!-- Cleans up the service worker/caches installed by older versions. -->
     <script src="/static/pwa.js" defer></script>
     <!-- Picks the local host for this visitor (see the comment in hosts.js). -->
-    <script src="/static/hosts.js?v={{ asset_version }}" defer></script>
+    <script src="{{ static.hosts_js }}?v={{ asset_version }}" defer></script>
     </head>
 
 <body{% if exact %} class="exact-mode"{% endif %}>

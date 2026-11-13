@@ -38,6 +38,31 @@ STEPS = [
 ]
 
 
+# Slow to build (about ten minutes) and never needed for correct results, so not part of a normal
+# rebuild: `--results` (or `--only result_cache`) builds it, and --check only reports its state.
+OPTIONAL = [("result_cache", "build_result_cache.py")]
+
+
+def result_cache_state() -> str:
+    """ "current", "stale" (built for another data or code version) or "missing"."""
+    import sqlite3  # noqa: PLC0415
+
+    sys.path.insert(0, str(ROOT))
+    from yabai_search import result_cache, services  # noqa: PLC0415
+
+    if not result_cache.SHIPPED_PATH.exists():
+        return "missing"
+    try:
+        connection = sqlite3.connect(f"file:{result_cache.SHIPPED_PATH}?mode=ro", uri=True)
+        try:
+            row = connection.execute("SELECT value FROM meta WHERE key = 'version'").fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return "stale"
+    return "current" if row and row[0] == services.search_version() else "stale"
+
+
 def check() -> int:
     """Print the state of every index the app can verify; exit status 1 when any is stale or missing."""
     sys.path.insert(0, str(ROOT))
@@ -70,13 +95,16 @@ def check() -> int:
             continue
         print(f"  {name:17s} {'ok' if ok else 'STALE'}")
         bad += 0 if ok else 1
+    state = result_cache_state()
+    note = "" if state == "current" else "  (optional; rebuild_all.py --results makes first searches fast again)"
+    print(f"  {'result_cache':17s} {state}{note}")
     if bad:
         print(f"{bad} index(es) not current: run scripts/generate-indexes-optimizations/rebuild_all.py", file=sys.stderr)
     return 1 if bad else 0
 
 
-def rebuild(only: list[str] | None) -> int:
-    names = {name for name, _s, _c in STEPS}
+def rebuild(only: list[str] | None, results: bool = False) -> int:
+    names = {name for name, _s, _c in STEPS} | {name for name, _s in OPTIONAL}
     unknown = set(only or []) - names
     if unknown:
         print(f"unknown index: {', '.join(sorted(unknown))} (known: {', '.join(sorted(names))})", file=sys.stderr)
@@ -90,6 +118,13 @@ def rebuild(only: list[str] | None) -> int:
         if result.returncode:
             print(f"FAILED: {script} (exit {result.returncode}); later indexes were not rebuilt", file=sys.stderr)
             return result.returncode
+    for name, script in OPTIONAL:
+        if not (results or (only and name in only)):
+            continue
+        print(f"== {name} ({time.strftime('%H:%M:%S')})", flush=True)
+        result = subprocess.run([sys.executable, str(HERE / script)], cwd=ROOT)
+        if result.returncode:
+            return result.returncode
     print(f"indexes rebuilt in {time.time() - started:.0f} s")
     return 0
 
@@ -98,8 +133,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="only report which indexes are stale")
     parser.add_argument("--only", nargs="+", metavar="NAME", help="rebuild just these (names as printed)")
+    parser.add_argument("--results", action="store_true", help="also prebuild the heavy-search result cache (slow)")
     args = parser.parse_args()
-    return check() if args.check else rebuild(args.only)
+    return check() if args.check else rebuild(args.only, args.results)
 
 
 if __name__ == "__main__":

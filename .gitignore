@@ -26,6 +26,9 @@ run/
 data/accounts.sqlite3
 staticfiles/
 
+# Debug bundles from a crashing device.
+tabs-sigabrt-debug.log
+
 # Django account database (generated) and the zip tool's history snapshot.
 /accounts.sqlite3
 /GIT_HISTORY.txt

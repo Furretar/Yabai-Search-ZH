@@ -256,13 +256,46 @@ async function controlState(request, env, cfg) {
   return json({ writer: s.writer, epoch: s.epoch, url: hostUrl(cfg, s.writer) });
 }
 
+// --- edge cache for searches -------------------------------------------------------------------
+
+// A search URL that carries the data version (?dv=) always has the same answer, and the app marks
+// it "public, max-age=...". Keep it in this data centre's cache under the public URL, so a repeat
+// costs no host selection and no trip to a host, whichever host answered first. Cookies are not
+// part of the key: search results do not depend on the visitor.
+function cacheableSearch(request, url) {
+  return request.method === "GET" && url.pathname === "/api/search" && url.searchParams.has("dv");
+}
+
+async function cachedSearch(request, env, cfg, ctx) {
+  const cache = typeof caches !== "undefined" && caches.default;
+  const key = new Request(request.url, { method: "GET" });
+  if (cache) {
+    const hit = await cache.match(key);
+    if (hit) {
+      const out = new Response(hit.body, hit);
+      out.headers.set("X-Edge-Cache", "HIT");
+      return out;
+    }
+  }
+  const res = await read(request, env, cfg, null);
+  const control = res.headers.get("Cache-Control") || "";
+  if (cache && res.status === 200 && control.includes("public") && !res.headers.has("Set-Cookie")) {
+    const put = cache.put(key, res.clone());
+    if (ctx && ctx.waitUntil) ctx.waitUntil(put);
+    else await put;
+  }
+  res.headers.set("X-Edge-Cache", "MISS");
+  return res;
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const cfg = config(env);
     const url = new URL(request.url);
     if (url.pathname.startsWith("/__repl/")) return new Response("Not found", { status: 404 });
     if (url.pathname === "/__control/state") return controlState(request, env, cfg);
     if (url.pathname === "/__probe") return probeAll(env, cfg);
+    if (cacheableSearch(request, url)) return cachedSearch(request, env, cfg, ctx);
     const safe = request.method === "GET" || request.method === "HEAD";
     // Buffer the body once so it can be sent again to another host.
     const body = safe ? null : await request.arrayBuffer();

@@ -100,6 +100,7 @@ def _collapse(text: str) -> str:
     return " ".join(text.split())
 
 
+@lru_cache(maxsize=100_000)
 def _normalize(text: str, strip_parentheses: bool = True) -> str:
     """Lowercase, strip parentheses, drop one leading article, collapse."""
     base = text.lower()

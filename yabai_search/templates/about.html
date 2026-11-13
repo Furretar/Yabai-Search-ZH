@@ -15,7 +15,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/pwa-icon-180.png">
     <!-- Colour scheme variables; edit variables.css to retheme. -->
     <style>{{ variables_css | safe }}</style>
-    <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="{{ static.style_css }}?v={{ asset_version }}">
     </head>
 
 <body>

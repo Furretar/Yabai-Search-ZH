@@ -194,3 +194,19 @@ def test_definition_matcher_5000_terms():
     for term in terms:
         assert new(term) == old(term), term
     connection.close()
+
+
+def test_batched_head_readings_give_the_same_rows_as_one_query_per_headword(monkeypatch):
+    """Looking source readings up in batches must not change which rows or readings come back."""
+    from yabai_search import db
+
+    def rows():
+        return [
+            (e["traditional"], e["simplified"], e["pinyin"], e.get("pinyin_label"))
+            for e in db._source_only_entries("*乐*", limit=3000)
+        ]
+
+    batched = rows()
+    monkeypatch.setenv("YABAI_HEAD_READINGS_LEGACY", "1")
+    assert rows() == batched
+    assert len(batched) > 50
