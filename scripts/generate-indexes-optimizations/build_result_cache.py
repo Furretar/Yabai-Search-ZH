@@ -124,10 +124,17 @@ def _run(job: tuple[int, str, str, str]) -> tuple[int, list]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--chars", type=int, default=1000)
-    parser.add_argument("--jobs", type=int, default=max(1, min(12, (os.cpu_count() or 2) - 2)))
+    parser.add_argument("--jobs", type=int, default=max(1, min(8, (os.cpu_count() or 2) // 2)),
+                        help="worker processes (default: half the cores, at most 8, so the machine stays usable)")
+    parser.add_argument("--searches", type=int, default=1000,
+                        help="how many of the most searched queries to precompute (all three languages counted together)")
     parser.add_argument("--min-ms", type=float, default=60.0)
     parser.add_argument("--max-mb", type=float, default=200.0, help="size budget of the shipped file")
     args = parser.parse_args()
+    try:
+        os.nice(19)  # the workers inherit it: this build never competes with anything else
+    except OSError:
+        pass
     os.environ["YABAI_RESULT_CACHE_MIN_MS"] = str(args.min_ms)
     os.environ["YABAI_RESULT_CACHE_MB"] = "100000"
 
@@ -143,6 +150,8 @@ def main() -> None:
         for lang in ("EN", "ZH", "TW")
         for word, rank in words
     ]
+    jobs.sort(key=lambda job: job[0])   # most searched first
+    jobs = jobs[: args.searches]
     started = time.time()
     temp = result_cache.SHIPPED_PATH.with_suffix(".tmp")
     temp.parent.mkdir(parents=True, exist_ok=True)

@@ -70,6 +70,15 @@ def main() -> int:
     parser.add_argument("--pc", action="store_true", help="with --method all: restart the Windows scheduled task")
     args = parser.parse_args()
 
+    # Lowest CPU/disk priority for this run and every child (result cache workers, tests): the
+    # deploy finishes the same when the machine is idle and gets out of the way when it is not.
+    # YABAI_DEPLOY_NICE=0 turns it off.
+    try:
+        os.nice(int(os.environ.get("YABAI_DEPLOY_NICE", "19")))
+        subprocess.run(["ionice", "-c3", "-p", str(os.getpid())], capture_output=True)
+    except (OSError, ValueError, FileNotFoundError):
+        pass
+
     from envsetup import ensure_project_environment  # noqa: PLC0415
 
     ensure_project_environment(str(Path(__file__).resolve()), sys.argv[1:])
