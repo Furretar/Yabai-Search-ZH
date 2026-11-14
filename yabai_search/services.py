@@ -1200,6 +1200,12 @@ def api_search(
                 counters["selected_dicts"] = ",".join(selected_dicts)
             if os.environ.get("YABAI_SERVER_ORDER", "1") != "0":
                 results, _ = db.page_groups(results, 0, limit)
+            # The preview rows are not fully decorated, so some arrive without a source chip (the
+            # first row of a search such as "a" had none until the full tier answered, tens of
+            # seconds later on a cold single letter). Membership is one cheap query per dictionary.
+            unsourced = [row for row in results if not row.get("sources")]
+            if unsourced:
+                db._attach_sources(unsourced)
             # D4 limitation: this preview is not yet a prefix of the full list.
             # It previews one dictionary (the language default), so an exact
             # match from another selected dictionary can still sort above a row

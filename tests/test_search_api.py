@@ -655,6 +655,18 @@ def test_primary_preview_follows_dictionary_drag_order(client, dicts, expected):
     assert debug["primary_anchor"] == expected
 
 
+def test_primary_preview_rows_all_have_a_source(client):
+    """The fast preview of a single letter must not show a row without a source chip.
+
+    "a" put CC-CEDICT's own "A" first with no source until the slow full response arrived.
+    """
+    response = client.get("/api/search", params={"q": "a", "part": "primary", "lang": "EN", "dicts": "cedict,wiktionary,unihan"})
+    assert response.status_code == 200
+    rows = response.json()["results"]
+    assert rows
+    assert [row["simplified"] for row in rows if not row.get("sources")] == []
+
+
 def test_pinyin_match_flag(search):
     """The pinyin flag is true only for reading-based searches."""
     assert search("dangan")["pinyin_match"] is True

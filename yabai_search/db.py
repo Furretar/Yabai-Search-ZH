@@ -2360,12 +2360,16 @@ def main_reading_info(
                 chunk = missing[start : start + 400]
                 words = sorted({word for pair in chunk for word in pair})
                 holes = ",".join("?" * len(words))
+                # Exactly the chunk's pairs, through the primary key. The old
+                # "simplified IN (..) OR traditional IN (..)" had no index on simplified, scanned
+                # the whole table per chunk and returned every pair of every word in it.
+                pair_holes = ",".join("(?,?)" for _ in chunk)
                 pair_reading = {
                     (row[0], row[1]): row[2]
                     for row in connection.execute(
                         "SELECT traditional, simplified, reading FROM pairs "
-                        f"WHERE simplified IN ({holes}) OR traditional IN ({holes})",
-                        words + words,
+                        f"WHERE (traditional, simplified) IN (VALUES {pair_holes})",
+                        [word for pair in chunk for word in pair],
                     )
                 }
                 head_reading = dict(
