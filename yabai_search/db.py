@@ -1010,7 +1010,7 @@ _SOURCE_SCANS: dict[str, dict[str, str]] = {
     "wiktionary": {
         "defined_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL",
         # A headword with no gloss has nothing to show, so it is not listed.
-        "listed_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL",
+        "listed_words": "SELECT DISTINCT word FROM wiktionary_all WHERE gloss IS NOT NULL",
         "reading_words": "SELECT word FROM readings WHERE pinyin <> '' AND kind = 'mandarin'",
         # The same readings with the simplified form the dictionary stores for each word (for the entries table).
         "entry_readings": "SELECT word, simplified, pinyin FROM readings WHERE kind = 'mandarin' AND pinyin <> ''",
@@ -1050,14 +1050,14 @@ _SOURCE_SCANS: dict[str, dict[str, str]] = {
         ),
     },
     "zhwiktionary": {
-        "listed_words": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "listed_words": "SELECT DISTINCT word FROM headwords_all WHERE word <> ''",
         "reading_words": "SELECT word FROM headwords WHERE pinyin <> ''",
         "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
         "headwords": "SELECT DISTINCT word FROM headwords ORDER BY word",
         "definitions": "SELECT word, text FROM senses WHERE text <> ''",
     },
     "jpwiktionary": {
-        "listed_words": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "listed_words": "SELECT DISTINCT word FROM headwords_all WHERE word <> ''",
         "reading_words": "SELECT word FROM headwords WHERE pinyin <> ''",
         "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
         "headwords": "SELECT DISTINCT word FROM headwords ORDER BY word",
