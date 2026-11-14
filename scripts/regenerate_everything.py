@@ -52,6 +52,7 @@ class Step:
 
 # In dependency order. `probe` (below) knows how to tell whether each is current.
 STEPS: list[Step] = [
+    Step("entries", "build_entries.py", "the unified backbone: CEDICT's tables plus a row per (word, reading) of every other dictionary", [OUT / "entries.sqlite"]),
     Step("head_grams", "build_head_grams.py", "character-gram index of every headword (exact negative filter)", [OUT / "head_grams.sqlite"]),
     Step("source_gloss", "build_source_gloss.py", "the gloss text of every source, for definition search", [OUT / "source_gloss.sqlite"]),
     Step("sense_counts", "build_sense_counts.py", "CEDICT senses per (word, reading): what ranks a word's readings", [OUT / "sense_counts.sqlite"]),
@@ -147,6 +148,7 @@ def probe(names: list[str]) -> dict[str, dict[str, str]]:
         "taiwan_readings": lambda: (("current", "signature matches") if db.taiwan_table_status() == "ok" else (db.taiwan_table_status(), "signature does not match the sources/rules")),
         "main_readings": lambda: (("current", "signature matches") if db.main_readings_table_status() == "ok" else (db.main_readings_table_status(), "signature does not match the sources/rules")),
         "headwords": lambda: app_check("_headwords_ok"),
+        "entries": lambda: app_check("_entries_ok"),
         "search_index": lambda: app_check("_search_index_ok"),
         "segmenter": segmenter,
         "static_assets": static_assets,

@@ -1555,6 +1555,18 @@ html.theme-light .defs {
     cursor: default;
 }
 
+/* A part-of-speech or "Classifier" subheader inside a dictionary block: the dictionary header's look. */
+.def-source-name.def-section-name {
+    display: block;
+    margin: .35rem 0 .1rem;
+}
+
+/* A definition's label, moved behind its text ("literary", "Cantonese"): small and muted, as on jisho.org. */
+.def-note {
+    font-size: .8em;
+    color: var(--muted);
+}
+
 .def-source-line {
     margin-top: .15rem;
     font-size: var(--definition-size);

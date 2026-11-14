@@ -197,9 +197,14 @@ def test_definition_matcher_5000_terms():
 
 
 def test_batched_head_readings_give_the_same_rows_as_one_query_per_headword(monkeypatch):
-    """Looking source readings up in batches must not change which rows or readings come back."""
+    """Looking source readings up in batches must not change which rows or readings come back.
+
+    This is the side path that adds other dictionaries' words when the unified entries table is not in use
+    (that table makes those words ordinary rows), so it is exercised with the unified table off.
+    """
     from yabai_search import db
 
+    monkeypatch.setattr(db, "_unified_ready_cache", False)
     def rows():
         return [
             (e["traditional"], e["simplified"], e["pinyin"], e.get("pinyin_label"))

@@ -107,7 +107,7 @@ def test_build_all_skips_derived_and_empty_databases(tmp_path: Path) -> None:
     derived = sqlite3.connect(source_generated / "head_grams.sqlite")
     derived.executescript(
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
-        "INSERT INTO meta VALUES ('cedict_sha256', 'built-from-the-real-file');"
+        "INSERT INTO meta VALUES ('backbone_sha256', 'built-from-the-real-file');"
     )
     derived.close()
 
@@ -133,7 +133,7 @@ def test_build_all_skips_derived_and_empty_databases(tmp_path: Path) -> None:
     stub = sqlite3.connect(generated / "head_grams.sqlite")
     try:
         stored = stub.execute(
-            "SELECT value FROM meta WHERE key = 'cedict_sha256'"
+            "SELECT value FROM meta WHERE key = 'backbone_sha256'"
         ).fetchone()[0]
     finally:
         stub.close()

@@ -64,7 +64,7 @@ requires_all_sources = pytest.mark.skipif(
 )
 
 requires_baidu = pytest.mark.skipif(
-    not (DATA / "dictionary-databases" / "baidu" / "baidu.sqlite").exists(), reason="Baidu database not built"
+    not (DATA / "dictionary-databases" / "baidu" / "baidu_clean.sqlite").exists(), reason="Baidu database not built"
 )
 requires_unihan = pytest.mark.skipif(
     not (DATA / "dictionary-databases" / "unihan.sqlite").exists(), reason="Unihan database not built"
@@ -172,7 +172,7 @@ def test_moe_revised_definition_drops_examples(search, find_result):
 @requires_wiktionary
 def test_moe_revised_can_supply_a_word_cedict_lacks(search, find_result):
     """A source-only word is returned with its comprehensive MOE definition."""
-    assert db.lookup("劣性") == []
+    assert "劣性" not in db._cedict_heads()  # CC-CEDICT has no row for it; MOE supplies it
     entry = find_result(search("劣性"), "劣性")
     assert entry is not None
     assert "moe_revised" in _anchors(entry)
@@ -445,7 +445,7 @@ def test_gram_filtered_heads_match_the_like_scan_they_replace():
             scanned = [
                 row[0]
                 for row in connection.execute(
-                    "SELECT DISTINCT word FROM headwords WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
+                    "SELECT DISTINCT word FROM words WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
                     (pattern,),
                 )
             ]
@@ -453,3 +453,45 @@ def test_gram_filtered_heads_match_the_like_scan_they_replace():
     finally:
         connection.close()
     assert db._gram_filtered_heads("baidu_head", "abc*") is None  # no Han character: scan
+
+
+def test_a_traditional_spelling_takes_its_readings_senses_from_the_simplified_page():
+    """Baidu's 只 page has zhī and zhǐ senses; the 隻 row gets the zhī ones (those 隻's own page lacks first), never the zhǐ ones."""
+    from yabai_search import db
+
+    mapping = {
+        "只": [("zhī", "modern"), ("zhī", "a bird"), ("zhǐ", "only"), ("zhǐ", "surname")],
+        "隻": [("zhī", "a bird"), ("zhī", "pair")],
+        "秖": [("zhī", "grain")],
+    }
+    pooled = {("只", "zhi1")}                                  # 隻 and 秖 share 只 zhī
+    zhi = {"traditional": "隻", "simplified": "只", "pinyin": "zhī"}
+    assert [v[1] for v in db._with_simplified_senses(mapping, zhi, mapping["隻"], pooled)] == ["modern", "a bird", "pair"]
+    grain = {"traditional": "秖", "simplified": "只", "pinyin": "zhī"}
+    # nothing of its own repeats: the 只 zhī group is not guessed onto it, and it keeps its own page (even when
+    # the page's reading differs from CC-CEDICT's, as 秖 zhǐ on Baidu does)
+    assert db._with_simplified_senses(mapping, grain, mapping["只"], pooled) == mapping["秖"]
+    only = {"traditional": "只", "simplified": "只", "pinyin": "zhǐ"}
+    assert db._with_simplified_senses(mapping, only, mapping["只"], pooled) == mapping["只"]
+
+
+def test_no_definition_cap_and_baidu_senses_follow_their_reading(search):
+    """Every definition is shown (the cap of 12 is gone) and the 只 row shows only its own reading's Baidu senses."""
+    if not db.BAIDU_DB_PATH.exists():
+        pytest.skip("Baidu database not built")
+    many = max(
+        len(block["defs"])
+        for row in search("會", dicts="wiktionary", lang="EN")["results"][:3]
+        for block in row["definitions"]
+        if block["anchor"] == "wiktionary"
+    )
+    assert many > 12                                                   # no cap (Wiktionary lists 29 glosses of 會)
+    data = search("只", dicts="baidu", lang="ZH")
+    rows = {(r["traditional"], r["pinyin"]): r for r in data["results"] if r["simplified"] == "只"}
+    only = next(r for key, r in rows.items() if key[0] == "只")
+    baidu = next(b for b in only["definitions"] if b["anchor"] == "baidu")
+    assert {g["pinyin"] for g in baidu["groups"]} == {"zhǐ"}
+    assert not any(text.startswith("〔") for text in baidu["defs"])
+    if ("隻", "zhī") in rows:
+        zhi = next(b for b in rows[("隻", "zhī")]["definitions"] if b["anchor"] == "baidu")
+        assert {g["pinyin"] for g in zhi["groups"]} == {"zhī"} and len(zhi["defs"]) >= 2

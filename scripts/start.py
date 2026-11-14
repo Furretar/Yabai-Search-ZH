@@ -42,7 +42,7 @@ REQUIRED_DATA = [
     "dictionary-databases/cedict.sqlite", "dictionary-databases/wiktionary.sqlite",
     "dictionary-databases/zhwiktionary.sqlite", "dictionary-databases/jpwiktionary.sqlite",
     "dictionary-databases/moe-taiwan/moe.sqlite", "dictionary-databases/unihan.sqlite",
-    "dictionary-databases/baidu/baidu.sqlite", "dictionary-databases/corpus_freq.sqlite",
+    "dictionary-databases/baidu/baidu_clean.sqlite", "dictionary-databases/corpus_freq.sqlite",
     "dictionary-databases/hsk.sqlite",
 ]
 

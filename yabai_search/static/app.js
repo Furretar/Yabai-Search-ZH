@@ -83,6 +83,124 @@ const anyEnabled = (enabled, anchors) => [...anchors].some((anchor) => enabled.h
 const lookupUrls = new Map(
     dictToggles.filter((toggle) => toggle.dataset.lookupUrl).map((toggle) => [toggle.dataset.anchor, toggle.dataset.lookupUrl]),
 );
+// How a dictionary's definitions are split into subheaders and notes (the sense_style trait in db.py):
+// "part_of_speech" for Baidu ("(副词) text") and "labels" for Wiktionary ("(literary) text", "Classifier for ...").
+const senseStyles = new Map(
+    dictToggles.filter((toggle) => toggle.dataset.senseStyle).map((toggle) => [toggle.dataset.anchor, toggle.dataset.senseStyle]),
+);
+// The labels that move behind a definition as a note (NOTE_LABELS in overrides.py); every other leading parenthesis
+// stays in the text.
+const noteLabels = new Set(JSON.parse(document.getElementById("note-labels")?.textContent || "[]"));
+// Dictionaries that file "Classifier for ..." glosses under a "Classifier" subheader (Wiktionary).
+const senseClassifier = new Set(
+    dictToggles.filter((toggle) => toggle.dataset.senseClassifier).map((toggle) => toggle.dataset.anchor),
+);
+// Baidu's part-of-speech words in English, one name for each (the same name for the variants of one word).
+const POS_ENGLISH = {
+    名词: "Noun", 动词: "Verb", 形容词: "Adjective", 副词: "Adverb", 代词: "Pronoun", 数词: "Numeral",
+    量词: "Classifier", 数量词: "Quantifier", 拟声词: "Onomatopoeia", 象声词: "Onomatopoeia", 连词: "Conjunction",
+    助词: "Particle", 语气词: "Modal particle", 语气助词: "Modal particle", 介词: "Preposition",
+    叹词: "Interjection", 感叹词: "Interjection", 疑问词: "Interrogative", 前缀: "Prefix", 后缀: "Suffix",
+};
+// The usage labels Chinese dictionaries write in angle brackets, "〈方〉" for 方言, shown as a note after the definition.
+const ANGLE_LABELS = {
+    方: "dialectal", 方言: "dialectal", 书: "literary", 文: "classical Chinese", 口: "colloquial", 古: "archaic",
+    敬: "honorific", 谦: "humble", 婉: "euphemistic", 贬: "derogatory", 外: "foreign loanword", 詈: "abusive",
+};
+const POS_ORDER = Object.values(POS_ENGLISH).filter((name, i, all) => all.indexOf(name) === i);
+
+// One definition split for display: its subheader (part of speech, "Classifier"), its text, and a note (a leading
+// "(literary)" style label, shown after the text in small muted type).
+function parseSense(style, text, anchor = "") {
+    let rest = String(text || "");
+    let section = "";
+    let note = "";
+    if (style === "part_of_speech") {
+        const match = rest.match(/^\(([^()]+)\)\s*([\s\S]*)$/);
+        if (match) {
+            const names = match[1].split(/[、,，]\s*/).map((tag) => POS_ENGLISH[tag.trim()]);
+            if (names.length && names.every(Boolean)) {
+                section = [...new Set(names)].sort((a, b) => POS_ORDER.indexOf(a) - POS_ORDER.indexOf(b)).join(", ");
+                rest = match[2];
+            }
+        }
+        for (;;) {
+            const angle = rest.match(/^\s*〈\s*([^〈〉]+?)\s*〉\s*/);
+            const label = angle && ANGLE_LABELS[angle[1]];
+            if (!label) break;
+            note = note && !note.split(", ").includes(label) ? `${note}, ${label}` : note || label;
+            rest = rest.slice(angle[0].length);
+        }
+    } else if (style === "labels") {
+        // A leading parenthesis is a note only when every part of it ("Cantonese, slang", "literary or dialectal") is a
+        // listed label; "(located) in; at" and "(before an adjective) more" stay as written.
+        for (;;) {
+            const open = rest.match(/^\s*\(([^()]*)\)\s*/);
+            if (!open) break;
+            const parts = open[1].split(/\s*[;,]\s*|\s+or\s+/i).map((part) => part.trim().toLowerCase()).filter(Boolean);
+            if (!parts.length || !parts.every((part) => noteLabels.has(part))) break;
+            note = note ? `${note}, ${open[1].trim()}` : open[1].trim();
+            rest = rest.slice(open[0].length);
+        }
+        const classifier = senseClassifier.has(anchor) && rest.match(/^[Cc]lassifier for\s+([\s\S]*)$/);
+        if (classifier) {
+            section = "Classifier";
+            rest = classifier[1];
+        }
+    }
+    return { section, text: rest.trim(), note };
+}
+
+// Baidu definitions that only say "same as X" / "also written X" ("同“仔”。", "亦作“仔”。") are not definitions: they name
+// another spelling. They leave the list and come back as one "Other forms" line under it, like CC-CEDICT's.
+const VARIANT_SENSE_RE = /^(?:同|亦作|也作|又作|亦同|或作|本作|亦写作)((?:\s*[“「][^”」]+[”」])+)\s*[。.]?\s*$/;
+function splitVariantSenses(senses) {
+    const rest = [];
+    const forms = [];
+    for (const sense of senses) {
+        const match = String(sense || "").match(VARIANT_SENSE_RE);
+        if (!match) {
+            rest.push(sense);
+            continue;
+        }
+        for (const target of match[1].matchAll(/[“「]([^”」]+)[”」]/g)) {
+            if (!forms.includes(target[1])) forms.push(target[1]);
+        }
+    }
+    return { rest, forms };
+}
+
+// The definitions of one group as sections: categories in order of first appearance (a category's own definitions keep
+// their order), all of a category together. A definition without a category goes under "Other" after all of them for a
+// part-of-speech dictionary, and comes first without a subheader for the others (Wiktionary's plain glosses).
+function senseSections(style, senses, anchor = "") {
+    const sections = [];
+    for (const sense of senses) {
+        const item = parseSense(style, sense, anchor);
+        let target = sections.find((entry) => entry.key === item.section);
+        if (!target) {
+            target = { key: item.section, items: [] };
+            sections.push(target);
+        }
+        target.items.push({ ...item, original: sense });
+    }
+    const showTitles = sections.some((entry) => entry.key);
+    const plain = sections.find((entry) => !entry.key);
+    if (showTitles && plain) {
+        sections.splice(sections.indexOf(plain), 1);
+        if (style === "part_of_speech") sections.push(plain);
+        else sections.unshift(plain);
+    }
+    return sections.map((entry) => ({
+        title: !showTitles ? "" : entry.key || (style === "part_of_speech" ? "Other" : ""),
+        items: entry.items,
+    }));
+}
+
+// Some sites have a different page for a single character (Baidu: hanyu-page/zici); the headword's length picks it.
+const lookupUrlsChar = new Map(
+    dictToggles.filter((toggle) => toggle.dataset.lookupUrlChar).map((toggle) => [toggle.dataset.anchor, toggle.dataset.lookupUrlChar]),
+);
 // The whole "Dictionaries" disclosure, shown only when "Custom dictionaries" is on.
 const dictPanel = document.querySelector(".options.dictionaries");
 
@@ -511,6 +629,12 @@ function searchClipboardValue(value) {
     performSearch(value);
 }
 
+// A web address in the text: a scheme (https://, ftp://, mailto:) or a "www." host. Auto clipboard ignores such text.
+const CLIPBOARD_URL_RE = /(?:[a-z][a-z0-9+.-]*:\/\/|\bmailto:|\bwww\.)\S/i;
+function clipboardHasUrl(text) {
+    return CLIPBOARD_URL_RE.test(String(text || ""));
+}
+
 async function checkClipboard(fromEvent = false) {
     if (!state.autoClipboard || clipboardReadBusy) return;
     const now = performance.now();
@@ -533,6 +657,8 @@ async function checkClipboard(fromEvent = false) {
         // is still searched (unless it is already what is in the box).
         if (!value || (!clipboardIsTouch && value === lastClipboardText)) return;
         lastClipboardText = value;
+        // Copied web addresses (and text that contains one) are never searched.
+        if (clipboardHasUrl(value)) return;
         if (performance.now() < clipboardSuppressUntil) return;
         searchClipboardValue(value);
     } catch (error) {
@@ -1771,6 +1897,7 @@ function definitionBody(source, taiwanRefs, copy) {
 
     // Senses, grouped by reading. CEDICT polyphonic words get a header per
     // reading; other sources have a single (unlabelled) group.
+    const senseStyle = senseStyles.get(source.anchor) || "";
     const groups =
         source.groups && source.groups.length
             ? source.groups
@@ -1817,13 +1944,31 @@ function definitionBody(source, taiwanRefs, copy) {
             }
             body.append(head);
         }
-        group.senses.forEach((text, i) => {
+        const split =
+            senseStyle === "part_of_speech" ? splitVariantSenses(group.senses) : { rest: group.senses, forms: [] };
+        for (const section of senseSections(senseStyle, split.rest, source.anchor)) {
+        if (section.title) {
+            const title = document.createElement("div");
+            title.className = "def-source-name def-section-name";
+            title.textContent = section.title;
+            body.append(title);
+        }
+        section.items.forEach((item, i) => {
+            const text = item.text;
+            if (!text && !item.note) return; // only a category label: the subheader says it
             const line = document.createElement("div");
             line.className = "def-source-line";
             const num = document.createElement("span");
             num.className = "def-source-num";
             num.textContent = `${i + 1}.`;
-            line.append(num, renderDefinition(text, taiwanRefs, linkChinese));
+            line.append(num);
+            if (text) line.append(renderDefinition(text, taiwanRefs, linkChinese));
+            if (item.note) {
+                const note = document.createElement("span");
+                note.className = "def-note";
+                note.textContent = text ? ` ${item.note}` : item.note;
+                line.append(note);
+            }
             if (copy && text) {
                 // Prefer the reading attached to this sense group (polyphonic
                 // words), falling back to the entry's main reading.
@@ -1842,6 +1987,10 @@ function definitionBody(source, taiwanRefs, copy) {
             }
             body.append(line);
         });
+        }
+        if (split.forms.length) {
+            body.append(...formsRows(split.forms.map((word) => ({ traditional: word, pinyin: "", qualifier: "" })), group.pinyin));
+        }
         // Forms pronounced with this reading: the `zhǐ` group of 只 shows
         // "Other forms: 祇; 衹" underneath its own senses.
         if (forms.length) {
@@ -1915,9 +2064,11 @@ function definitionsBlock(source, taiwanRefs, word, reading, forms = []) {
     name.className = "def-source-name";
     // Each dictionary can name a page where the word is looked up at its own site (the lookup_url trait
     // in db.py, carried on its toggle); the headword the source stored is used when it has one.
-    const lookupUrl = lookupUrls.get(source.anchor);
+    const lookupWord = source.headword || word;
+    const lookupUrl =
+        ([...lookupWord].length === 1 && lookupUrlsChar.get(source.anchor)) || lookupUrls.get(source.anchor);
     if (lookupUrl) {
-        name.href = lookupUrl + encodeURIComponent(source.headword || word);
+        name.href = lookupUrl + encodeURIComponent(lookupWord);
         name.target = "_blank";
         name.rel = "noopener";
     } else if (source.anchor.startsWith("custom-")) {

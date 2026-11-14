@@ -16,10 +16,16 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CEDICT = ROOT / "data" / "dictionary-databases" / "cedict.sqlite"
+sys.path.insert(0, str(ROOT))
+from yabai_search import db  # noqa: E402
+
+# The index maps a character gram to the ids of the rows of the table the main search runs on: the unified
+# entries table when it is current, else CEDICT's (db.backbone_path()). Build it after build_entries.py.
+CEDICT = db.backbone_path()
 # Derived indexes live here (db.GENERATED_DIR), not in data/ itself.
 GENERATED = ROOT / "data" / "generated-indexes-optimizations"
 OUT = GENERATED / "head_grams.sqlite"
@@ -68,7 +74,7 @@ def main() -> None:
         total += len(batch)
     digest = hashlib.sha256(CEDICT.read_bytes()).hexdigest()
     out.execute(
-        "INSERT INTO meta(key, value) VALUES ('cedict_sha256', ?)", (digest,)
+        "INSERT INTO meta(key, value) VALUES ('backbone_sha256', ?)", (digest,)
     )
     out.execute("ANALYZE")
     out.commit()

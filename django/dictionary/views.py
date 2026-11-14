@@ -33,6 +33,7 @@ from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_safe
 
+from yabai_search.overrides import NOTE_LABELS
 from yabai_search import db, services
 from yabai_search.default_config import DEFAULTS, PAGE_SETTINGS, SETTINGS
 from yabai_site.middleware import client_ip
@@ -171,6 +172,7 @@ def _index_page(request, q="", page="", lang=SETTINGS["lang"], word_query="", ex
         "asset_version": services.asset_version(),
         "static": services.static_paths(),
         "sources": db.sources(),
+        "note_labels": sorted(NOTE_LABELS),
         "dictionaries": db.dictionaries(),
         "defaults": DEFAULTS,
         "settings": PAGE_SETTINGS,

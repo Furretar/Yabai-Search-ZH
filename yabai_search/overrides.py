@@ -27,6 +27,58 @@ PREFERRED_READINGS: dict[str, str] = {
     "只": "zhǐ",
 }
 
+# Context labels for definitions. CC-CEDICT and Wiktionary open some glosses with a parenthesis: a label such as
+# "(literary) by chance" or "(Cantonese) mutual aid", or a part of the definition such as "(located) in; at" or
+# "(before an adjective) more". Only the labels listed here are moved behind the definition, as a small muted note;
+# every other parenthesis stays where it is. Add a label here to move it. Lower case, without the brackets. A
+# parenthesis moves only when each of its comma-separated parts (or parts joined by " or ") is listed: "(Cantonese,
+# slang)" and "(literary or dialectal)" move, "(literary, located)" does not.
+NOTE_LABELS: set[str] = {
+    # register and style
+    "literary", "colloquial", "slang", "internet slang", "fandom slang", "archaic", "obsolete",
+    "obsolete on its own in standard chinese", "dated", "historical", "historical dictionaries only", "old",
+    "figurative", "figuratively", "literally", "literal", "formal", "informal", "humorous", "jocular",
+    "euphemistic", "euphemism", "derogatory", "often derogatory", "offensive", "ethnic slur", "vulgar", "honorific",
+    "polite", "humble", "courteous", "sarcastic", "endearing", "childish", "rare", "uncommon", "poetic", "classical",
+    "neologism", "officialese", "by extension", "specifically", "idiomatic", "simile", "metonymic",
+    "coll.", "lit.", "fig.", "derog.", "arch.",
+    # usage and grammar
+    "bound form", "attributive", "often attributive", "transitive", "intransitive", "countable", "uncountable",
+    "onomatopoeia", "onom.", "ideophonic", "loanword", "idiom", "saying", "proverb", "in compounds",
+    "or in compounds", "chiefly in the negative", "collective",
+    # regions and dialects
+    "mandarin", "dialectal mandarin", "beijing mandarin", "taiwanese mandarin", "northeastern mandarin",
+    "southwestern mandarin", "jianghuai mandarin", "nanjing mandarin", "harbin mandarin", "wuhan mandarin",
+    "xi'an mandarin", "yangzhou mandarin", "liuzhou mandarin", "sichuanese", "beijing dialect", "sichuan dialect",
+    "cantonese", "hong kong cantonese", "dialectal cantonese", "chiefly cantonese",
+    "hokkien", "taiwanese hokkien", "zhangzhou hokkien", "xiamen hokkien", "quanzhou hokkien", "singapore hokkien",
+    "philippine hokkien", "penang hokkien", "mainland china hokkien", "xiamen", "xiamen and zhangzhou hokkien",
+    "zhangzhou and taiwanese hokkien", "xiamen and quanzhou hokkien", "quanzhou and xiamen hokkien",
+    "xiamen and taiwanese hokkien",
+    "wu", "northern wu", "dialectal wu", "shanghainese", "suzhounese", "wenzhounese", "ningbonese", "hangzhounese",
+    "jinhua wu", "xiang", "hengyang xiang", "changsha xiang", "loudi xiang", "gan", "pingxiang gan", "lichuan gan",
+    "dialectal gan", "hakka", "taiwanese hakka", "dialectal hakka", "yudu hakka", "min", "eastern min",
+    "southern min", "northern min", "puxian min", "leizhou min", "zhongshan min", "hainanese", "teochew", "jin",
+    "huizhou", "dungan", "pinghua", "southern pinghua", "nanning pinghua", "dialectal", "dialect", "regional",
+    "literary or dialectal", "literary or cantonese", "literary or hokkien",
+    "taiwan", "chiefly taiwan", "tw", "mainland china", "chiefly mainland china", "hong kong", "chiefly hong kong",
+    "hk", "macau", "singapore", "malaysia",
+    # fields
+    "medicine", "anatomy", "pathology", "pharmacology", "traditional chinese medicine", "tcm", "neuroanatomy",
+    "physiology", "cytology", "immunology", "bacteriology", "biochemistry", "chemistry", "organic chemistry",
+    "inorganic chemistry", "physics", "mathematics", "math.", "geometry", "statistics", "logic", "mechanics",
+    "astronomy", "chinese astronomy", "meteorology", "geology", "geography", "mineralogy", "botany", "zoology",
+    "biology", "genetics", "agriculture", "psychology", "linguistics", "grammar", "phonetics", "philosophy",
+    "computing", "computer", "internet", "programming", "electronics", "electricity", "law", "finance", "banking",
+    "accounting", "economics", "business", "politics", "military", "education", "history", "architecture",
+    "engineering", "metallurgy", "mining", "textiles", "telecommunications", "optics", "automotive", "aviation",
+    "nautical", "rail transport", "railway", "photography", "printing", "cooking", "sports", "soccer", "baseball",
+    "basketball", "golf", "chess", "xiangqi", "mahjong", "card games", "video games", "acg", "martial arts", "music",
+    "opera", "theater", "cinema", "calligraphy", "poetry", "literature", "buddhism", "taoism", "daoism",
+    "christianity", "catholicism", "protestantism", "islam", "religion", "chinese mythology", "greek mythology",
+    "mythology",
+}
+
 # Words whose "Other forms" row should be hidden (e.g. when it just repeats a
 # pronunciation already shown elsewhere).
 HIDE_FORMS: set[str] = {

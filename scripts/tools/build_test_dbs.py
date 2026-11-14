@@ -59,7 +59,7 @@ def _quote(name: str) -> str:
 # only the first N source rows, which is what a query-shape run needs.
 SIGNATURE_SOURCES = {
     "source_gloss.sqlite": {"cedict_sha256": "dictionary-databases/cedict.sqlite"},
-    "head_grams.sqlite": {"cedict_sha256": "dictionary-databases/cedict.sqlite"},
+    "head_grams.sqlite": {"backbone_sha256": "dictionary-databases/cedict.sqlite"},
     "gram_words.sqlite": {
         "source:moe": "dictionary-databases/moe-taiwan/moe.sqlite",
         "source:moe_revised": "dictionary-databases/moe-taiwan/moe.sqlite",

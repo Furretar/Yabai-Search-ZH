@@ -609,7 +609,8 @@ def test_each_dictionary_links_to_its_own_site_from_its_traits():
     assert 'data-lookup-url="{{ d.lookup_url }}"' in html  # the toggle carries it to the page
     js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
     assert "lookupUrls.get(source.anchor)" in js
-    assert "lookupUrl + encodeURIComponent(source.headword || word)" in js
+    assert "lookupUrl + encodeURIComponent(lookupWord)" in js and "const lookupWord = source.headword || word" in js
+    assert urls["baidu"].startswith("https://hanyu.baidu.com/") and "lookup_url_char" in html
     # No dictionary is named in the link code any more.
     assert "ZH_WIKTIONARY_PAGE" not in js and "CC_CEDICT_SEARCH" not in js
 
@@ -733,3 +734,83 @@ def test_empty_avatar_links_to_login_and_icons_glow(client):
     assert "box-shadow: 0 0 .55rem var(--accent)" in css
     assert ".menu-item:hover svg" in css
     assert "drop-shadow(0 0 4px var(--accent))" in css
+
+
+def test_origin_guard_lets_a_host_page_parse_a_sentence(monkeypatch):
+    """The page at <node>.yabaisearch.org posts the sentence to /api/annotate (and /api/convert-batch); both only
+    compute, so they pass on the host's own name. Other POSTs, and other hosts' names, stay gated."""
+    from django.test import RequestFactory
+
+    monkeypatch.setenv("YABAI_REPL_NODE", "tabs")
+    gate = _origin_gate(monkeypatch)
+    factory = RequestFactory()
+
+    def post(path, host="tabs.yabaisearch.org"):
+        return gate(factory.post(path, HTTP_HOST=host, HTTP_ACCEPT="application/json", REMOTE_ADDR="203.0.113.9"))
+
+    assert post("/api/annotate").status_code == 200
+    assert post("/api/convert-batch").status_code == 200
+    assert post("/api/report").status_code == 403                       # stores something: Worker only
+    assert post("/accounts/login/").status_code == 403
+    assert post("/api/annotate", host="tabs2.yabaisearch.org").status_code == 403   # another machine's name
+
+
+def test_baidu_chip_links_to_baidus_own_page(client):
+    """The Baidu chip opens the look-up page at hanyu.baidu.com: the character page for one character, the word page otherwise."""
+    html = client.get("/").text
+    assert 'data-anchor="baidu"' in html
+    assert 'data-lookup-url="https://hanyu.baidu.com/hanyu-page/term/detail?ptype=zici&amp;wd="' in html or \
+        'data-lookup-url="https://hanyu.baidu.com/hanyu-page/term/detail?ptype=zici&wd="' in html
+    assert "hanyu-page/zici/s?ptype=zici" in html
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "lookupUrlsChar" in js and "[...lookupWord].length === 1" in js
+
+
+def test_definitions_are_split_into_subheaders_and_notes_by_the_dictionarys_style():
+    """Baidu's "(副词)" and Wiktionary's "Classifier for" / "(literary)" are parsed in the page from the sense_style trait."""
+    from yabai_search import db
+
+    styles = {item["anchor"]: item.get("sense_style") for item in db.dictionaries()}
+    assert styles["baidu"] == "part_of_speech" and styles["wiktionary"] == "labels"
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    for name in ("senseStyles", "POS_ENGLISH", "parseSense", "senseSections", "def-section-name", "def-note"):
+        assert name in js
+    # Baidu's categories come in order of first appearance and the uncategorised ones last, under "Other".
+    assert 'style === "part_of_speech") sections.push(plain)' in js
+    css = (ROOT / "yabai_search/static/style.css").read_text(encoding="utf-8")
+    assert ".def-source-name.def-section-name" in css and ".def-note" in css
+
+
+def test_only_whitelisted_parenthesis_labels_move_behind_the_definition():
+    """CC-CEDICT and Wiktionary: only the labels listed in overrides.py NOTE_LABELS become notes after the text."""
+    from yabai_search import db
+    from yabai_search.overrides import NOTE_LABELS
+
+    assert {"literary", "colloquial", "bound form", "cantonese", "medicine"} <= NOTE_LABELS
+    assert not {"located", "before an adjective", "a title for certain government officials in ancient china"} & NOTE_LABELS
+    assert all(label == label.lower() for label in NOTE_LABELS)
+    styles = {item["anchor"]: item.get("sense_style") for item in db.dictionaries()}
+    assert styles["cedict"] == styles["wiktionary"] == "labels"
+    html = (ROOT / "yabai_search/templates/index.html").read_text(encoding="utf-8")
+    assert 'id="note-labels"' in html and "note_labels|tojson" in html
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "noteLabels.has(part)" in js and "senseNotLabels" not in js and "senseKeepLast" not in js
+
+
+def test_auto_clipboard_ignores_text_that_contains_a_url():
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert "function clipboardHasUrl(" in js and "if (clipboardHasUrl(value)) return;" in js
+    start = js.index("const CLIPBOARD_URL_RE")
+    assert "(?:[a-z][a-z0-9+.-]*:" in js[start : start + 120] and "www" in js[start : start + 120]
+
+
+def test_baidu_angle_bracket_labels_become_notes():
+    """"〈方〉" (dialectal), "〈书〉" (literary) and the other usage labels of Chinese dictionaries move behind the definition."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    start = js.index("const ANGLE_LABELS")
+    table = js[start : js.index("};", start)]
+    for chinese, english in (("方", "dialectal"), ("书", "literary"), ("口", "colloquial"), ("古", "archaic"),
+                             ("敬", "honorific"), ("谦", "humble"), ("婉", "euphemistic"), ("贬", "derogatory"),
+                             ("外", "foreign loanword")):
+        assert f'{chinese}: "{english}"' in table
+    assert "〈" in js[js.index("for (;;) {", js.index("POS_ENGLISH[tag.trim()]")) :][:400]

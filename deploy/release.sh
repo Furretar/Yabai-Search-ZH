@@ -65,7 +65,7 @@ if [ "$SYNC_DATA" = 1 ]; then
         "$LAPTOP_DIR/data/generated-indexes-optimizations"
     rsync -a data/dictionary-databases/*.sqlite "$LAPTOP_DIR/data/dictionary-databases/"
     rsync -a data/dictionary-databases/moe-taiwan/moe.sqlite "$LAPTOP_DIR/data/dictionary-databases/moe-taiwan/"
-    rsync -a data/dictionary-databases/baidu/baidu.sqlite "$LAPTOP_DIR/data/dictionary-databases/baidu/"
+    rsync -a data/dictionary-databases/baidu/baidu_clean.sqlite "$LAPTOP_DIR/data/dictionary-databases/baidu/"
     # The segmenter's word list; its cache (segmenter.pickle, below) only loads beside the same list.
     mkdir -p "$LAPTOP_DIR/data/dl-base-dictionaries"
     rsync -a data/dl-base-dictionaries/cedict_userdict.txt data/dl-base-dictionaries/cedict_userdict.version "$LAPTOP_DIR/data/dl-base-dictionaries/"
@@ -85,7 +85,7 @@ if [ "$SYNC_DATA" = 1 ]; then
     rsync -a -e "ssh -p $TABLET_PORT -i $TABLET_KEY" \
         data/dictionary-databases/moe-taiwan/moe.sqlite "$TABLET_SSH:$TABLET_DIR/data/dictionary-databases/moe-taiwan/"
     rsync -a -e "ssh -p $TABLET_PORT -i $TABLET_KEY" \
-        data/dictionary-databases/baidu/baidu.sqlite "$TABLET_SSH:$TABLET_DIR/data/dictionary-databases/baidu/"
+        data/dictionary-databases/baidu/baidu_clean.sqlite "$TABLET_SSH:$TABLET_DIR/data/dictionary-databases/baidu/"
     rsync -a -e "ssh -p $TABLET_PORT -i $TABLET_KEY" \
         data/generated-indexes-optimizations/*.sqlite data/generated-indexes-optimizations/segmenter.pickle "$TABLET_SSH:$TABLET_DIR/data/generated-indexes-optimizations/"
 fi

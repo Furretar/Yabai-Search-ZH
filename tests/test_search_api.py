@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 requires_zh_sources = pytest.mark.skipif(
-    not (DATA / "dictionary-databases" / "baidu" / "baidu.sqlite").exists()
+    not (DATA / "dictionary-databases" / "baidu" / "baidu_clean.sqlite").exists()
     or not (DATA / "dictionary-databases" / "zhwiktionary.sqlite").exists(),
     reason="Baidu and Chinese Wiktionary databases not built",
 )
@@ -583,12 +583,51 @@ def test_offset_paginates_wildcard_search(search):
     assert all(word.endswith("字") for word in _words(page0))
 
 
-def test_part_primary_is_cedict_only_and_a_subset(search):
-    """The primary tier is the fast CEDICT-only subset of the full result list."""
+_EVERY_DICTIONARY = "cedict,moe,moe_revised,wiktionary,zhwiktionary,jpwiktionary,baidu,unihan"
+
+
+def test_every_dictionarys_words_are_ranked_together_by_frequency(search):
+    """A word only another dictionary has is ranked by frequency among CC-CEDICT's, not after them all.
+
+    国家机关 (frequency 10,924) is not a CC-CEDICT word; it must come before 国家主席 (12,122), which is.
+    """
+    data = search("国家", dicts=_EVERY_DICTIONARY)
+    words = _words(data)
+    assert "国家机关" in words and "国家主席" in words
+    assert words.index("国家机关") < words.index("国家主席")
+    ranks = [
+        (entry.get("freq") or {}).get("rank")
+        for entry in data["results"]
+        if entry.get("category") == 1 and entry.get("tier") == 2
+    ]
+    ranks = [rank for rank in ranks if rank is not None]
+    assert ranks == sorted(ranks)
+
+
+def test_a_syllable_break_applies_to_every_dictionarys_words(search):
+    """dang'an is dang + an: it must not match dān gān or dàn gǎn, whichever dictionary the word is from."""
+    words = _words(search("dang'an", dicts=_EVERY_DICTIONARY))
+    assert "档案" in words
+    assert "丹干" not in words and "澹澉" not in words and "单干户" not in words
+
+
+def test_results_do_not_depend_on_the_page_size(search):
+    """The first five results are the same whether five or twenty-five are asked for."""
+    small = _words(search("档案", limit=5))
+    large = _words(search("档案", limit=25))
+    assert small == large[:5]
+
+
+def test_part_primary_is_a_fast_subset_of_the_full_list(search):
+    """The primary tier is a quick first answer: never more than the full result list, and part of it.
+
+    Every dictionary's words are rows of the same search table now, so the preview is no longer limited to
+    CEDICT's words.
+    """
     full = search("dan'gan")
     primary = search("dan'gan", part="primary")
     assert primary["pinyin_match"] is True
-    assert len(primary["results"]) < len(full["results"])
+    assert len(primary["results"]) <= len(full["results"])
     assert set(_words(primary)) <= set(_words(full))
 
 
@@ -728,8 +767,9 @@ def test_pinyin_language_query_skips_definition_matches():
     assert pinyin_match is True
     words = [entry["simplified"] for entry in entries]
     assert "巴适" not in words
+    # One matching rule for every dictionary: the letters may sit anywhere in the reading, across syllables.
     assert all(
-        to_toneless(entry["pinyin"]).startswith("sichuan") for entry in entries
+        "sichuan" in to_toneless(entry["pinyin"]).replace(" ", "") for entry in entries
     )
 
 
@@ -987,9 +1027,11 @@ def test_star_puts_the_selected_dictionarys_words_first(search):
     百度汉语 showed words that only CEDICT could define, all under "Other
     dictionaries".
     """
-    everything = _words(search("*", lang="ZH"))
+    # Baidu now lists only words it defines, and most of the frequent ones are in the other dictionaries
+    # too, so the contrast is with a small dictionary (Japanese Wiktionary), not with the default pair.
+    small = _words(search("*", lang="ZH", dicts="jpwiktionary"))
     baidu = _words(search("*", lang="ZH", dicts="baidu"))
-    assert everything != baidu
+    assert small != baidu
     data = search("*", lang="ZH", dicts="baidu", limit=8)
     for entry in data["results"]:
         anchors = {block["anchor"] for block in entry.get("definitions", [])}

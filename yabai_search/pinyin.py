@@ -231,6 +231,55 @@ def split_syllables(chunk: str, syllables: set[str]) -> list[str]:
     return best[length] if best[length] is not None else list(chunk)
 
 
+def _unique_split(chunk: str, syllables: set[str]) -> list[str] | None:
+    """The one fewest-syllable split of a run-together chunk, or None when there is none or more than one.
+
+    "dàngànshì" is dàng + àn + shì or dàn + gàn + shì: both have three syllables and both are valid, so nothing
+    in the text says which is meant, and a wrong guess shows a wrong reading.
+    """
+    length = len(chunk)
+    fewest: list[int | None] = [None] * (length + 1)
+    ways = [0] * (length + 1)  # how many splits reach chunk[:i] with that fewest count
+    back: list[int | None] = [None] * (length + 1)
+    fewest[0], ways[0] = 0, 1
+    for start in range(length):
+        if fewest[start] is None:
+            continue
+        for end in range(start + 1, min(start + 6, length) + 1):
+            if to_toneless(chunk[start:end]) not in syllables:
+                continue
+            count = fewest[start] + 1
+            if fewest[end] is None or count < fewest[end]:
+                fewest[end], ways[end], back[end] = count, ways[start], start
+            elif count == fewest[end]:
+                ways[end] += ways[start]
+    if fewest[length] is None or ways[length] != 1:
+        return None
+    pieces: list[str] = []
+    position = length
+    while position > 0:
+        start = back[position]
+        pieces.append(chunk[start:position])
+        position = start
+    return pieces[::-1]
+
+
+def split_pinyin_unambiguous(text: str, syllables: set[str]) -> str | None:
+    """Like split_pinyin, but only when every run-together chunk has exactly one possible split.
+
+    Returns None when any chunk is ambiguous or cannot be split, so the caller keeps the reading as written.
+    """
+    parts: list[str] = []
+    for chunk in re.split(r"[\s'’\-–]+", text.strip()):
+        if not chunk:
+            continue
+        pieces = _unique_split(chunk, syllables)
+        if pieces is None:
+            return None
+        parts.extend(pieces)
+    return " ".join(parts)
+
+
 def split_pinyin(text: str, syllables: set[str]) -> str:
     """Space out a run-together reading, e.g. 'língcìyuán' -> 'líng cì yuán'.
 

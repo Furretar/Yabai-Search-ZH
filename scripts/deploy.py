@@ -185,7 +185,7 @@ def main() -> int:
                 # dictionaries that have their own folder
                 ([str(p) for p in sorted(dicts.glob("*.sqlite"))], laptop / "data" / "dictionary-databases"),
                 ([str(dicts / "moe-taiwan" / "moe.sqlite")], laptop / "data" / "dictionary-databases" / "moe-taiwan"),
-                ([str(dicts / "baidu" / "baidu.sqlite")], laptop / "data" / "dictionary-databases" / "baidu"),
+                ([str(dicts / "baidu" / "baidu_clean.sqlite")], laptop / "data" / "dictionary-databases" / "baidu"),
                 ([str(p) for p in (data / "dl-base-dictionaries" / "cedict_userdict.txt", data / "dl-base-dictionaries" / "cedict_userdict.version") if p.exists()], laptop / "data" / "dl-base-dictionaries"),
                 ([str(p) for p in sorted(gen.glob("*.sqlite"))] + [str(gen / "segmenter.pickle")], laptop / "data" / "generated-indexes-optimizations"),
             ]

@@ -27,6 +27,7 @@ from yabai_search.overrides import (
     IDS_IMAGES,
     PREFERRED_READINGS,
     TAIWAN_READINGS,
+    NOTE_LABELS,
     normalize_english,
 )
 from yabai_search.pinyin import (
@@ -34,6 +35,7 @@ from yabai_search.pinyin import (
     is_standard_pinyin,
     numeric_to_marked,
     split_pinyin,
+    split_pinyin_unambiguous,
     to_numeric,
     to_toneless,
 )
@@ -247,6 +249,9 @@ TAIWAN_DB_PATH = GENERATED_DIR / "taiwan_readings.sqlite"
 MAIN_READINGS_DB_PATH = GENERATED_DIR / "main_readings.sqlite"
 # Frequency rank and HSK level of every word form (scripts/generate-indexes-optimizations/build_headwords.py).
 HEADWORDS_DB_PATH = GENERATED_DIR / "headwords.sqlite"
+# The unified backbone: CEDICT's tables plus one `entries` row per (word, reading) of every other dictionary's words
+# (scripts/generate-indexes-optimizations/build_entries.py). The main search runs on it when it is current.
+ENTRIES_DB_PATH = GENERATED_DIR / "entries.sqlite"
 
 # Path to the Wiktionary headword list (kaikki.org/Wiktextract), built by
 # scripts/download-dictionaries/import_wiktionary.py.
@@ -265,9 +270,10 @@ ZHWIKTIONARY_DB_PATH = DICTIONARIES_DIR / "zhwiktionary.sqlite"
 # scripts/download-dictionaries/import_jpwiktionary.py.
 JPWIKTIONARY_DB_PATH = DICTIONARIES_DIR / "jpwiktionary.sqlite"
 
-# Path to the Baidu pinyin crawler headwords (300k, CC-CEDICT-unlicensed
-# scrape), built by ~/Desktop/ai/baidu-scraper/scripts/import_baidu.py. Contributes a source chip only.
-BAIDU_DB_PATH = DICTIONARIES_DIR / "baidu" / "baidu.sqlite"
+# The clean Baidu Hanyu database, converted from the base database (data/dl-base-dictionaries/baidu.sqlite, built from
+# the scrape by ~/Desktop/ai/baidu-scraper/scripts/import_baidu.py) by scripts/download-dictionaries/import_baidu.py.
+# The site reads its view `words_with_definition` (every word that has a definition) and `senses_text` (the text of each sense).
+BAIDU_DB_PATH = DICTIONARIES_DIR / "baidu" / "baidu_clean.sqlite"
 
 # Path to the Chinese parts of the Unicode Han Database (Unihan: per-character readings,
 # English glosses, variants, strokes), built by scripts/download-dictionaries/import_unihan.py. Unicode License V3.
@@ -666,6 +672,9 @@ _WIKTIONARY_SENSES_SQL = (
     "WHERE word IN ({ph}) AND gloss IS NOT NULL"
 )
 
+# The reading of a Baidu word: its first, when it lists several ("zhī / zhǐ").
+_BAIDU_FIRST_READING = "CASE WHEN instr(pinyin, ' / ') > 0 THEN substr(pinyin, 1, instr(pinyin, ' / ') - 1) ELSE pinyin END"
+
 _SOURCE_QUERIES = [
     {
         "label": "CC-CEDICT",
@@ -819,25 +828,27 @@ _SOURCE_QUERIES = [
         "anchor": "baidu",
         "lang": "mainland",
         "database": BAIDU_DB_PATH,
-        "sql": "SELECT DISTINCT word FROM headwords WHERE word IN ({ph})",
-        "like_sql": "SELECT DISTINCT word FROM headwords "
+        "sql": "SELECT DISTINCT word FROM words WHERE word IN ({ph})",
+        "like_sql": "SELECT DISTINCT word FROM words "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
         "prefix_sql": "SELECT word, word AS traditional, word AS simplified, "
-                      "'' AS pinyin FROM headwords WHERE word LIKE ? ESCAPE '\\'",
-        "head_fts_sql": "SELECT DISTINCT word FROM headwords "
+                      "'' AS pinyin FROM words WHERE word LIKE ? ESCAPE '\\'",
+        "head_fts_sql": "SELECT DISTINCT word FROM words "
                         "WHERE word LIKE ? ESCAPE '\\'",
-        "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
+        "all_sql": "SELECT DISTINCT word FROM words WHERE word <> ''",
         "repeat": 1,
-        "sense_sql": _SENSES_SQL,
-        "cls_sql": _CLASSIFIERS_SQL,
+        "sense_sql": "SELECT word, position, text, pinyin FROM senses_text WHERE word IN ({ph}) ORDER BY position",
+        # Baidu's classifiers are not stored as such.
+        "cls_sql": "SELECT word, NULL, NULL, '', '' FROM words WHERE word IN ({ph}) AND 0",
         "forms_sql": None,
-        "pinyin_sql": "SELECT '' FROM headwords WHERE word = ? LIMIT 1",
-        "pinyin_batch_sql": "SELECT word, '' FROM headwords "
-                            "WHERE word IN ({ph})",
-        "pinyin_rows_sql": "SELECT word, word, '' FROM headwords "
-                           "WHERE word <> ''",
+        # Baidu's own reading of the word (the first, when it lists several: "zhī / zhǐ").
+        "pinyin_sql": f"SELECT {_BAIDU_FIRST_READING} FROM words WHERE word = ? AND pinyin <> '' LIMIT 1",
+        "pinyin_batch_sql": f"SELECT word, {_BAIDU_FIRST_READING} FROM words "
+                            "WHERE word IN ({ph}) AND pinyin <> ''",
+        "pinyin_rows_sql": f"SELECT word, word, {_BAIDU_FIRST_READING} FROM words "
+                           "WHERE pinyin <> ''",
         "split_pinyin": False,
-        "count_sql": "SELECT COUNT(*) FROM headwords",
+        "count_sql": "SELECT COUNT(*) FROM words",
     },
     {
         # Single characters only: Unihan has no words. Senses are its short English glosses.
@@ -878,6 +889,13 @@ _SOURCE_QUERIES = [
 # entry in _SOURCE_QUERIES (what it contains) plus one here (how it is treated); nothing else lists dictionaries.
 #   order             position among the dictionaries shown first (the others follow, by language)
 #   lookup_url        a page where the word can be looked up at the dictionary's own site (the page links to it)
+#   lookup_url_char   the same for a single character, when the site has a different page for it (Baidu)
+#   sense_style       how the page splits its definitions: "part_of_speech" (a leading "(副词)" becomes a subheader) or
+#                     "labels" (a leading "(literary)" becomes a small note, "Classifier for ..." goes under a subheader)
+#   sense_classifier  "Classifier for ..." glosses go under a "Classifier" subheader (Wiktionary)
+#   (the labels themselves are NOTE_LABELS in overrides.py)
+#   script_keys       True when its senses are stored under both the traditional and the simplified spelling and a
+#                     row combines them (see _attach_definitions)
 #   head_grams        name of its headword gram index in gram_words.sqlite (it is a negative filter, so a
 #                     dictionary with one must be listed here)
 #   definition_grams  True when its definitions are in definition_grams.sqlite (quoted-phrase search)
@@ -901,11 +919,12 @@ _SOURCE_TRAITS: dict[str, dict] = {
         "supplies_forms": True, "supplies_notes": True, "shared_groups": True,
         "backbone": True, "clean_english": True, "reading_filtered": True, "matches_row_text": True,
         "lookup_url": "https://cc-cedict.org/editor/editor.php?handler=QueryDictionary&querydictionary_search=",
+        "sense_style": "labels",
     },
     "wiktionary": {
         "order": 1, "head_grams": "wikt_head", "gram_texts": "wikt_gloss", "definition_grams": True,
         "english_text": True, "source_gloss": True, "fts": "_has_wiktionary_fts",
-        "lookup_url": "https://en.wiktionary.org/wiki/",
+        "lookup_url": "https://en.wiktionary.org/wiki/", "sense_style": "labels", "sense_classifier": True,
         # Wiktionary can store a gloss on a different traditional spelling of the same simplified word
         # (e.g. 寧為 vs 寧爲); these rows attach it under the simplified key too.
         "variant_sense_sql": (
@@ -930,7 +949,14 @@ _SOURCE_TRAITS: dict[str, dict] = {
         "head_grams": "jpwikt_head", "definition_grams": True, "fts": "_has_jpwiktionary_fts",
         "lookup_url": "https://ja.wiktionary.org/wiki/",
     },
-    "baidu": {"head_grams": "baidu_head"},
+    # Baidu keeps a character's definitions per reading under the simplified form (只: zhī and zhǐ) and the
+    # traditional spellings (隻, 衹, 祇, 秖) as pages of their own; "script_keys" combines the two for a row.
+    "baidu": {
+        "head_grams": "baidu_head", "reading_filtered": True, "script_keys": True, "sense_style": "part_of_speech",
+        # A single character has its own page (hanyu-page/zici); a word has a different one.
+        "lookup_url": "https://hanyu.baidu.com/hanyu-page/term/detail?ptype=zici&wd=",
+        "lookup_url_char": "https://hanyu.baidu.com/hanyu-page/zici/s?ptype=zici&wd=",
+    },
     "unihan": {"definition_grams": True},
 }
 for _source in _SOURCE_QUERIES:
@@ -969,6 +995,7 @@ def source_databases(trait: str) -> dict[str, Path]:
 #   definitions          (word, text): every definition text, in the dictionary's own row order (scan_definitions
 #                        can ask for word order)
 #   visible_definitions  optional: the same trimmed to the visible definition (what a quoted search matches)
+#   entry_readings       optional: like `readings`, for building the unified entries table (the simplified form too)
 #   readings             optional: (word, simplified or NULL, pinyin[, english]) rows; without it the
 #                        registry's `pinyin_rows_sql` is used
 #   requires             optional: SQL that must return a row, or the dictionary is skipped (a table it needs)
@@ -985,6 +1012,8 @@ _SOURCE_SCANS: dict[str, dict[str, str]] = {
         # A headword with no gloss has nothing to show, so it is not listed.
         "listed_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL",
         "reading_words": "SELECT word FROM readings WHERE pinyin <> '' AND kind = 'mandarin'",
+        # The same readings with the simplified form the dictionary stores for each word (for the entries table).
+        "entry_readings": "SELECT word, simplified, pinyin FROM readings WHERE kind = 'mandarin' AND pinyin <> ''",
         # Dialect-only readings (Wu, Xiang, ...) become tier 4; the app falls back to one only when the word
         # has no Mandarin reading, so the Mandarin set is subtracted later.
         "dialect_words": "SELECT DISTINCT word FROM readings WHERE pinyin <> '' AND kind <> 'mandarin'",
@@ -1035,9 +1064,10 @@ _SOURCE_SCANS: dict[str, dict[str, str]] = {
         "definitions": "SELECT word, text FROM senses WHERE text <> ''",
     },
     "baidu": {
-        # Baidu lists all of its headwords, including the ones with no definition.
-        "listed_words": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
-        "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''", "headwords": "SELECT word FROM headwords ORDER BY word"},
+        # The clean database keeps only words that have something; the site lists those that have a definition.
+        "listed_words": "SELECT DISTINCT word FROM words WHERE word <> ''",
+        "defined_words": "SELECT DISTINCT word FROM senses_text WHERE text <> ''",
+        "headwords": "SELECT word FROM words ORDER BY word"},
     "unihan": {
         "listed_words": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
         "reading_words": "SELECT word FROM chars WHERE mandarin IS NOT NULL AND mandarin <> ''",
@@ -1098,13 +1128,19 @@ def scan_definitions(source: dict, visible: bool = False, by_word: bool = False)
         yield word, text
 
 
-def scan_readings(source: dict) -> Iterator[tuple[str, str, str, str]]:
+def scan_readings(source: dict, for_entries: bool = False) -> Iterator[tuple[str, str, str, str]]:
     """(word, simplified, marked pinyin, note text or "") for every reading a dictionary lists (the note text is the definition text, which may note a Taiwan pronunciation).
 
     The rows come in three shapes: (word, simplified, pinyin, english) from a CEDICT-style table whose
     pinyin is already marked, (word, simplified or NULL, pinyin) and (word, pinyin) from the others.
     """
-    records = _scan(source, "readings") if "readings" in _SOURCE_SCANS.get(source["anchor"], {}) else _scan_pinyin_rows(source)
+    scan = _SOURCE_SCANS.get(source["anchor"], {})
+    if for_entries and "entry_readings" in scan:
+        records = _scan(source, "entry_readings")
+    elif "readings" in scan:
+        records = _scan(source, "readings")
+    else:
+        records = _scan_pinyin_rows(source)
     for record in records:
         word = record[0]
         if len(record) == 4:
@@ -1113,7 +1149,9 @@ def scan_readings(source: dict) -> Iterator[tuple[str, str, str, str]]:
         else:
             simplified = record[1] if len(record) > 2 else None
             pinyin, english = record[-1], ""
-            marked = _split_pinyin(pinyin) if pinyin and source.get("split_pinyin") else pinyin
+            # Some dictionaries write a reading without spaces ("guójiā"); every consumer needs the syllables apart.
+            # Only a reading with exactly one possible split is spaced; an ambiguous one stays as written.
+            marked = (split_pinyin_unambiguous(pinyin, _cedict_syllables()) or pinyin) if pinyin else pinyin
         if not word or not pinyin:
             continue
         yield word, simplified or to_simplified(word), marked, english or ""
@@ -1177,6 +1215,7 @@ def data_version() -> str:
     paths.extend(
         [
             TAIWAN_DB_PATH,
+            ENTRIES_DB_PATH,
             FREQ_DB_PATH,
             HSK_DB_PATH,
             ENGLISH_WORDS_DB_PATH,
@@ -1590,6 +1629,12 @@ def dictionaries() -> list[dict]:
             item["hidden"] = True
         if source.get("lookup_url"):
             item["lookup_url"] = source["lookup_url"]
+        if source.get("lookup_url_char"):
+            item["lookup_url_char"] = source["lookup_url_char"]
+        if source.get("sense_style"):
+            item["sense_style"] = source["sense_style"]
+        if source.get("sense_classifier"):
+            item["sense_classifier"] = True
         for capability in ("supplies_forms", "supplies_notes", "shared_groups"):
             if source.get(capability):
                 item[capability] = True
@@ -1639,13 +1684,13 @@ _TAIWAN_EXCEPTIONS = gen_taiwan_readings.TAIWAN_EXCEPTIONS
 
 
 def connect() -> sqlite3.Connection:
-    """The pooled CEDICT connection, with MOE and the frequency list attached.
+    """The pooled connection to the main search's table, with MOE and the frequency list attached.
 
     Rows behave like dicts; the MOE database is attached as "moe" (when
     present) so a query can also match Taiwan readings. The frequency
     list is attached as "wordfreq" (queries read `wordfreq.freq`).
     """
-    connection = _connect(DB_PATH)
+    connection = _connect(backbone_path())
     # Row factory lets us read columns by name, e.g. row["pinyin"].
     connection.row_factory = sqlite3.Row
     # Attach once per (thread-local) connection. Every call used to take the
@@ -1671,7 +1716,8 @@ def _reading_counts() -> dict[str, int]:
     """
     global _reading_count_cache
     if _reading_count_cache is None:
-        connection = connect()
+        connection = _connect(DB_PATH)  # CEDICT's own rows, not the unified table
+        connection.row_factory = sqlite3.Row
         try:
             rows = connection.execute(
                 "SELECT traditional, COUNT(DISTINCT pinyin) AS n "
@@ -2006,10 +2052,18 @@ def _taiwan_has_trigram() -> bool:
 
 # FROM clause that gives every CEDICT row its prefilled Taiwan reading. The
 # columns are prefixed tw_ so they never clash with those of `entries`.
-_TW_CEDICT_FROM = (
-    "entries JOIN tw.readings ON tw_source = 'cedict' "
-    "AND tw_word = entries.traditional AND tw_mainland = entries.pinyin"
-)
+def _tw_entries_from() -> tuple[str, str]:
+    """(FROM clause, WHERE condition) joining the main search's rows to their prefilled Taiwan readings.
+
+    A row is joined to the Taiwan readings of the dictionary it came from (the unified table says which); on
+    CEDICT's own table every row is CEDICT's.
+    """
+    source = "entries.source" if unified_entries_ready() else "'cedict'"
+    return (
+        f"entries JOIN tw.readings ON tw_source = {source} "
+        "AND tw_word = entries.traditional AND tw_mainland = entries.pinyin",
+        "1 = 1" if unified_entries_ready() else "tw_source = 'cedict'",
+    )
 
 
 def _taiwan_lookup(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], str | None]:
@@ -2080,6 +2134,7 @@ def taiwan_signature() -> str:
         parts.append("pinyin")
     # Every rule (and the exceptions list and the Taiwan-note pattern) is in gen_taiwan_readings.py.
     parts.append(inspect.getsource(gen_taiwan_readings))
+    parts.append(_readings_code())
     parts.append(_json.dumps(TAIWAN_READINGS, ensure_ascii=False, sort_keys=True))
     for source in _SOURCE_QUERIES:
         parts.append(f"{source['anchor']}={_file_change_stamp(source['database'])}")
@@ -2115,6 +2170,7 @@ def main_readings_signature() -> str:
     for name in ("_reading_counts",):
         parts.append(inspect.getsource(globals()[name]))
     parts.append(inspect.getsource(gen_taiwan_readings))
+    parts.append(_readings_code())
     builder = Path(__file__).resolve().parents[1] / "scripts" / "generate-indexes-optimizations" / "build_main_readings.py"
     parts.append(builder.read_text(encoding="utf-8") if builder.exists() else "builder")
     parts.append(_json.dumps(PREFERRED_READINGS, ensure_ascii=False, sort_keys=True))
@@ -2167,6 +2223,77 @@ def headwords_table_status() -> str:
 def _headwords_ok() -> bool:
     """True when headwords.sqlite was built from the current inputs (regenerate_everything.py --check)."""
     return headwords_table_status() == "ok"
+
+
+def entries_signature() -> str:
+    """Fingerprint of everything entries.sqlite is derived from: CEDICT, every other dictionary, the scans and the builder."""
+    import inspect
+    import json as _json
+
+    builder = Path(__file__).resolve().parents[1] / "scripts" / "generate-indexes-optimizations" / "build_entries.py"
+    parts = [
+        builder.read_text(encoding="utf-8") if builder.exists() else "builder",
+        _json.dumps(_SOURCE_SCANS, sort_keys=True, ensure_ascii=False),
+        f"cedict={_file_change_stamp(DB_PATH)}",
+        f"freq={_file_change_stamp(FREQ_DB_PATH)}",
+    ]
+    for source in _SOURCE_QUERIES:
+        parts.append(f"{source['anchor']}={_file_change_stamp(source['database'])}")
+    parts.append(inspect.getsource(to_numeric) + inspect.getsource(to_toneless))
+    parts.append(_readings_code())
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _readings_code() -> str:
+    """The source of the code that turns a dictionary's reading rows into the readings every index stores."""
+    import inspect
+
+    from yabai_search import pinyin as _pinyin_module
+
+    return "\n".join(
+        inspect.getsource(function)
+        for function in (scan_readings, _scan_pinyin_rows, _cedict_syllables, _pinyin_module.split_pinyin_unambiguous, _pinyin_module._unique_split)
+    )
+
+
+def entries_table_status() -> str:
+    """"ok", "missing" or "stale" for entries.sqlite."""
+    if not ENTRIES_DB_PATH.exists():
+        return "missing"
+    connection = _connect(ENTRIES_DB_PATH)
+    try:
+        row = connection.execute("SELECT value FROM meta WHERE key = 'signature'").fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        connection.close()
+    return "ok" if row and row[0] == entries_signature() else "stale"
+
+
+def _entries_ok() -> bool:
+    """True when entries.sqlite was built from the current inputs (regenerate_everything.py --check)."""
+    return entries_table_status() == "ok"
+
+
+_unified_ready_cache: bool | None = None
+
+
+def unified_entries_ready() -> bool:
+    """True when the main search can run on the unified entries table (checked once per process).
+
+    YABAI_UNIFIED_ENTRIES=0 turns it off: the search then runs on CEDICT's own table, as before.
+    """
+    global _unified_ready_cache
+    if _unified_ready_cache is None:
+        _unified_ready_cache = (
+            os.environ.get("YABAI_UNIFIED_ENTRIES", "1") != "0" and entries_table_status() == "ok"
+        )
+    return _unified_ready_cache
+
+
+def backbone_path() -> Path:
+    """The database file the main search runs on: the unified table when current, else CEDICT's."""
+    return ENTRIES_DB_PATH if unified_entries_ready() else DB_PATH
 
 
 _headwords_ready_cache: bool | None = None
@@ -2393,11 +2520,6 @@ def _attach_hsk(entries: list[dict]) -> list[dict]:
     return entries
 
 
-# Cap on the number of definitions shown per source, per headword (keeps a common
-# word from dumping dozens of Wiktionary glosses).
-_MAX_DEFS = 12
-
-
 # Inline pronunciation notes, e.g. "(Taiwan pr. [gong1])" or "; also pr. [x]".
 # The UI shows these as separate detail rows, so drop them from the sense text.
 _PRON_NOTE_RE = re.compile(
@@ -2570,7 +2692,7 @@ def _set_variant_fields(entries: list[dict], form_rows_all: list[tuple]) -> list
     return entries
 
 
-_SENSE_COUNTS_VERSION = 4  # 4: counts are glosses (";"-separated), not grouped senses
+_SENSE_COUNTS_VERSION = 5  # 5: counts are not capped at 12; 4: glosses (";"-separated), not grouped senses
 _sense_counts_ok_cache: bool | None = None
 
 
@@ -2635,7 +2757,7 @@ def build_sense_counts(
         connection.close()
 
     stored = [
-        (word, reading or "", min(count, _MAX_DEFS), raw)
+        (word, reading or "", count, raw)
         for word, reading, count, raw in rows
         if count or raw
     ]
@@ -2737,7 +2859,7 @@ def _cedict_reading_counts(words: list[str]) -> dict[str, dict[str, int]]:
                 # separates a surname ("Gān", 1 sense) from the word ("gān",
                 # 12 senses), and the representative reading is chosen by these
                 # counts.
-                counts.setdefault(word, {})[reading or ""] = min(count, _MAX_DEFS)
+                counts.setdefault(word, {})[reading or ""] = count
     finally:
         connection.close()
     return counts
@@ -2871,6 +2993,37 @@ def _own_readings(
     return own, pooled
 
 
+def _with_simplified_senses(
+    mapping: dict[str, list[tuple[str, str]]],
+    entry: dict,
+    values: list[tuple[str, str]],
+    pooled_readings: set,
+) -> list[tuple[str, str]]:
+    """Add the senses stored under the simplified spelling to a traditional spelling's own page.
+
+    Baidu has one page for 只 (zhī and zhǐ senses) and further pages for 隻, 衹, 祇 and 秖. The page of 隻 lacks the
+    modern senses that only the 只 page lists under zhī, so a row for 隻 [zhī] takes this reading's senses from
+    the 只 page too (the ones its own page does not repeat come first). Where one reading is shared by several
+    spellings (只 zhī: 隻 and 秖), the group goes only to a spelling whose own page repeats some of it: no spelling
+    is guessed from nothing, and the others keep their own page. A spelling with no page of its own is left to the
+    usual lookup.
+    """
+    traditional, simplified = entry["traditional"], entry["simplified"]
+    if traditional == simplified or traditional not in mapping or simplified not in mapping:
+        return values
+    key = reading_key(entry.get("pinyin", ""))
+    group = [v for v in mapping[simplified] if reading_key(v[0]) == key]
+    if not group:
+        return values
+    own = mapping[traditional]
+    own_texts = {v[1] for v in own}
+    if (simplified, key) in pooled_readings and not any(v[1] in own_texts for v in group):
+        # The group belongs to another spelling that shares this reading (隻, not 秖): this one keeps its own page
+        # even when Baidu files it under another reading (秖 is zhǐ there, zhī in CC-CEDICT).
+        return list(own)
+    return [v for v in group if v[1] not in own_texts] + list(own)
+
+
 def _attach_definitions(entries: list[dict]) -> list[dict]:
     """Set entry["definitions"] to each dictionary's senses and classifiers.
 
@@ -2992,6 +3145,10 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
         for source in _SOURCE_QUERIES:
             anchor = source["anchor"]
             headword, values = for_senses(senses[anchor], entry)
+            if source.get("script_keys"):
+                values = _with_simplified_senses(
+                    senses[anchor], entry, values, pooled_readings
+                )
             if source.get("reading_filtered") and values:
                 # Only this spelling's own readings (see `_own_readings`). Never
                 # filter down to nothing: a reading we cannot match keeps all.
@@ -3036,8 +3193,6 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                         index[key] = []
                         groups.append({"pinyin": key, "senses": index[key]})
                     index[key].append(text)
-                for group in groups:
-                    group["senses"] = group["senses"][:_MAX_DEFS]
                 # Show the pronunciation with the most senses first (e.g. 術
                 # shù before zhú). Python's sort is stable, so equal counts keep
                 # the dictionary's own order.
@@ -3049,8 +3204,8 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                         "lang": source["lang"],
                         "headword": headword or _cls_headword or entry["simplified"],
                         "groups": groups,
-                        "defs": [text for _reading, text in values[:_MAX_DEFS]],
-                        "classifiers": clss[:_MAX_DEFS],
+                        "defs": [text for _reading, text in values],
+                        "classifiers": clss,
                     }
                 )
         entry["definitions"] = defs
@@ -3088,7 +3243,7 @@ def _cedict_syllables() -> set[str]:
     """Every toneless pinyin syllable CEDICT uses, cached."""
     global _cedict_syllable_cache
     if _cedict_syllable_cache is None:
-        connection = connect()
+        connection = _connect(DB_PATH)  # CEDICT's own, correctly spaced readings, never the unified table's
         try:
             rows = connection.execute("SELECT pinyin FROM entries").fetchall()
         finally:
@@ -3943,7 +4098,7 @@ def _cedict_heads() -> set[str]:
     """Every distinct CEDICT headword, traditional and simplified, cached."""
     global _cedict_heads_cache
     if _cedict_heads_cache is None:
-        connection = connect()
+        connection = _connect(DB_PATH)  # CEDICT's own rows, not the unified table
         try:
             rows = connection.execute(
                 "SELECT traditional FROM entries "
@@ -3976,6 +4131,9 @@ def _source_only_entries(
 ) -> list[dict]:
     """Headwords that only the secondary sources (or the frequency list) have.
 
+    With the unified entries table (see build_entries.py) those words are ordinary rows of the main search, so
+    there is nothing to add here and this returns nothing.
+
     Search results normally come from CEDICT alone. This finds matching headwords
     in the other source databases plus the frequency list, so a word CEDICT lacks
     is still searchable. The rows are CEDICT-shaped (simplified/traditional/
@@ -3987,6 +4145,8 @@ def _source_only_entries(
     `exact=True` matches the whole word only, which is what the parsed-input
     lookup needs.
     """
+    if unified_entries_ready():
+        return []
     text = (query or "").strip()
     if not text:
         return []
@@ -4374,6 +4534,8 @@ def _source_pinyin_entries(
     `keep_rank` retains `_search_rank`; `taiwan` matches prefilled Taiwan
     readings.
     """
+    if unified_entries_ready():
+        return []  # the other dictionaries' readings are rows of the main search table now
     entries = [
         dict(entry)
         for entry in _source_pinyin_raw(query, limit, taiwan and _taiwan_ready())
@@ -4670,7 +4832,7 @@ def _source_gloss_version_ok() -> bool:
 
 
 def _head_grams_version_ok() -> bool:
-    """True when head_grams.sqlite was built from the current CEDICT."""
+    """True when head_grams.sqlite was built from the table the main search runs on (the unified one or CEDICT's)."""
     global _head_grams_ok_cache
     if _head_grams_ok_cache is not None:
         return _head_grams_ok_cache
@@ -4680,7 +4842,7 @@ def _head_grams_version_ok() -> bool:
     connection = _connect(HEAD_GRAMS_DB_PATH)
     try:
         row = connection.execute(
-            "SELECT value FROM meta WHERE key = 'cedict_sha256'"
+            "SELECT value FROM meta WHERE key = 'backbone_sha256'"
         ).fetchone()
     except sqlite3.Error:
         row = None
@@ -4689,11 +4851,11 @@ def _head_grams_version_ok() -> bool:
     if not row:
         _head_grams_ok_cache = False
         return False
-    digest = _file_sha256(DB_PATH)
+    digest = _file_sha256(backbone_path())
     _head_grams_ok_cache = digest == row[0]
     if not _head_grams_ok_cache:
         print(
-            "head_grams.sqlite is stale for the current CEDICT; "
+            "head_grams.sqlite is stale for the current search table; "
             "using the headword scan",
             file=sys.stderr,
         )
@@ -6119,7 +6281,7 @@ def _build_all_headwords_list() -> list[str]:
     raw headwords would display fewer rows after the pairs are merged.
     """
     global _all_headwords_cache
-    connection = connect()
+    connection = _connect(DB_PATH)  # CEDICT's own variants map, whatever the backbone is
     try:
         # What each dictionary contributes comes from its scans (db._SOURCE_SCANS); nothing here names one.
         listed: set[str] = set()  # every headword the list takes
@@ -6172,10 +6334,7 @@ def _build_all_headwords_list() -> list[str]:
 
         freq_rank: dict[str, int] = {}
         if FREQ_DB_PATH.exists():
-            freq_rank = {
-                row[0]: row[1]
-                for row in connection.execute("SELECT word, rank FROM wordfreq.freq")
-            }
+            freq_rank = dict(_connect(FREQ_DB_PATH).execute("SELECT word, rank FROM freq").fetchall())
     finally:
         connection.close()
     seen: set[str] = set()
@@ -6441,12 +6600,16 @@ def prefix_entries(query: str, anchor: str, limit: int = 25) -> list[dict]:
             rows = _fetchall(
                 connection,
                 "SELECT simplified, traditional, pinyin, english, english_normalized "
-                "FROM entries WHERE "
+                "FROM entries WHERE ("
                 + " OR ".join(clauses)
+                + ")"
+                # The fast first tier previews one dictionary: the unified table's rows from the others are left
+                # for the full search.
+                + (" AND source = ?" if unified_entries_ready() else "")
                 + " ORDER BY "
                 + ", ".join(order)
                 + " LIMIT ?",
-                [*params, *exact_params, limit],
+                [*params, *([anchor] if unified_entries_ready() else []), *exact_params, limit],
                 "primary_prefix",
             )
         finally:
@@ -7743,6 +7906,7 @@ def _tw_cedict_rows(
         if exclude is not None:
             where += " AND tw_toneless NOT LIKE ? ESCAPE '\\'"
             params += (exclude,)
+    tw_from, tw_where = _tw_entries_from()
     return _fetchall(
         connection,
         "SELECT entries.id AS id, entries.simplified AS simplified, "
@@ -7750,7 +7914,7 @@ def _tw_cedict_rows(
         "tw_numeric AS pinyin_numeric, 0 AS alt, "
         # NULL when the rank column was never built (small test databases).
         f"{_freq_rank_select('entries.')} AS freq_rank "
-        f"FROM {_TW_CEDICT_FROM} WHERE tw_source = 'cedict' AND {where}",
+        f"FROM {tw_from} WHERE {tw_where} AND {where}",
         params,
         "pinyin_lookup_taiwan",
     )
@@ -8173,14 +8337,15 @@ def _search_core(
                 # Taiwan toggle: match the prefilled Taiwan reading of EVERY CEDICT
                 # row (a whole reading first, then readings that start with the
                 # query), so the candidates and the displayed reading agree.
+                tw_from, tw_where = _tw_entries_from()
                 rows = _fetchall(
                     connection,
                     "SELECT entries.simplified AS simplified, "
                     "entries.traditional AS traditional, entries.pinyin AS pinyin, "
                     "entries.english AS english, "
                     "entries.english_normalized AS english_normalized "
-                    f"FROM {_TW_CEDICT_FROM} "
-                    "WHERE tw_source = 'cedict' AND tw_toneless LIKE ? ESCAPE '\\' "
+                    f"FROM {tw_from} "
+                    f"WHERE {tw_where} AND tw_toneless LIKE ? ESCAPE '\\' "
                     "ORDER BY (tw_toneless = ?) DESC"
                     f"{freq_clause}, length(entries.simplified), entries.id LIMIT ?",
                     (pattern, pinyin_key, limit),
@@ -8232,14 +8397,15 @@ def _search_core(
                     else:
                         tw_contains = "tw_toneless LIKE ? ESCAPE '\\'"
                         tw_params = (contains_pattern,)
+                    tw_from, tw_where = _tw_entries_from()
                     rows += _fetchall(
                         connection,
                         "SELECT entries.simplified AS simplified, "
                         "entries.traditional AS traditional, "
                         "entries.pinyin AS pinyin, entries.english AS english, "
                         "entries.english_normalized AS english_normalized "
-                        f"FROM {_TW_CEDICT_FROM} "
-                        f"WHERE tw_source = 'cedict' AND {tw_contains} "
+                        f"FROM {tw_from} "
+                        f"WHERE {tw_where} AND {tw_contains} "
                         "AND tw_toneless NOT LIKE ? ESCAPE '\\' "
                         f"ORDER BY {tw_order} LIMIT ?",
                         (*tw_params, pattern, limit),

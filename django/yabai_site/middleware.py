@@ -67,13 +67,18 @@ def _is_private(address: str) -> bool:
 _PUBLIC_DOMAIN = "yabaisearch.org"
 
 
+# POST endpoints that only compute from the posted text (no cookie, nothing stored), so a host page opened directly
+# can use them: without them a sentence searched on tabs.yabaisearch.org was never parsed (/api/annotate gave 403).
+_OWN_HOST_COMPUTE_POSTS = ("/api/annotate", "/api/convert-batch")
+
+
 def _is_own_host_page(request) -> bool:
     """True for a read of this machine's own <node>.yabaisearch.org name.
 
     YABAI_REPL_NODE is the role from deploy/run.sh (laptop, pc, tabs, tabs2).
     Each host tunnel is reachable directly at that name, but it has no Worker
-    secret. Allowing GET/HEAD lets you open and pin a host page directly;
-    everything else still needs the Worker or a private-network connection.
+    secret. Allowing GET/HEAD lets you open and pin a host page directly, and the two read-only POSTs the
+    page itself makes (_OWN_HOST_COMPUTE_POSTS); everything else still needs the Worker or a private-network connection.
     """
     node = os.environ.get("YABAI_REPL_NODE", "").strip().lower()
     if not node:
@@ -100,7 +105,10 @@ class OriginSecretMiddleware:
     def __call__(self, request):
         if self.secret:
             sent = request.META.get("HTTP_X_ORIGIN_SECRET", "")
-            own_page = request.method in ("GET", "HEAD") and _is_own_host_page(request)
+            own_page = _is_own_host_page(request) and (
+                request.method in ("GET", "HEAD")
+                or (request.method == "POST" and request.path in _OWN_HOST_COMPUTE_POSTS)
+            )
             if not (
                 hmac.compare_digest(sent, self.secret)
                 or _is_private(client_ip(request))
