@@ -55,8 +55,7 @@ DROP TABLE IF EXISTS wiktionary;
 CREATE TABLE wiktionary (
     id    INTEGER PRIMARY KEY,  -- auto row id
     word  TEXT NOT NULL,        -- a headword listed by Wiktionary
-    gloss TEXT,                 -- one English gloss (NULL when the word has none)
-    wikipedia INTEGER NOT NULL DEFAULT 0  -- 1 = a Chinese Wikipedia title; the gloss is its English title
+    gloss TEXT                  -- one English gloss (NULL when the word has none)
 );
 
 CREATE INDEX idx_wiktionary_word ON wiktionary(word);
@@ -558,14 +557,20 @@ def build(source: Path, db_path: Path) -> None:
         "  WHERE kind = 'mandarin' AND is_cedict = 0"
         ") WHERE rn = 1 ORDER BY id"
     )
-    # Chinese Wikipedia titles that have an English title (_wikipedia_titles.py): the title is the gloss. They are
-    # flagged so word lists and the segmenter can leave them out, and kept out of the full-text index.
-    wiki_rows = [(title, f"{english} (Wikipedia)") for title, english in _wikipedia_titles.rows("en")]
-    connection.executemany("INSERT INTO wiktionary (word, gloss, wikipedia) VALUES (?, ?, 1)", wiki_rows)
-    print(f"  Wikipedia: {len(wiki_rows):,} titles with an English title added")
-    connection.execute(
-        "INSERT INTO wiktionary_fts (rowid, word, gloss) SELECT id, word, gloss FROM wiktionary WHERE wikipedia = 0"
+    # Chinese Wikipedia titles that have an English title (_wikipedia_titles.py), once, in their own table; the view
+    # wiktionary_all adds them as glosses "English title (Wikipedia)" for the app (db.py). `wiktionary` itself stays
+    # Wiktionary-only, so word lists, the segmenter and the full-text index never see them.
+    connection.executescript(
+        "DROP VIEW IF EXISTS wiktionary_all; DROP TABLE IF EXISTS wikipedia;"
+        "CREATE TABLE wikipedia (title TEXT PRIMARY KEY COLLATE NOCASE, en TEXT NOT NULL) WITHOUT ROWID;"
     )
+    connection.executemany("INSERT OR IGNORE INTO wikipedia(title, en) VALUES (?, ?)", _wikipedia_titles.rows("en"))
+    connection.execute(
+        "CREATE VIEW wiktionary_all AS SELECT word, gloss FROM wiktionary "
+        "UNION ALL SELECT title, en || ' (Wikipedia)' FROM wikipedia"
+    )
+    print(f"  Wikipedia: {connection.execute('SELECT COUNT(*) FROM wikipedia').fetchone()[0]:,} titles with an English title added")
+    connection.execute("INSERT INTO wiktionary_fts (wiktionary_fts) VALUES ('rebuild')")
     connection.commit()
     connection.execute("VACUUM")  # repack the file compactly
     words = connection.execute("SELECT count(DISTINCT word) FROM wiktionary").fetchone()[0]

@@ -56,12 +56,8 @@ CREATE TABLE headwords (
     word        TEXT PRIMARY KEY,
     traditional TEXT NOT NULL,
     simplified  TEXT NOT NULL,
-    pinyin      TEXT NOT NULL DEFAULT '',
-    wikipedia   INTEGER NOT NULL DEFAULT 0  -- 1 = only a Chinese Wikipedia title, no Wiktionary entry
+    pinyin      TEXT NOT NULL DEFAULT ''
 );
--- LIKE 'x%' (the headword prefix search) can only use an index whose collation is NOCASE; without this it
--- scanned all 2.7 million Wikipedia titles, 260 ms per search.
-CREATE INDEX idx_headwords_word_nocase ON headwords(word COLLATE NOCASE);
 CREATE INDEX idx_headwords_traditional ON headwords(traditional);
 CREATE INDEX idx_headwords_simplified ON headwords(simplified);
 
@@ -242,33 +238,29 @@ def read_pages(path: Path):
         stream.close()
 
 
-def add_wikipedia_titles(connection, readings: dict[str, str]) -> int:
-    """Every Chinese Wikipedia title as a headword (see _wikipedia_titles.py), with no sense.
+def add_wikipedia_titles(connection) -> int:
+    """Every Chinese Wikipedia title (see _wikipedia_titles.py) as a headword with no definition.
 
-    A title the Wiktionary already has is left alone. A new one is a headword only: the result shows the
-    source chip and no definition, which is how a word the source merely lists is already displayed. They
-    are flagged wikipedia = 1 so the segmenter and word lists skip them, and they are not in senses_fts.
-    Both script columns hold the title as written (a search matches either script through its variants).
+    The titles live once, in their own table, not in `headwords`: a title there is stored three times (word,
+    traditional, simplified) plus four indexes, which made the database 14 times larger than the titles. The
+    view headwords_all is `headwords` plus the titles a Wiktionary entry does not already cover; the app reads it
+    for lookups and prefix search (db.py), so the segmenter and word lists, which read `headwords`, never see them.
+    The key is NOCASE so a LIKE 'x%' prefix search can use it.
     """
-    known = {row[0] for row in connection.execute("SELECT word FROM headwords")}
-    batch: list[tuple[str, str, str, str]] = []
-    added = 0
-    for title, _translation in _wikipedia_titles.rows():
-        if title in known:
-            continue
-        batch.append((title, title, title, readings.get(title, "")))
-        if len(batch) == 100000:
-            connection.executemany(
-                "INSERT OR IGNORE INTO headwords(word, traditional, simplified, pinyin, wikipedia) VALUES (?, ?, ?, ?, 1)",
-                batch,
-            )
-            added += len(batch)
-            batch = []
-    connection.executemany(
-        "INSERT OR IGNORE INTO headwords(word, traditional, simplified, pinyin, wikipedia) VALUES (?, ?, ?, ?, 1)",
-        batch,
+    connection.executescript(
+        "DROP VIEW IF EXISTS headwords_all; DROP TABLE IF EXISTS wikipedia;"
+        "CREATE TABLE wikipedia (title TEXT PRIMARY KEY COLLATE NOCASE) WITHOUT ROWID;"
     )
-    return added + len(batch)
+    known = {row[0] for row in connection.execute("SELECT word FROM headwords")}
+    connection.executemany(
+        "INSERT OR IGNORE INTO wikipedia(title) VALUES (?)",
+        ((title,) for title, _translation in _wikipedia_titles.rows() if title not in known),
+    )
+    connection.execute(
+        "CREATE VIEW headwords_all AS SELECT word, traditional, simplified, pinyin FROM headwords "
+        "UNION ALL SELECT title, title, title, '' FROM wikipedia"
+    )
+    return connection.execute("SELECT COUNT(*) FROM wikipedia").fetchone()[0]
 
 
 def main() -> None:
@@ -347,7 +339,7 @@ def main() -> None:
                     f"{senses:,} senses ({time.time() - started:.0f}s)",
                     file=sys.stderr,
                 )
-        wiki = add_wikipedia_titles(connection, readings)
+        wiki = add_wikipedia_titles(connection)
         connection.execute(
             "INSERT INTO meta(key, value) VALUES ('updated', ?)",
             (datetime.date.today().isoformat(),),

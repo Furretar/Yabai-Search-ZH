@@ -101,8 +101,7 @@ CREATE TABLE headwords (
     word        TEXT PRIMARY KEY,
     traditional TEXT NOT NULL,
     simplified  TEXT NOT NULL,
-    pinyin      TEXT NOT NULL DEFAULT '',
-    wikipedia   INTEGER NOT NULL DEFAULT 0  -- 1 = only a Chinese Wikipedia title (the sense is its Japanese title)
+    pinyin      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX idx_headwords_traditional ON headwords(traditional);
 CREATE INDEX idx_headwords_simplified ON headwords(simplified);
@@ -239,22 +238,22 @@ def main() -> None:
                     f"{senses:,} senses ({time.time() - started:.0f}s)",
                     file=sys.stderr,
                 )
-        # Chinese Wikipedia titles with a Japanese title (_wikipedia_titles.py): the title is the sense. A word the
-        # Wiktionary already has gains it at the end. Kept out of senses_fts and flagged for the word lists.
-        known = {row[0] for row in connection.execute("SELECT word FROM headwords")}
-        wiki = 0
-        for title, japanese in _wikipedia_titles.rows("ja"):
-            if title not in known:
-                connection.execute(
-                    "INSERT INTO headwords(word, traditional, simplified, pinyin, wikipedia) VALUES (?, ?, ?, '', 1)",
-                    (title, title, title),
-                )
-                known.add(title)
-                position = 1
-            else:
-                position = connection.execute("SELECT COALESCE(MAX(position), 0) + 1 FROM senses WHERE word = ?", (title,)).fetchone()[0]
-            connection.execute("INSERT INTO senses(word, position, text, reading) VALUES (?, ?, ?, '')", (title, position, f"{japanese}（ウィキペディア）"))
-            wiki += 1
+        # Chinese Wikipedia titles with a Japanese title (_wikipedia_titles.py), once, in their own table. The views
+        # add them to the headwords and senses the app reads (db.py); `headwords` and `senses` stay Wiktionary-only,
+        # so the segmenter and word lists never see the titles. The key is NOCASE so a LIKE 'x%' prefix search uses it.
+        connection.executescript(
+            "DROP VIEW IF EXISTS headwords_all; DROP VIEW IF EXISTS senses_all; DROP TABLE IF EXISTS wikipedia;"
+            "CREATE TABLE wikipedia (title TEXT PRIMARY KEY COLLATE NOCASE, ja TEXT NOT NULL) WITHOUT ROWID;"
+        )
+        connection.executemany("INSERT OR IGNORE INTO wikipedia(title, ja) VALUES (?, ?)", _wikipedia_titles.rows("ja"))
+        connection.executescript(
+            "CREATE VIEW headwords_all AS SELECT word, traditional, simplified, pinyin FROM headwords "
+            "UNION ALL SELECT title, title, title, '' FROM wikipedia WHERE title NOT IN (SELECT word FROM headwords);"
+            # After every Wiktionary sense (position 1000000), as a note of where the title comes from.
+            "CREATE VIEW senses_all AS SELECT word, position, text, reading FROM senses "
+            "UNION ALL SELECT title, 1000000, ja || '（ウィキペディア）', '' FROM wikipedia;"
+        )
+        wiki = connection.execute("SELECT COUNT(*) FROM wikipedia").fetchone()[0]
         print(f"  Wikipedia: {wiki:,} titles with a Japanese title added", file=sys.stderr)
         connection.execute(
             "INSERT INTO meta(key, value) VALUES ('updated', ?)",
