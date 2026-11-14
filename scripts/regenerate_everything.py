@@ -65,7 +65,7 @@ STEPS: list[Step] = [
     Step("search_index", "build_search_index.py", "the sorted '*' headword list and the sources that define each word", [OUT / "search_index.sqlite"]),
     Step("segmenter", "build_segmenter.py", "the text parser's word list and its cache", [OUT / "segmenter.pickle", ROOT / "data" / "dl-base-dictionaries" / "cedict_userdict.txt"]),
     Step("static_assets", "build_static.py", "minified page scripts and stylesheet (esbuild)", [ROOT / "yabai_search" / "static" / "min" / "manifest.json"]),
-    Step("result_cache", "build_result_cache.py", "ranked lists of the heaviest searches (top 1000 searches, about 5 minutes; --searches in the script raises it)", [OUT / "result_cache.sqlite"], optional=True),
+    Step("result_cache", "build_result_cache.py", "ranked lists of the heaviest searches (the slowest searches: one- and two-letter pinyin starts; the script's --scope top adds the most searched queries)", [OUT / "result_cache.sqlite"], optional=True),
 ]
 BY_NAME = {step.name: step for step in STEPS}
 

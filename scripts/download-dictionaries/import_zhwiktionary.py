@@ -12,6 +12,7 @@ Usage (from the project root):
 
 from __future__ import annotations
 
+import _wikipedia_titles
 import argparse
 import bz2
 import datetime
@@ -55,8 +56,12 @@ CREATE TABLE headwords (
     word        TEXT PRIMARY KEY,
     traditional TEXT NOT NULL,
     simplified  TEXT NOT NULL,
-    pinyin      TEXT NOT NULL DEFAULT ''
+    pinyin      TEXT NOT NULL DEFAULT '',
+    wikipedia   INTEGER NOT NULL DEFAULT 0  -- 1 = only a Chinese Wikipedia title, no Wiktionary entry
 );
+-- LIKE 'x%' (the headword prefix search) can only use an index whose collation is NOCASE; without this it
+-- scanned all 2.7 million Wikipedia titles, 260 ms per search.
+CREATE INDEX idx_headwords_word_nocase ON headwords(word COLLATE NOCASE);
 CREATE INDEX idx_headwords_traditional ON headwords(traditional);
 CREATE INDEX idx_headwords_simplified ON headwords(simplified);
 
@@ -237,6 +242,35 @@ def read_pages(path: Path):
         stream.close()
 
 
+def add_wikipedia_titles(connection, readings: dict[str, str]) -> int:
+    """Every Chinese Wikipedia title as a headword (see _wikipedia_titles.py), with no sense.
+
+    A title the Wiktionary already has is left alone. A new one is a headword only: the result shows the
+    source chip and no definition, which is how a word the source merely lists is already displayed. They
+    are flagged wikipedia = 1 so the segmenter and word lists skip them, and they are not in senses_fts.
+    Both script columns hold the title as written (a search matches either script through its variants).
+    """
+    known = {row[0] for row in connection.execute("SELECT word FROM headwords")}
+    batch: list[tuple[str, str, str, str]] = []
+    added = 0
+    for title, _translation in _wikipedia_titles.rows():
+        if title in known:
+            continue
+        batch.append((title, title, title, readings.get(title, "")))
+        if len(batch) == 100000:
+            connection.executemany(
+                "INSERT OR IGNORE INTO headwords(word, traditional, simplified, pinyin, wikipedia) VALUES (?, ?, ?, ?, 1)",
+                batch,
+            )
+            added += len(batch)
+            batch = []
+    connection.executemany(
+        "INSERT OR IGNORE INTO headwords(word, traditional, simplified, pinyin, wikipedia) VALUES (?, ?, ?, ?, 1)",
+        batch,
+    )
+    return added + len(batch)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_CACHE)
@@ -247,6 +281,8 @@ def main() -> None:
 
     if not args.input.exists() or args.force:
         download(args.url, args.input)
+    if args.force:
+        _wikipedia_titles.build(force=True)  # newer Wikipedia dumps too
 
     to_simplified = OpenCC("t2s").convert
     to_traditional = OpenCC("s2t").convert
@@ -311,12 +347,14 @@ def main() -> None:
                     f"{senses:,} senses ({time.time() - started:.0f}s)",
                     file=sys.stderr,
                 )
+        wiki = add_wikipedia_titles(connection, readings)
         connection.execute(
             "INSERT INTO meta(key, value) VALUES ('updated', ?)",
             (datetime.date.today().isoformat(),),
         )
         connection.commit()
         connection.execute("VACUUM")
+        print(f"  Wikipedia: {wiki:,} titles added as headwords", file=sys.stderr)
         print(
             f"done: {headwords:,} headwords, {senses:,} senses "
             f"from {seen_pages:,} pages",

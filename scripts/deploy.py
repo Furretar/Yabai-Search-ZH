@@ -67,7 +67,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="show every step and command, change nothing")
     parser.add_argument("--allow-dirty", action="store_true", help="deploy even with uncommitted changes (they will NOT ship)")
     parser.add_argument("--no-regenerate", action="store_true", help="only check the generated files, do not rebuild them")
-    parser.add_argument("--result-cache", action="store_true", help="also rebuild the precomputed search results (slow: only for a big release)")
+    parser.add_argument("--no-result-cache", action="store_true", help="do not rebuild the precomputed slowest searches (the one- and two-letter pinyin starts)")
     parser.add_argument("--pc", action="store_true", help="with --method all: restart the Windows scheduled task")
     args = parser.parse_args()
 
@@ -123,7 +123,7 @@ def main() -> int:
     regen = [sys.executable, str(HERE / "regenerate_everything.py")]
     if args.no_regenerate or dry:
         regen += ["--check"]
-    if not args.result_cache:
+    if args.no_result_cache:
         regen += ["--no-result-cache"]
     code, _ = log.run(regen, prefix="regenerate")
     if code and not dry:

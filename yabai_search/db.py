@@ -725,14 +725,14 @@ _SOURCE_QUERIES = [
                      "SELECT word FROM wiktionary UNION SELECT word FROM readings"
                      ") WHERE word IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM wiktionary "
-                    "WHERE word LIKE ? ESCAPE '\\' AND gloss IS NOT NULL "
+                    "WHERE word LIKE ? ESCAPE '\\' AND gloss IS NOT NULL AND wikipedia = 0 "
                     "ORDER BY word",
         # The same headword search through the trigram index, for queries of
         # three or more characters (the index covers the word column too).
         "like_sql_fts": "SELECT DISTINCT word FROM wiktionary_fts "
                         "WHERE word LIKE ? AND gloss IS NOT NULL "
                         "ORDER BY word",
-        "all_sql": "SELECT DISTINCT word FROM wiktionary WHERE word <> ''",
+        "all_sql": "SELECT DISTINCT word FROM wiktionary WHERE word <> '' AND wikipedia = 0",
         "repeat": 1,
         "pinyin_sql": "SELECT pinyin FROM readings WHERE word = ? "
                       "AND kind = 'mandarin' AND pinyin <> '' ORDER BY id LIMIT 1",
@@ -778,10 +778,12 @@ _SOURCE_QUERIES = [
         # The trigram senses_fts table indexes the headword column too.
         "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
                         "WHERE word LIKE ? ORDER BY word",
-        "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
-        "segment_sql": "SELECT word FROM headwords "
-                       "UNION SELECT traditional FROM headwords "
-                       "UNION SELECT simplified FROM headwords",
+        "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> '' AND wikipedia = 0",
+        # Wikipedia-only titles (wikipedia = 1) stay out of the segmenter: millions of article names
+        # would swell the word list and cut sentences at the wrong places.
+        "segment_sql": "SELECT word FROM headwords WHERE wikipedia = 0 "
+                       "UNION SELECT traditional FROM headwords WHERE wikipedia = 0 "
+                       "UNION SELECT simplified FROM headwords WHERE wikipedia = 0",
         "repeat": 1,
         "sense_sql": _SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
@@ -807,10 +809,10 @@ _SOURCE_QUERIES = [
         # See the Chinese Wiktionary source above.
         "head_fts_sql": "SELECT DISTINCT word FROM senses_fts "
                         "WHERE word LIKE ? ORDER BY word",
-        "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> ''",
-        "segment_sql": "SELECT word FROM headwords "
-                       "UNION SELECT traditional FROM headwords "
-                       "UNION SELECT simplified FROM headwords",
+        "all_sql": "SELECT DISTINCT word FROM headwords WHERE word <> '' AND wikipedia = 0",
+        "segment_sql": "SELECT word FROM headwords WHERE wikipedia = 0 "
+                       "UNION SELECT traditional FROM headwords WHERE wikipedia = 0 "
+                       "UNION SELECT simplified FROM headwords WHERE wikipedia = 0",
         "repeat": 1,
         "sense_sql": _JP_SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
@@ -1008,9 +1010,9 @@ _SOURCE_SCANS: dict[str, dict[str, str]] = {
         "readings": "SELECT traditional, simplified, pinyin, english_normalized FROM entries WHERE pinyin <> ''",
     },
     "wiktionary": {
-        "defined_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL",
+        "defined_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL AND wikipedia = 0",
         # A headword with no gloss has nothing to show, so it is not listed.
-        "listed_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL",
+        "listed_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL AND wikipedia = 0",
         "reading_words": "SELECT word FROM readings WHERE pinyin <> '' AND kind = 'mandarin'",
         # The same readings with the simplified form the dictionary stores for each word (for the entries table).
         "entry_readings": "SELECT word, simplified, pinyin FROM readings WHERE kind = 'mandarin' AND pinyin <> ''",
@@ -1020,10 +1022,10 @@ _SOURCE_SCANS: dict[str, dict[str, str]] = {
         # Wiktionary also stores some glosses under another spelling of the same simplified word (黨群 vs 黨羣).
         "variant_words": (
             "SELECT DISTINCT r.simplified FROM readings r JOIN wiktionary w ON w.word = r.word "
-            "WHERE w.gloss IS NOT NULL AND r.simplified IS NOT NULL"
+            "WHERE w.gloss IS NOT NULL AND w.wikipedia = 0 AND r.simplified IS NOT NULL"
         ),
-        "headwords": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL ORDER BY word",
-        "definitions": "SELECT word, gloss FROM wiktionary WHERE gloss IS NOT NULL AND gloss <> ''",
+        "headwords": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL AND wikipedia = 0 ORDER BY word",
+        "definitions": "SELECT word, gloss FROM wiktionary WHERE gloss IS NOT NULL AND gloss <> '' AND wikipedia = 0",
         # Mandarin readings only; the dialect readings have no Taiwan form.
         "readings": "SELECT word, NULL, pinyin FROM readings WHERE kind = 'mandarin' AND pinyin <> ''",
     },
@@ -5026,7 +5028,7 @@ def _source_gloss_entries(query: str, limit: int = 20) -> list[dict]:
             rows = _fetchall(
                 connection,
                 "SELECT DISTINCT word FROM wiktionary "
-                "WHERE gloss IS NOT NULL AND lower(gloss) LIKE ? ESCAPE '\\' LIMIT ?",
+                "WHERE gloss IS NOT NULL AND wikipedia = 0 AND lower(gloss) LIKE ? ESCAPE '\\' LIMIT ?",
                 (_like_pattern(f"*{text_lower}*"), scan_limit),
                 "gloss_scan",
             )

@@ -18,6 +18,7 @@ Usage (from the project root):
 from __future__ import annotations
 
 import argparse
+import re
 import multiprocessing
 import os
 import sqlite3
@@ -86,6 +87,11 @@ def queries(chars: int) -> list[tuple[str, int]]:
                 add(numeric, score)
         for toneless, score in syllable_scores.items():
             add(toneless, score)
+            # A one- or two-letter start of a syllable ("a", "sh") matches tens of thousands of
+            # rows: these are the slowest searches (10-40 s cold), far slower than any whole syllable.
+            for size in (1, 2):
+                if len(toneless) > size:
+                    add(toneless[:size], score)
     finally:
         connection.close()
     ranked = sorted(scored, key=lambda text: (scored[text], text))
@@ -126,8 +132,11 @@ def main() -> None:
     parser.add_argument("--chars", type=int, default=1000)
     parser.add_argument("--jobs", type=int, default=max(1, min(8, (os.cpu_count() or 2) // 2)),
                         help="worker processes (default: half the cores, at most 8, so the machine stays usable)")
+    parser.add_argument("--scope", choices=["slow", "top"], default="slow",
+                        help="slow (default): only the one- and two-letter pinyin starts, the slowest searches; "
+                             "top: the --searches most searched queries of every kind")
     parser.add_argument("--searches", type=int, default=1000,
-                        help="how many of the most searched queries to precompute (all three languages counted together)")
+                        help="with --scope top: how many of the most searched queries to precompute (all three languages counted together)")
     parser.add_argument("--min-ms", type=float, default=60.0)
     parser.add_argument("--max-mb", type=float, default=200.0, help="size budget of the shipped file")
     args = parser.parse_args()
@@ -151,7 +160,10 @@ def main() -> None:
         for word, rank in words
     ]
     jobs.sort(key=lambda job: job[0])   # most searched first
-    jobs = jobs[: args.searches]
+    if args.scope == "slow":
+        jobs = [job for job in jobs if re.fullmatch(r"[a-z]{1,2}", job[1])]
+    else:
+        jobs = jobs[: args.searches]
     started = time.time()
     temp = result_cache.SHIPPED_PATH.with_suffix(".tmp")
     temp.parent.mkdir(parents=True, exist_ok=True)

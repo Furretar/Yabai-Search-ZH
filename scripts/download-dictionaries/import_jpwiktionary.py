@@ -12,6 +12,7 @@ Usage (from the project root):
 
 from __future__ import annotations
 
+import _wikipedia_titles
 import argparse
 import datetime
 import re
@@ -100,7 +101,8 @@ CREATE TABLE headwords (
     word        TEXT PRIMARY KEY,
     traditional TEXT NOT NULL,
     simplified  TEXT NOT NULL,
-    pinyin      TEXT NOT NULL DEFAULT ''
+    pinyin      TEXT NOT NULL DEFAULT '',
+    wikipedia   INTEGER NOT NULL DEFAULT 0  -- 1 = only a Chinese Wikipedia title (the sense is its Japanese title)
 );
 CREATE INDEX idx_headwords_traditional ON headwords(traditional);
 CREATE INDEX idx_headwords_simplified ON headwords(simplified);
@@ -157,6 +159,8 @@ def main() -> None:
 
     if not args.input.exists() or args.force:
         download(args.url, args.input)
+    if args.force:
+        _wikipedia_titles.build(force=True)
 
     syllables = cedict_syllables()
     connection = sqlite3.connect(args.database)
@@ -235,6 +239,23 @@ def main() -> None:
                     f"{senses:,} senses ({time.time() - started:.0f}s)",
                     file=sys.stderr,
                 )
+        # Chinese Wikipedia titles with a Japanese title (_wikipedia_titles.py): the title is the sense. A word the
+        # Wiktionary already has gains it at the end. Kept out of senses_fts and flagged for the word lists.
+        known = {row[0] for row in connection.execute("SELECT word FROM headwords")}
+        wiki = 0
+        for title, japanese in _wikipedia_titles.rows("ja"):
+            if title not in known:
+                connection.execute(
+                    "INSERT INTO headwords(word, traditional, simplified, pinyin, wikipedia) VALUES (?, ?, ?, '', 1)",
+                    (title, title, title),
+                )
+                known.add(title)
+                position = 1
+            else:
+                position = connection.execute("SELECT COALESCE(MAX(position), 0) + 1 FROM senses WHERE word = ?", (title,)).fetchone()[0]
+            connection.execute("INSERT INTO senses(word, position, text, reading) VALUES (?, ?, ?, '')", (title, position, f"{japanese}（ウィキペディア）"))
+            wiki += 1
+        print(f"  Wikipedia: {wiki:,} titles with a Japanese title added", file=sys.stderr)
         connection.execute(
             "INSERT INTO meta(key, value) VALUES ('updated', ?)",
             (datetime.date.today().isoformat(),),

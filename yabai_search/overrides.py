@@ -34,6 +34,8 @@ PREFERRED_READINGS: dict[str, str] = {
 # parenthesis moves only when each of its comma-separated parts (or parts joined by " or ") is listed: "(Cantonese,
 # slang)" and "(literary or dialectal)" move, "(literary, located)" does not.
 NOTE_LABELS: set[str] = {
+    # where a gloss came from: the Chinese Wikipedia article's English title (import_wiktionary.py)
+    "wikipedia",
     # register and style
     "literary", "colloquial", "slang", "internet slang", "fandom slang", "archaic", "obsolete",
     "obsolete on its own in standard chinese", "dated", "historical", "historical dictionaries only", "old",

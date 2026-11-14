@@ -19,6 +19,7 @@ Usage (from the project root):
 
 from __future__ import annotations
 
+import _wikipedia_titles
 import argparse
 import gzip
 import json
@@ -54,7 +55,8 @@ DROP TABLE IF EXISTS wiktionary;
 CREATE TABLE wiktionary (
     id    INTEGER PRIMARY KEY,  -- auto row id
     word  TEXT NOT NULL,        -- a headword listed by Wiktionary
-    gloss TEXT                  -- one English gloss (NULL when the word has none)
+    gloss TEXT,                 -- one English gloss (NULL when the word has none)
+    wikipedia INTEGER NOT NULL DEFAULT 0  -- 1 = a Chinese Wikipedia title; the gloss is its English title
 );
 
 CREATE INDEX idx_wiktionary_word ON wiktionary(word);
@@ -556,7 +558,14 @@ def build(source: Path, db_path: Path) -> None:
         "  WHERE kind = 'mandarin' AND is_cedict = 0"
         ") WHERE rn = 1 ORDER BY id"
     )
-    connection.execute("INSERT INTO wiktionary_fts (wiktionary_fts) VALUES ('rebuild')")
+    # Chinese Wikipedia titles that have an English title (_wikipedia_titles.py): the title is the gloss. They are
+    # flagged so word lists and the segmenter can leave them out, and kept out of the full-text index.
+    wiki_rows = [(title, f"{english} (Wikipedia)") for title, english in _wikipedia_titles.rows("en")]
+    connection.executemany("INSERT INTO wiktionary (word, gloss, wikipedia) VALUES (?, ?, 1)", wiki_rows)
+    print(f"  Wikipedia: {len(wiki_rows):,} titles with an English title added")
+    connection.execute(
+        "INSERT INTO wiktionary_fts (rowid, word, gloss) SELECT id, word, gloss FROM wiktionary WHERE wikipedia = 0"
+    )
     connection.commit()
     connection.execute("VACUUM")  # repack the file compactly
     words = connection.execute("SELECT count(DISTINCT word) FROM wiktionary").fetchone()[0]
@@ -587,6 +596,8 @@ def main() -> int:
         if args.force or not source.exists():
             download(args.url, source)
 
+    if args.force:
+        _wikipedia_titles.build(force=True)  # read newer Wikipedia dumps too
     build(source, args.db)
     return 0
 
