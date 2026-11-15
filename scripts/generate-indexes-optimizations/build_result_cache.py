@@ -26,6 +26,7 @@ import sys
 import time
 from pathlib import Path
 
+CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff\U00020000-\U0003134f]")
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "django"))  # the Django project (yabai_site) lives in ./django
@@ -135,6 +136,8 @@ def main() -> None:
     parser.add_argument("--scope", choices=["slow", "top"], default="slow",
                         help="slow (default): only the one- and two-letter pinyin starts, the slowest searches; "
                              "top: the --searches most searched queries of every kind")
+    parser.add_argument("--slow-chars", type=int, default=150,
+                        help="with --scope slow: how many of the commonest single characters to precompute")
     parser.add_argument("--searches", type=int, default=1000,
                         help="with --scope top: how many of the most searched queries to precompute (all three languages counted together)")
     parser.add_argument("--min-ms", type=float, default=60.0)
@@ -161,7 +164,10 @@ def main() -> None:
     ]
     jobs.sort(key=lambda job: job[0])   # most searched first
     if args.scope == "slow":
-        jobs = [job for job in jobs if re.fullmatch(r"[a-z]{1,2}", job[1])]
+        # The one- and two-letter pinyin starts, and the commonest single characters: with every Wikipedia and
+        # Baidu title in the index a common character matches over 100,000 rows (5-10 s cold).
+        chars = [job for job in jobs if len(job[1]) == 1 and CJK_RE.fullmatch(job[1])][: args.slow_chars * 3 * 2]
+        jobs = [job for job in jobs if re.fullmatch(r"[a-z]{1,2}", job[1])] + chars
     else:
         jobs = jobs[: args.searches]
     started = time.time()

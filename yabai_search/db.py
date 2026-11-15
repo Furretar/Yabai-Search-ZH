@@ -720,7 +720,7 @@ _SOURCE_QUERIES = [
                "WHERE word IN ({ph}) AND gloss IS NOT NULL",
         # The words whose only entry here is a Chinese Wikipedia title (the page links the article, not Wiktionary).
         "wikipedia_sql": "SELECT title FROM wikipedia WHERE title IN ({ph}) "
-                         "AND title NOT IN (SELECT word FROM wiktionary WHERE gloss IS NOT NULL)",
+                         "AND NOT EXISTS (SELECT 1 FROM wiktionary w WHERE w.word = wikipedia.title AND w.gloss IS NOT NULL)",
         # Membership without the gloss filter: a headword with no definition can
         # still get its source chip when it is the only result. A reading-only
         # row (no headword/gloss) still means Wiktionary lists the word.
@@ -803,7 +803,7 @@ _SOURCE_QUERIES = [
         "lang": "japanese",
         "database": JPWIKTIONARY_DB_PATH,
         "sql": "SELECT DISTINCT word FROM headwords_all WHERE word IN ({ph})",
-        "wikipedia_sql": "SELECT title FROM wikipedia WHERE title IN ({ph}) AND title NOT IN (SELECT word FROM senses)",
+        "wikipedia_sql": "SELECT title FROM wikipedia WHERE title IN ({ph}) AND NOT EXISTS (SELECT 1 FROM senses s WHERE s.word = wikipedia.title)",
         "like_sql": "SELECT DISTINCT word FROM headwords_all "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
         # Prefix-only lookup for the fast first response.
@@ -1351,6 +1351,21 @@ def search_index_status() -> dict:
         "path": str(SEARCH_INDEX_DB_PATH),
         "reason": "" if ready else "missing or stale",
     }
+
+
+def _load_def_anchors() -> None:
+    """Read just the dictionary order of the definers bit masks from the search index (cheap)."""
+    global _def_anchors
+    if _def_anchors or not _search_index_ok():
+        return
+    connection = _connect(SEARCH_INDEX_DB_PATH)
+    try:
+        row = connection.execute("SELECT value FROM meta WHERE key = 'def_anchors'").fetchone()
+    except sqlite3.Error:
+        return
+    finally:
+        connection.close()
+    _def_anchors = row[0].split(",") if row and row[0] else []
 
 
 def _load_headwords_from_index() -> tuple[list[str], list[int], list[int]] | None:
@@ -3208,9 +3223,10 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                     cls["simplified"] or "", ""
                 )
 
-    wikipedia_only = {source["anchor"]: _wikipedia_only_words(source, words) for source in _SOURCE_QUERIES}
     for entry in entries:
         defs = []
+        # Which sources only have a Chinese Wikipedia title for this word (flagged on its chips by _attach_sources).
+        wikipedia_anchors = {chip["anchor"] for chip in entry.get("sources") or [] if chip.get("wikipedia")}
         for source in _SOURCE_QUERIES:
             anchor = source["anchor"]
             headword, values = for_senses(senses[anchor], entry)
@@ -3275,7 +3291,7 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                     "defs": [text for _reading, text in values],
                     "classifiers": clss,
                 }
-                if block["headword"] in wikipedia_only[anchor]:
+                if anchor in wikipedia_anchors:
                     block["wikipedia"] = True  # only a Chinese Wikipedia title: the page links the article
                 defs.append(block)
         entry["definitions"] = defs
@@ -6497,7 +6513,7 @@ def definer_masks(words: Iterable[str]) -> dict[str, int] | None:
     """
     if not _search_index_ok():
         return None
-    _all_headwords_list()  # loads _def_anchors from the index
+    _load_def_anchors()  # the bit order only: not the whole 2.6-million-word "*" list (that took 2 s of a first search)
     if not _def_anchors:
         return None
     wanted = sorted(set(words))
@@ -7177,39 +7193,32 @@ def _or_masks(masks: Iterable[int]) -> int:
 
 
 def _listed_by_unselected_only(entries: list[dict], indexes: list[int], selected: Collection[str]) -> set[int]:
-    """Which of the given entries (by index) are listed by a dictionary outside the selection and by none inside it.
+    """Which of the given entries (by index) come from a dictionary outside the selection.
 
-    A headword with no definition anywhere still has a source chip. When every dictionary that lists it is one the
-    user did not select (a Baidu headword, a Chinese Wikipedia title), it belongs under "Other Dictionaries" with
-    the rows those dictionaries define, not among the selected dictionaries' own words.
+    A headword with no definition anywhere still has a source (the `source` column of the entries table: the first
+    dictionary that listed it). When that dictionary is one the user did not select (a Baidu headword, a Chinese
+    Wikipedia title), the row belongs under "Other Dictionaries" with the rows those dictionaries define, not among
+    the selected dictionaries' own words. One primary-key query per 900 rows.
     """
-    if not indexes:
+    ids = {indexes[n]: entries[indexes[n]].get("id") for n in range(len(indexes)) if isinstance(entries[indexes[n]].get("id"), int)}
+    if not ids:
         return set()
-    words = sorted(
-        {entries[i][key] for i in indexes for key in ("traditional", "simplified") if entries[i].get(key)}
-    )
-    holes = ",".join("?" * len(words))
-    inside: set[str] = set()
-    outside: set[str] = set()
-    for source in _SOURCE_QUERIES:
-        if "database" not in source or not (source.get("heads_sql") or source.get("sql")) or not _source_present(source):
-            continue
-        connection = _connect(source["database"])
-        try:
-            rows = connection.execute(
-                (source.get("heads_sql") or source["sql"]).format(ph=holes), tuple(words) * source.get("repeat", 1)
-            ).fetchall()
-        except sqlite3.Error:
-            continue
-        finally:
-            connection.close()
-        (inside if source["anchor"] in selected else outside).update(row[0] for row in rows)
-    return {
-        i
-        for i in indexes
-        if any(entries[i].get(key) in outside for key in ("traditional", "simplified"))
-        and not any(entries[i].get(key) in inside for key in ("traditional", "simplified"))
-    }
+    by_id = {entry_id: index for index, entry_id in ids.items()}
+    other: set[int] = set()
+    connection = connect()
+    try:
+        wanted = list(by_id)
+        for start in range(0, len(wanted), 900):
+            chunk = wanted[start : start + 900]
+            holes = ",".join("?" * len(chunk))
+            for entry_id, source in connection.execute(f"SELECT id, source FROM entries WHERE id IN ({holes})", chunk):
+                if source not in selected:
+                    other.add(by_id[entry_id])
+    except sqlite3.Error:
+        return set()
+    finally:
+        connection.close()
+    return other
 
 
 def rank_by_category(

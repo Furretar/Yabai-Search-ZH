@@ -165,9 +165,9 @@ CEDICT has entries that are cross-references, e.g. `血 [xiě] /see 血[xuè]/`.
 
 Taiwanese Mandarin is mostly the same as Mainland Mandarin, with a handful of different pronunciations for words and characters, and slightly different word usage.
 
-The Taiwanese Ministry of Education publishes dictionaries of Taiwanese Mandarin. 2 of these are used as sources for Yabai Search: the concise version `國語辭典簡編本`, and the comprehensive version `重編國語辭典修訂本`.
+The Taiwanese Ministry of Education publishes dictionaries of Taiwanese Mandarin, the concise version `國語辭典簡編本`, and the comprehensive version `重編國語辭典修訂本`. Yabai search uses `重編國語辭典修訂本` as its source. The comprehensive version contains a lot more information and details about classical Chinese, so the concise version is used to sort the most useful results to the top of the definition list. 
 
-When the Taiwanese pronunciation toggle is turned on, matched readings from the Taiwanese dictionaries are shown instead. If there are no matches in Taiwanese Dictionaries but CEDICT lists a Taiwanese Pronunciation, the CEDICT Taiwanese pronunciation is used.
+When the Taiwanese pronunciation toggle is turned on, matched readings from the Taiwanese dictionaries are shown instead. If there are no matches in Taiwanese dictionaries, but CEDICT lists a Taiwanese pronunciation, the CEDICT Taiwanese pronunciation is used.
 
 There are many characters in Taiwanese Mandarin that are always pronounced a certain way. There is not a detailed list of these, so all single character words with only 1 listed reading have their readings mapped onto all characters that only have 1 listed reading in the Chinese-English dictionaries.
 
@@ -180,19 +180,29 @@ This method is mostly accurate, but the Taiwanese readings displayed are not gua
 ### English
 
 - <span id="cedict"></span>**[CC-CEDICT](https://www.mdbg.net/chinese/dictionary?page=cedict)**
-  125,271 entries · CC BY-SA 4.0 · Updated 2026-10-23
+  125,271 entries · CC BY-SA 4.0 · Updated 2026-11-13
     - An open-source Chinese-English dictionary project.
 
 - <span id="wiktionary"></span>**[Wiktionary](https://en.wiktionary.org/)**
-  272,848 entries · CC BY-SA 4.0 / GFDL · Updated 2026-10-18
+  272,848 entries · CC BY-SA 4.0 / GFDL · Updated 2026-11-15
     - Chinese entries from the Wiktionary. English definitions, usage notes and etymology, from [kaikki.org](https://kaikki.org/dictionary/Chinese/).
+    - Also lists 680,005 Chinese Wikipedia article titles with their English title as the definition, marked "(Wikipedia)" (see Wikipedia below).
+
+- <span id="unihan"></span>**[Unihan](https://www.unicode.org/charts/unihan.html)**
+  102,999 characters · Unicode License V3 · Unicode 18.0 · Updated 2026-07-31
+    - The Unicode Han database: every Han character with its readings and short English definitions.
 
 
 ### Mainland
 
 - <span id="zhwiktionary"></span>**[中文维基词典](https://zh.wiktionary.org/)**
-  55,538 entries · CC BY-SA 4.0 · Updated 2026-10-18
+  55,538 entries · CC BY-SA 4.0 · Updated 2026-11-15
     - Chinese-language definitions from the community-built Chinese Wiktionary.
+    - Also lists 2,085,373 Chinese Wikipedia article titles as headwords without a definition (see Wikipedia below).
+
+- <span id="baidu"></span>**[百度汉语](https://hanyu.baidu.com/)**
+  632,834 headwords, 322,485 with definitions · © Baidu · Updated 2026-11-15
+    - Chinese-language definitions for words, idioms and single characters, with readings, parts of speech and character details, collected from Baidu Hanyu. Headwords Baidu has no definition for are still listed. Definitions and examples that are classical Chinese are kept in the database but not shown.
 
 
 ### Taiwan
@@ -209,19 +219,24 @@ This method is mostly accurate, but the Taiwanese readings displayed are not gua
 ### Japanese
 
 - <span id="jpwiktionary"></span>**[ウィクショナリー](https://ja.wiktionary.org/)**
-  16,342 entries · CC BY-SA 4.0 · Updated 2026-10-18
+  16,342 entries · CC BY-SA 4.0 · Updated 2026-11-15
     - Chinese headwords with Japanese-language definitions from Japanese Wiktionary.
+    - Also lists 332,512 Chinese Wikipedia article titles with their Japanese title as the definition, marked "(ウィキペディア)" (see Wikipedia below).
+
+
+### Wikipedia
+
+- <span id="wikipedia"></span>**[Chinese Wikipedia](https://zh.wikipedia.org/)**
+  2,107,028 article and redirect titles · CC BY-SA 4.0 · Updated 2026-11-15
+    - Only the titles and their English and Japanese titles (from the official [Wikimedia dumps](https://dumps.wikimedia.org/zhwiki/latest/)), added to the three Wiktionary sources above so proper nouns, works and place names can be found. A word that is only a Wikipedia title links to its article on zh.wikipedia.org.
+    - Titles written with Latin letters or digits are left out. Wikipedia titles are not used to cut sentences into words.
 
 
 ### Frequency
 
 - <span id="fineweb2-frequency"></span>**[FineWeb2 Mandarin Frequency List](https://github.com/Furretar/FineWeb2-Mandarin-Frequency-List)**
-   270,160 entries · ODC-BY corpus · Updated 2026-10-27
-    - A frequency list we developed using 20GB of the FineWeb2 corpus.
-
-- <span id="subtlex"></span>**[SUBTLEX-CH](https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexch)**
-  99,121 words · CC BY 4.0 · Updated 2026-10-16
-    - Chinese word frequencies from film and TV subtitles (Cai & Brysbaert, 2010). Used to develop the FineWeb2 Mandarin Frequency List.
+  499,308 words (571,823 spellings) · ODC-BY corpus · Updated 2026-11-15
+    - A frequency list we developed from 20GB of the FineWeb2 corpus, counting words found in the dictionaries above (Baidu Hanyu's headwords included). SUBTLEX-CH (Cai & Brysbaert, 2010, CC BY 4.0) was used to develop it.
 
 
 ### Vocabulary
@@ -257,7 +272,6 @@ The local host will change if another host is at least 20% faster for longer tha
 - add audio to details page
 - add example sentences
 - ai generate missing definitions for jp and en
-- regenerate the frequency list with baidu headwords
 - remove lines like filepaths, check if i should push deploy directory to github 
 
 ---
