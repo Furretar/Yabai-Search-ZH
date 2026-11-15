@@ -667,6 +667,39 @@ def test_primary_preview_rows_all_have_a_source(client):
     assert [row["simplified"] for row in rows if not row.get("sources")] == []
 
 
+@requires_zh_sources
+def test_headwords_only_unselected_dictionaries_list_go_under_other_dictionaries(search):
+    """A headword with no definition that only Baidu lists is "Other Dictionaries" when Baidu is not selected."""
+    data = search("脱困", dicts="cedict,wiktionary,unihan", lang="EN")
+    baidu_only = [row for row in data["results"] if [s["anchor"] for s in row["sources"]] == ["baidu"]]
+    assert baidu_only
+    assert {row["category"] for row in baidu_only} == {2}
+    # With Baidu selected they are the selected dictionary's own words, not "Other".
+    selected = search("脱困", dicts="cedict,wiktionary,unihan,baidu", lang="EN")
+    assert all(row["category"] != 2 for row in selected["results"] if [s["anchor"] for s in row["sources"]] == ["baidu"])
+
+
+@requires_zh_sources
+def test_wikipedia_only_words_are_flagged_for_the_article_link(search):
+    """A word that is only a Chinese Wikipedia title has `wikipedia` on its chip (and block), so the page links the article."""
+    import sqlite3
+
+    path = DATA / "dictionary-databases" / "zhwiktionary.sqlite"
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        has_table = connection.execute("SELECT 1 FROM sqlite_master WHERE name = 'wikipedia'").fetchone()
+    finally:
+        connection.close()
+    if not has_table:
+        pytest.skip("Wikipedia titles not imported")
+    data = search("北京市长列表", dicts="zhwiktionary,cedict", lang="ZH")
+    row = next(entry for entry in data["results"] if entry["simplified"] == "北京市长列表")
+    assert [chip.get("wikipedia") for chip in row["sources"] if chip["anchor"] == "zhwiktionary"] == [True]
+    # A word Wiktionary really has is not flagged.
+    real = search("孔子", dicts="wiktionary,zhwiktionary,cedict", lang="EN")["results"][0]
+    assert not any(chip.get("wikipedia") for chip in real["sources"] if chip["anchor"] == "zhwiktionary")
+
+
 def test_pinyin_match_flag(search):
     """The pinyin flag is true only for reading-based searches."""
     assert search("dangan")["pinyin_match"] is True

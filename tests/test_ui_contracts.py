@@ -814,3 +814,10 @@ def test_baidu_angle_bracket_labels_become_notes():
                              ("外", "foreign loanword")):
         assert f'{chinese}: "{english}"' in table
     assert "〈" in js[js.index("for (;;) {", js.index("POS_ENGLISH[tag.trim()]")) :][:400]
+
+
+def test_wikipedia_only_entries_link_to_the_wikipedia_article():
+    """A word that is only a Chinese Wikipedia title must not link to a Wiktionary page that does not exist."""
+    js = (ROOT / "yabai_search/static/app.js").read_text(encoding="utf-8")
+    assert 'WIKIPEDIA_URL = "https://zh.wikipedia.org/wiki/"' in js
+    assert "if (source.wikipedia)" in js and "wikipedia: source.wikipedia" in js

@@ -2052,6 +2052,10 @@ function definitionBody(source, taiwanRefs, copy) {
 // A labeled block showing one dictionary's definitions for a result. CC-CEDICT
 // and Wiktionary names open that word in the source; other names link to their
 // section on the About page.
+// A source the server marks `wikipedia` has only a Chinese Wikipedia title for this word (db.py wikipedia_sql), so its
+// name links the article instead of a Wiktionary page that does not exist.
+const WIKIPEDIA_URL = "https://zh.wikipedia.org/wiki/";
+
 function definitionsBlock(source, taiwanRefs, word, reading, forms = []) {
     const block = document.createElement("div");
     block.className = "def-source";
@@ -2067,7 +2071,12 @@ function definitionsBlock(source, taiwanRefs, word, reading, forms = []) {
     const lookupWord = source.headword || word;
     const lookupUrl =
         ([...lookupWord].length === 1 && lookupUrlsChar.get(source.anchor)) || lookupUrls.get(source.anchor);
-    if (lookupUrl) {
+    if (source.wikipedia) {
+        // The word is a Chinese Wikipedia article title that the Wiktionary has no entry for: link the article.
+        name.href = WIKIPEDIA_URL + encodeURIComponent(lookupWord.replace(/ /g, "_"));
+        name.target = "_blank";
+        name.rel = "noopener";
+    } else if (lookupUrl) {
         name.href = lookupUrl + encodeURIComponent(lookupWord);
         name.target = "_blank";
         name.rel = "noopener";
@@ -2898,6 +2907,7 @@ function fillEntryRow(row, entry) {
                         groups: [],
                         defs: [],
                         classifiers: [],
+                        wikipedia: source.wikipedia,
                     },
                     entry.taiwan_refs,
                     primary,

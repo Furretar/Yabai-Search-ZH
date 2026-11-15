@@ -107,7 +107,8 @@ def build(output: Path) -> None:
             with_reading.add(word)
     # Pass 2: words a dictionary lists with no reading at all still have to be findable by their characters.
     for source in sources:
-        for word in {w for (w,) in db._scan(source, "listed_words") if w}:
+        # Sorted: set order changes between runs (string hashing), and the row ids are the tie-break of equal results.
+        for word in sorted({w for (w,) in db._scan(source, "listed_words") if w}):
             if word in with_reading or is_cedict_word(word, db.to_simplified(word)):
                 continue
             offer(source["anchor"], word, db.to_simplified(word), "")
@@ -116,13 +117,25 @@ def build(output: Path) -> None:
     simplified_side = {(entry[1], marked) for (word, marked), entry in candidates.items() if entry[1] != word}
     rows: list[tuple] = []
     per_source: dict[str, int] = {}
-    for (word, marked), (source, simplified) in candidates.items():
-        if simplified == word and (word, marked) in simplified_side:
-            continue
+    kept = [
+        (word, marked, source, simplified)
+        for (word, marked), (source, simplified) in sorted(candidates.items())
+        if not (simplified == word and (word, marked) in simplified_side)
+    ]
+    # A source that spells a headword in simplified characters only (Baidu, many Wikipedia titles) must still be found
+    # by its traditional spelling: the traditional column of such a row holds the converted word, as CEDICT's does.
+    # One OpenCC call over the whole batch is far faster than one per word.
+    plain = [word for word, _marked, _source, simplified in kept if simplified == word]
+    converted: dict[str, str] = {}
+    if plain:
+        batch = db.to_traditional("\n".join(plain)).split("\n")
+        converted = dict(zip(plain, batch)) if len(batch) == len(plain) else {w: db.to_traditional(w) for w in plain}
+    for word, marked, source, simplified in kept:
+        traditional = converted.get(word, word) if simplified == word else word
         rank = ranks.get(simplified) or ranks.get(word)
         rows.append(
             (
-                next_id, word, simplified, marked, to_numeric(marked) if marked else "",
+                next_id, traditional, simplified, marked, to_numeric(marked) if marked else "",
                 to_toneless(marked) if marked else "", "", "", None, rank, source,
             )
         )

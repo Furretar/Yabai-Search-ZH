@@ -718,6 +718,9 @@ _SOURCE_QUERIES = [
         "database": WIKTIONARY_DB_PATH,
         "sql": "SELECT DISTINCT word FROM wiktionary_all "
                "WHERE word IN ({ph}) AND gloss IS NOT NULL",
+        # The words whose only entry here is a Chinese Wikipedia title (the page links the article, not Wiktionary).
+        "wikipedia_sql": "SELECT title FROM wikipedia WHERE title IN ({ph}) "
+                         "AND title NOT IN (SELECT word FROM wiktionary WHERE gloss IS NOT NULL)",
         # Membership without the gloss filter: a headword with no definition can
         # still get its source chip when it is the only result. A reading-only
         # row (no headword/gloss) still means Wiktionary lists the word.
@@ -770,6 +773,7 @@ _SOURCE_QUERIES = [
         "lang": "mainland",
         "database": ZHWIKTIONARY_DB_PATH,
         "sql": "SELECT DISTINCT word FROM headwords_all WHERE word IN ({ph})",
+        "wikipedia_sql": "SELECT title FROM wikipedia WHERE title IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM headwords_all "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
         # Prefix-only lookup for the fast first response.
@@ -799,6 +803,7 @@ _SOURCE_QUERIES = [
         "lang": "japanese",
         "database": JPWIKTIONARY_DB_PATH,
         "sql": "SELECT DISTINCT word FROM headwords_all WHERE word IN ({ph})",
+        "wikipedia_sql": "SELECT title FROM wikipedia WHERE title IN ({ph}) AND title NOT IN (SELECT word FROM senses)",
         "like_sql": "SELECT DISTINCT word FROM headwords_all "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
         # Prefix-only lookup for the fast first response.
@@ -1008,7 +1013,7 @@ _SOURCE_SCANS: dict[str, dict[str, str]] = {
         "readings": "SELECT traditional, simplified, pinyin, english_normalized FROM entries WHERE pinyin <> ''",
     },
     "wiktionary": {
-        "defined_words": "SELECT DISTINCT word FROM wiktionary WHERE gloss IS NOT NULL",
+        "defined_words": "SELECT DISTINCT word FROM wiktionary_all WHERE gloss IS NOT NULL",
         # A headword with no gloss has nothing to show, so it is not listed.
         "listed_words": "SELECT DISTINCT word FROM wiktionary_all WHERE gloss IS NOT NULL",
         "reading_words": "SELECT word FROM readings WHERE pinyin <> '' AND kind = 'mandarin'",
@@ -1059,7 +1064,7 @@ _SOURCE_SCANS: dict[str, dict[str, str]] = {
     "jpwiktionary": {
         "listed_words": "SELECT DISTINCT word FROM headwords_all WHERE word <> ''",
         "reading_words": "SELECT word FROM headwords WHERE pinyin <> ''",
-        "defined_words": "SELECT DISTINCT word FROM senses WHERE text <> ''",
+        "defined_words": "SELECT DISTINCT word FROM senses_all WHERE text <> ''",
         "headwords": "SELECT DISTINCT word FROM headwords ORDER BY word",
         "definitions": "SELECT word, text FROM senses WHERE text <> ''",
     },
@@ -1201,7 +1206,47 @@ def source_headwords(min_length: int = 2) -> set[str]:
             continue
         finally:
             connection.close()
+    allowed = _segmentable_words()
+    if allowed is not None:
+        # A variant spelling (什麽 for 什么/什麼) is allowed when its main form is: the page resolves it to that entry.
+        words = {
+            word
+            for word in words
+            if word in allowed
+            or to_simplified(word) in allowed
+            or unicodedata.normalize("NFKC", word) in allowed
+        }
     return {word for word in script_variants(words) if len(word) >= min_length}
+
+
+def _segmentable_words() -> set[str] | None:
+    """The words the sentence parser may use: those with a definition AND a reading in the generated indexes.
+
+    A headword with neither (most of Baidu's 500k bare headwords, such as 但是我认为) stays searchable but must not be
+    a parser token: the longest-match segmenter would swallow 但是 / 我 / 认为 into one unknown "word". None when the
+    indexes are missing or stale, in which case nothing is filtered (the parser then uses every headword).
+    """
+    if not (_search_index_ok() and _entries_ok()):
+        return None
+    try:
+        connection = _connect(SEARCH_INDEX_DB_PATH)
+        try:
+            defined = {row[0] for row in connection.execute("SELECT word FROM definers")}
+        finally:
+            connection.close()
+        connection = connect()
+        try:
+            readable: set[str] = set()
+            for traditional, simplified in connection.execute(
+                "SELECT traditional, simplified FROM entries WHERE pinyin <> ''"
+            ):
+                readable.add(traditional)
+                readable.add(simplified)
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return None
+    return defined & readable
 
 # --- data version ----------------------------------------------------------
 def data_version() -> str:
@@ -2393,6 +2438,23 @@ def _main_readings_ok() -> bool:
     return main_readings_table_status() == "ok"
 
 
+def _wikipedia_only_words(source: dict, words: list[str]) -> set[str]:
+    """The words whose only entry in this source is a Chinese Wikipedia title (its `wikipedia_sql`)."""
+    sql = source.get("wikipedia_sql")
+    if not sql or not words or not _source_present(source):
+        return set()
+    connection = _connect(source["database"])
+    try:
+        return {
+            row[0]
+            for row in connection.execute(sql.format(ph=",".join("?" * len(words))), tuple(words))
+        }
+    except sqlite3.Error:
+        return set()
+    finally:
+        connection.close()
+
+
 def _attach_sources(entries: list[dict]) -> list[dict]:
     """Set entry["sources"] to the labels of dictionaries that list the headword.
 
@@ -2421,11 +2483,13 @@ def _attach_sources(entries: list[dict]) -> list[dict]:
         finally:
             connection.close()
         found = {row[0] for row in rows}
+        wikipedia = _wikipedia_only_words(source, words)
         for entry in entries:
             if entry["traditional"] in found or entry["simplified"] in found:
-                entry["sources"].append(
-                    {"label": source["label"], "anchor": source["anchor"]}
-                )
+                chip = {"label": source["label"], "anchor": source["anchor"]}
+                if entry["traditional"] in wikipedia or entry["simplified"] in wikipedia:
+                    chip["wikipedia"] = True
+                entry["sources"].append(chip)
     return entries
 
 
@@ -3144,6 +3208,7 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                     cls["simplified"] or "", ""
                 )
 
+    wikipedia_only = {source["anchor"]: _wikipedia_only_words(source, words) for source in _SOURCE_QUERIES}
     for entry in entries:
         defs = []
         for source in _SOURCE_QUERIES:
@@ -3201,17 +3266,18 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
                 # shù before zhú). Python's sort is stable, so equal counts keep
                 # the dictionary's own order.
                 groups.sort(key=lambda group: len(group["senses"]), reverse=True)
-                defs.append(
-                    {
-                        "anchor": anchor,
-                        "label": source["label"],
-                        "lang": source["lang"],
-                        "headword": headword or _cls_headword or entry["simplified"],
-                        "groups": groups,
-                        "defs": [text for _reading, text in values],
-                        "classifiers": clss,
-                    }
-                )
+                block = {
+                    "anchor": anchor,
+                    "label": source["label"],
+                    "lang": source["lang"],
+                    "headword": headword or _cls_headword or entry["simplified"],
+                    "groups": groups,
+                    "defs": [text for _reading, text in values],
+                    "classifiers": clss,
+                }
+                if block["headword"] in wikipedia_only[anchor]:
+                    block["wikipedia"] = True  # only a Chinese Wikipedia title: the page links the article
+                defs.append(block)
         entry["definitions"] = defs
     _set_variant_fields(entries, form_rows_all)
     return entries
@@ -7110,6 +7176,42 @@ def _or_masks(masks: Iterable[int]) -> int:
     return result
 
 
+def _listed_by_unselected_only(entries: list[dict], indexes: list[int], selected: Collection[str]) -> set[int]:
+    """Which of the given entries (by index) are listed by a dictionary outside the selection and by none inside it.
+
+    A headword with no definition anywhere still has a source chip. When every dictionary that lists it is one the
+    user did not select (a Baidu headword, a Chinese Wikipedia title), it belongs under "Other Dictionaries" with
+    the rows those dictionaries define, not among the selected dictionaries' own words.
+    """
+    if not indexes:
+        return set()
+    words = sorted(
+        {entries[i][key] for i in indexes for key in ("traditional", "simplified") if entries[i].get(key)}
+    )
+    holes = ",".join("?" * len(words))
+    inside: set[str] = set()
+    outside: set[str] = set()
+    for source in _SOURCE_QUERIES:
+        if "database" not in source or not (source.get("heads_sql") or source.get("sql")) or not _source_present(source):
+            continue
+        connection = _connect(source["database"])
+        try:
+            rows = connection.execute(
+                (source.get("heads_sql") or source["sql"]).format(ph=holes), tuple(words) * source.get("repeat", 1)
+            ).fetchall()
+        except sqlite3.Error:
+            continue
+        finally:
+            connection.close()
+        (inside if source["anchor"] in selected else outside).update(row[0] for row in rows)
+    return {
+        i
+        for i in indexes
+        if any(entries[i].get(key) in outside for key in ("traditional", "simplified"))
+        and not any(entries[i].get(key) in inside for key in ("traditional", "simplified"))
+    }
+
+
 def rank_by_category(
     entries: list[dict],
     selected: Collection[str],
@@ -7220,7 +7322,7 @@ def rank_by_category(
         # Category is the primary key, so it always beats the tier.
         if category1[index]:
             category = 1
-        elif defined:
+        elif defined or index in other_listed:
             category = 2
         else:
             category = 3
@@ -7235,6 +7337,10 @@ def rank_by_category(
     for entry in entries:
         # Only the definition branch above reads this marker.
         entry.pop("_head_match", None)
+    # A headword no dictionary defines but only unselected ones list: "Other Dictionaries", not the main list.
+    other_listed = _listed_by_unselected_only(
+        entries, [i for i in range(len(entries)) if not category1[i] and not defined_any[i]], selected
+    )
     keys = [key(index) for index in range(len(entries))]
     order = sorted(range(len(entries)), key=keys.__getitem__)
     ranked: list[dict] = []
