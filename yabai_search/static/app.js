@@ -2121,13 +2121,16 @@ function isOtherDefinitionMatch(entry) {
     );
 }
 
-// Languages tried, in order, when a result has nothing in the search language.
-const FALLBACK_LANG_ORDER = ["english", "taiwan", "mainland", "japanese"];
+// Where each dictionary sits in the Dictionaries panel (its columns, top to bottom). It is the order of last
+// resort: a custom drag order wins, then the panel's own order, so no dictionary or language is named here.
+const anchorIndex = new Map(dictToggles.map((toggle, index) => [toggle.dataset.anchor, index]));
 
 // The highest-priority anchor of `anchors`, by the language's dictionary order.
 function topAnchor(anchors, lang) {
     return [...anchors].sort(
-        (a, b) => dictRank(a, lang) - dictRank(b, lang)
+        (a, b) =>
+            dictRank(a, lang) - dictRank(b, lang) ||
+            (anchorIndex.get(a) ?? Infinity) - (anchorIndex.get(b) ?? Infinity)
     )[0];
 }
 
@@ -2140,32 +2143,20 @@ function topAnchor(anchors, lang) {
 // none: the ones that matched a definition search, otherwise the best
 // dictionary of the first other language that has one.
 function initialDictSelection(entry) {
+    // The selected dictionaries decide. With custom dictionaries off they are the search language's defaults
+    // (state.dicts), so one rule serves every combination.
     let selected = new Set(state.dicts);
     let fallback = false;
     if (!state.customDicts) {
-        // In default mode the search language decides: every English source
-        // (CC-CEDICT, Wiktionary) is on, even though only CC-CEDICT is a
-        // default anchor.
-        const lang = selectedLangGroup();
-        selected = new Set();
-        for (const source of entry.definitions || []) {
-            const sourceLang =
-                source.lang || anchorLang.get(source.anchor) || "";
-            if (sourceLang === lang) selected.add(source.anchor);
-        }
-        if ((entry.forms || []).length) {
-            for (const anchor of formsAnchors) {
-                if (anchorLang.get(anchor) === lang) selected.add(anchor);
-            }
-        }
         const defined = (entry.definitions || []).map((source) => source.anchor);
         if (isOtherDefinitionMatch(entry)) {
-            // Show the definitions that matched the search, not unrelated
-            // ones from the search language.
+            // Show the definitions that matched the search, not unrelated ones from the selection.
             const matched = new Set(entry.match_anchors);
             const shown = defined.filter((anchor) => matched.has(anchor));
             if (shown.length) selected = new Set(shown);
-        } else if (!selected.size && defined.length) {
+        } else if (!defined.some((anchor) => selected.has(anchor)) && !hasSelectedForms(entry, selected)) {
+            // Nothing selected defines it: show what the other dictionaries say (the "Other Dictionaries"
+            // section), the best dictionary of each language that has a definition.
             selected = new Set(defined);
             fallback = true;
         }
@@ -2180,22 +2171,23 @@ function initialDictSelection(entry) {
     }
     // Dictionaries shown as one merged block keep all their members when they are selected, even though
     // compact mode normally keeps only one dictionary per language.
+    const defines = new Set((entry.definitions || []).map((source) => source.anchor));
     const withMergedGroups = (set) => {
         for (const members of new Set(mergedMembers.values())) {
             for (const anchor of members) {
                 if (!set.has(anchor)) continue;
-                for (const other of members) if (selected.has(other)) set.add(other);
+                for (const other of members) if (selected.has(other) && defines.has(other)) set.add(other);
             }
         }
         return set;
     };
     if (fallback) {
-        // One dictionary only: the first other language that has a definition.
-        const lang =
-            FALLBACK_LANG_ORDER.find((name) => byLang.has(name)) ||
-            byLang.keys().next().value;
+        // The best dictionary of every other language that has a definition, so one language's entry does not
+        // hide another's under "Other Dictionaries". Languages follow the panel's column order.
+        const first = (lang) => Math.min(...byLang.get(lang).map((a) => anchorIndex.get(a) ?? Infinity));
+        const langs = [...byLang.keys()].sort((a, b) => first(a) - first(b));
         return withMergedGroups(
-            new Set(lang === undefined ? [] : [topAnchor(byLang.get(lang), lang)]),
+            new Set(langs.map((lang) => topAnchor(byLang.get(lang), lang))),
         );
     }
     const result = new Set();
@@ -2206,7 +2198,10 @@ function initialDictSelection(entry) {
 }
 
 // Language code -> the definition language it selects (used for ordering).
-const LANG_GROUP = { EN: "english", ZH: "mainland", TW: "taiwan", JP: "japanese" };
+// Derived from the page's defaults (the first default dictionary's column), so it names no language.
+const LANG_GROUP = Object.fromEntries(
+    Object.entries(langDefaults).map(([code, anchors]) => [code, anchorLang.get(anchors[0])]),
+);
 
 function selectedLangGroup() {
     return LANG_GROUP[state.lang] || "english";
@@ -3110,6 +3105,12 @@ document.addEventListener("pointerdown", (event) => {
 // A result is shown only when one of the selected dictionaries has a definition
 // for it; a word found only in unselected dictionaries lives in the "Matches in
 // other dictionaries" section instead.
+// A "see X" variant has no senses, only "other forms": it counts as selected while a dictionary that supplies
+// forms is selected.
+function hasSelectedForms(entry, selected) {
+    return (entry.forms || []).length > 0 && anyEnabled(selected, formsAnchors);
+}
+
 function hasSelectedDefs(entry) {
     // Shown with the dictionaries that matched, but the match is outside the
     // selection, so it is not a selected-dictionary result.
@@ -3532,6 +3533,12 @@ function updateFooterSeparator(tier) {
         footerSeparator.dataset.tier = String(tier);
     } else {
         delete footerSeparator.dataset.tier;
+    }
+    // Only a painted result arms the hover colour; before that the line does nothing.
+    if (Number.isInteger(tier) && tier >= 1) {
+        footerSeparator.dataset.ready = "1";
+    } else {
+        delete footerSeparator.dataset.ready;
     }
 }
 

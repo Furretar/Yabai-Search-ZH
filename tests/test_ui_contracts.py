@@ -285,10 +285,13 @@ def test_frontend_resets_dictionaries_and_forces_compact_mode():
     assert "function resetDictSettings" in js
     assert js.count("state.compact = true;") >= 2
     assert "resetDictSettings();" in js
-    # Compact/detailed is unavailable with custom dictionaries off, so the
-    # selection logic must use the search language instead of anchor defaults.
-    assert "In default mode the search language decides" in js
-    assert "sourceLang === lang" in js
+    # Compact/detailed is unavailable with custom dictionaries off, and the language's defaults are then the
+    # selection. One rule serves every combination: the selected dictionaries decide, and nothing in the
+    # selection logic names a dictionary or a language (scripts/tools/test_dictionary_sections.mjs runs it
+    # over every combination in a browser).
+    assert "The selected dictionaries decide" in js
+    assert "sourceLang === lang" not in js
+    assert "FALLBACK_LANG_ORDER" not in js
 
 
 def test_dictionaries_declared_as_merged_share_one_block():

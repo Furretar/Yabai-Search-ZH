@@ -1157,6 +1157,12 @@ body:has(.search-panel.pulled:not(.docked)) .menu-toggle-wrap {
     box-shadow: 0 0 9px 1px var(--tier-color, var(--entry-divider));
 }
 
+/* The bottom separator stays inert until the first result is painted (app.js sets data-ready). */
+.footer-separator:not([data-ready]):hover::before {
+    background: var(--entry-divider);
+    box-shadow: none;
+}
+
 .entry-separator[data-tier="1"] {
     --tier-color: var(--tone1);
 }

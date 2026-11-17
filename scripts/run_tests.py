@@ -12,7 +12,7 @@ What it does:
   1. preflight: environment, test-file inventory, and whether the generated files are current (a stale
      minified-assets manifest fails tests/test_ui_contracts.py; this tells you before the run);
   2. pytest -v, with every test result logged the moment it finishes and a heartbeat while a slow test runs;
-  3. the node tests in scripts/tools/ (test_hosts.mjs, test_custom_search.mjs);
+  3. the node tests in scripts/tools/ (test_hosts.mjs, test_custom_search.mjs, test_dictionary_sections.mjs);
   4. a summary: counts, every failed test, the slowest tests.
 
 Every line is also written to archives/logs/run_tests-<time>.log. The exit code is 0 only when everything passed.
@@ -31,7 +31,11 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE / "lib"))
 
-JS_TESTS = [HERE / "tools" / "test_hosts.mjs", HERE / "tools" / "test_custom_search.mjs"]
+JS_TESTS = [
+    HERE / "tools" / "test_hosts.mjs",
+    HERE / "tools" / "test_custom_search.mjs",
+    HERE / "tools" / "test_dictionary_sections.mjs",  # needs the dev site + chromium, skips without
+]
 
 
 def main() -> int:

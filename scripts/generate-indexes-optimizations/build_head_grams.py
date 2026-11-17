@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the 1-2 character headword candidate table.
+"""Build the headword gram candidate table (and the definition-text gram set).
 
 The normal Chinese headword query uses leading-wildcard LIKE on simplified and
 traditional, which cannot use the B-tree indexes. For a 1-2 character query,
@@ -35,6 +35,15 @@ TEMP_OUT = GENERATED / "head_grams.sqlite.tmp"
 def main() -> None:
     source = sqlite3.connect(CEDICT)
     rows = source.execute("SELECT id, simplified, traditional FROM entries").fetchall()
+    # Every character and adjacent pair that occurs in any definition text (only CEDICT's rows have one). A
+    # long query that is not a headword is also rejected when it cannot occur in a definition, which is the
+    # other half of the "contains" scan (db._english_han_possible).
+    english_grams: set[str] = set()
+    for (text,) in source.execute("SELECT english_normalized FROM entries WHERE english_normalized <> ''"):
+        for start in range(len(text)):
+            english_grams.add(text[start])
+            if start + 1 < len(text):
+                english_grams.add(text[start : start + 2])
     source.close()
     if TEMP_OUT.exists():
         TEMP_OUT.unlink()
@@ -48,6 +57,8 @@ def main() -> None:
             entry_id INTEGER NOT NULL,
             PRIMARY KEY (gram, entry_id)
         ) WITHOUT ROWID;
+        DROP TABLE IF EXISTS english_grams;
+        CREATE TABLE english_grams (gram TEXT PRIMARY KEY) WITHOUT ROWID;
         DROP TABLE IF EXISTS meta;
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """
@@ -72,6 +83,7 @@ def main() -> None:
     if batch:
         out.executemany("INSERT OR IGNORE INTO head_grams VALUES (?, ?)", batch)
         total += len(batch)
+    out.executemany("INSERT OR IGNORE INTO english_grams VALUES (?)", ((gram,) for gram in english_grams))
     digest = hashlib.sha256(CEDICT.read_bytes()).hexdigest()
     out.execute(
         "INSERT INTO meta(key, value) VALUES ('backbone_sha256', ?)", (digest,)

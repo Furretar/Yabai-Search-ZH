@@ -593,12 +593,13 @@ def _chunks(values: list[str], size: int | None = None):
 #   anchor     id of its section on the About page
 #   database   its SQLite file
 #   sql        returns one column of headwords; the `IN (...)` word list appears
-#              "repeat" times, so a query over two columns sets repeat=2
+#              "repeat" times, so a query over two columns sets repeat=2 (heads_repeat: the same for heads_sql)
 #   all_sql    returns every headword (used by the segmenter when a source has
 #              no segment_sql, and by the "*" listing)
 #   segment_sql  optional; like all_sql, but returns every script variant the
 #              source stores (word/traditional/simplified). The segmenter reads
 #              this so a word that search can find is never split apart.
+#   sense_repeat  how many times the word list appears in sense_sql (default 1)
 #   sense_sql  returns (word, position, text) numbered senses for the headword
 #   cls_sql    returns (word, traditional, simplified, codes, note) classifiers
 # Every source database has `senses` and `classifiers` tables of the same shape
@@ -656,9 +657,12 @@ def _moe_queries(prefix: str) -> dict:
 
 # Japanese definitions carry a pinyin reading per sense, so the result can show
 # a reading header (e.g. ㄞ / ㄞˋ) above each group.
+# Both Wiktionary-style SQLs read the base tables, not the `*_all` views (see the Wiktionary source's "sql"): a
+# view's UNION ALL cannot use the wikipedia table's NOCASE index, so it scanned every title on each search.
 _JP_SENSES_SQL = (
-    "SELECT word, position, text, reading FROM senses_all WHERE word IN ({ph}) "
-    "ORDER BY position"
+    "SELECT word, position, text, reading FROM senses WHERE word IN ({ph}) "
+    "UNION ALL SELECT title, 1000000, ja || '（ウィキペディア）', '' FROM wikipedia WHERE title IN ({ph}) "
+    "ORDER BY 2"
 )
 # Variant forms ("see X" entries) - only some sources have a `forms` table. Each
 # row maps a variant to its main form.
@@ -668,8 +672,9 @@ _FORMS_SQL = (
 )
 # Wiktionary stores its senses as glosses in the `wiktionary` table, not `senses`.
 _WIKTIONARY_SENSES_SQL = (
-    "SELECT word, 0 AS position, gloss AS text FROM wiktionary_all "
-    "WHERE word IN ({ph}) AND gloss IS NOT NULL"
+    "SELECT word, 0 AS position, gloss AS text FROM wiktionary "
+    "WHERE word IN ({ph}) AND gloss IS NOT NULL "
+    "UNION ALL SELECT title, 0, en || ' (Wikipedia)' FROM wikipedia WHERE title IN ({ph})"
 )
 
 # The reading of a Baidu word: its first, when it lists several ("zhī / zhǐ").
@@ -716,17 +721,21 @@ _SOURCE_QUERIES = [
         "anchor": "wiktionary",
         "lang": "english",
         "database": WIKTIONARY_DB_PATH,
-        "sql": "SELECT DISTINCT word FROM wiktionary_all "
-               "WHERE word IN ({ph}) AND gloss IS NOT NULL",
+        # Membership reads the base tables, never the wiktionary_all view: its UNION ALL takes the first table's
+        # BINARY collation, so `word IN (...)` could not use the wikipedia table's NOCASE index and scanned all
+        # 680 thousand titles on every search (about 60 ms; the same for the two Wiktionaries below).
+        "sql": "SELECT word FROM wiktionary WHERE word IN ({ph}) AND gloss IS NOT NULL "
+               "UNION SELECT title FROM wikipedia WHERE title IN ({ph})",
         # The words whose only entry here is a Chinese Wikipedia title (the page links the article, not Wiktionary).
         "wikipedia_sql": "SELECT title FROM wikipedia WHERE title IN ({ph}) "
                          "AND NOT EXISTS (SELECT 1 FROM wiktionary w WHERE w.word = wikipedia.title AND w.gloss IS NOT NULL)",
         # Membership without the gloss filter: a headword with no definition can
         # still get its source chip when it is the only result. A reading-only
         # row (no headword/gloss) still means Wiktionary lists the word.
-        "heads_sql": "SELECT word FROM ("
-                     "SELECT word FROM wiktionary_all UNION SELECT word FROM readings"
-                     ") WHERE word IN ({ph})",
+        "heads_sql": "SELECT word FROM wiktionary WHERE word IN ({ph}) "
+                     "UNION SELECT title FROM wikipedia WHERE title IN ({ph}) "
+                     "UNION SELECT word FROM readings WHERE word IN ({ph})",
+        "heads_repeat": 3,
         "like_sql": "SELECT DISTINCT word FROM wiktionary "
                     "WHERE word LIKE ? ESCAPE '\\' AND gloss IS NOT NULL "
                     "ORDER BY word",
@@ -736,7 +745,7 @@ _SOURCE_QUERIES = [
                         "WHERE word LIKE ? AND gloss IS NOT NULL "
                         "ORDER BY word",
         "all_sql": "SELECT DISTINCT word FROM wiktionary WHERE word <> ''",
-        "repeat": 1,
+        "repeat": 2,
         "pinyin_sql": "SELECT pinyin FROM readings WHERE word = ? "
                       "AND kind = 'mandarin' AND pinyin <> '' ORDER BY id LIMIT 1",
         "pinyin_batch_sql": "SELECT word, pinyin FROM readings WHERE word IN ({ph}) "
@@ -764,6 +773,7 @@ _SOURCE_QUERIES = [
                                      "  ELSE 4 END, id",
         "split_pinyin": True,
         "sense_sql": _WIKTIONARY_SENSES_SQL,
+        "sense_repeat": 2,
         "cls_sql": _CLASSIFIERS_SQL,
         "count_sql": "SELECT COUNT(DISTINCT word) FROM wiktionary",
     },
@@ -772,7 +782,8 @@ _SOURCE_QUERIES = [
         "anchor": "zhwiktionary",
         "lang": "mainland",
         "database": ZHWIKTIONARY_DB_PATH,
-        "sql": "SELECT DISTINCT word FROM headwords_all WHERE word IN ({ph})",
+        "sql": "SELECT word FROM headwords WHERE word IN ({ph}) "
+               "UNION SELECT title FROM wikipedia WHERE title IN ({ph})",
         "wikipedia_sql": "SELECT title FROM wikipedia WHERE title IN ({ph})",
         "like_sql": "SELECT DISTINCT word FROM headwords_all "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
@@ -786,7 +797,7 @@ _SOURCE_QUERIES = [
         "segment_sql": "SELECT word FROM headwords "
                        "UNION SELECT traditional FROM headwords "
                        "UNION SELECT simplified FROM headwords",
-        "repeat": 1,
+        "repeat": 2,
         "sense_sql": _SENSES_SQL,
         "cls_sql": _CLASSIFIERS_SQL,
         "pinyin_sql": "SELECT pinyin FROM headwords "
@@ -802,7 +813,8 @@ _SOURCE_QUERIES = [
         "anchor": "jpwiktionary",
         "lang": "japanese",
         "database": JPWIKTIONARY_DB_PATH,
-        "sql": "SELECT DISTINCT word FROM headwords_all WHERE word IN ({ph})",
+        "sql": "SELECT word FROM headwords WHERE word IN ({ph}) "
+               "UNION SELECT title FROM wikipedia WHERE title IN ({ph})",
         "wikipedia_sql": "SELECT title FROM wikipedia WHERE title IN ({ph}) AND NOT EXISTS (SELECT 1 FROM senses s WHERE s.word = wikipedia.title)",
         "like_sql": "SELECT DISTINCT word FROM headwords_all "
                     "WHERE word LIKE ? ESCAPE '\\' ORDER BY word",
@@ -816,8 +828,9 @@ _SOURCE_QUERIES = [
         "segment_sql": "SELECT word FROM headwords "
                        "UNION SELECT traditional FROM headwords "
                        "UNION SELECT simplified FROM headwords",
-        "repeat": 1,
+        "repeat": 2,
         "sense_sql": _JP_SENSES_SQL,
+        "sense_repeat": 2,
         "cls_sql": _CLASSIFIERS_SQL,
         "pinyin_sql": "SELECT pinyin FROM headwords "
                       "WHERE word = ? AND pinyin <> '' LIMIT 1",
@@ -2493,7 +2506,7 @@ def _attach_sources(entries: list[dict]) -> list[dict]:
         try:
             rows = connection.execute(
                 (source.get("heads_sql") or source["sql"]).format(ph=placeholders),
-                tuple(words) * source["repeat"],
+                tuple(words) * (source.get("heads_repeat", source["repeat"]) if source.get("heads_sql") else source["repeat"]),
             ).fetchall()
         finally:
             connection.close()
@@ -3142,7 +3155,9 @@ def _attach_definitions(entries: list[dict]) -> list[dict]:
             continue
         connection = _connect(source["database"])
         try:
-            for row in connection.execute(source["sense_sql"].format(ph=placeholders), params):
+            for row in connection.execute(
+                source["sense_sql"].format(ph=placeholders), params * source.get("sense_repeat", 1)
+            ):
                 word, text = row[0], row[2]
                 reading = row[3] if len(row) > 3 else ""  # CEDICT only
                 if text and text.strip():
@@ -4295,7 +4310,7 @@ def _source_only_entries(
                 # when the normal search found nothing at all).
                 rows = database.execute(
                     (source.get("heads_sql") or source["sql"]).format(ph=placeholders),
-                    params * source["repeat"],
+                    params * (source.get("heads_repeat", source["repeat"]) if source.get("heads_sql") else source["repeat"]),
                 ).fetchall()
             elif exact:
                 rows = database.execute(
@@ -4948,28 +4963,88 @@ def _head_grams_version_ok() -> bool:
     return _head_grams_ok_cache
 
 
+def _is_gram_char(char: str) -> bool:
+    """A Han ideograph or ASCII digit: the characters the gram tables describe exactly (no wildcard or Latin letter)."""
+    code = ord(char)
+    return (
+        0x3400 <= code <= 0x4DBF
+        or 0x4E00 <= code <= 0x9FFF
+        or 0xF900 <= code <= 0xFAFF
+        or 0x20000 <= code <= 0x323AF
+        or "0" <= char <= "9"
+    )
+
+
+def _spread_bigrams(form: str, most: int = 8) -> list[str]:
+    """The adjacent pairs of `form`, at most `most` of them spread along it (any subset is a sound filter)."""
+    pairs = [form[index : index + 2] for index in range(len(form) - 1)]
+    if len(pairs) > most:
+        pairs = [pairs[round(index * (len(pairs) - 1) / (most - 1))] for index in range(most)]
+    return list(dict.fromkeys(pairs))
+
+
+# A longer query has fewer candidates; past this many the id list is not worth passing to SQL.
+_CANDIDATE_CAP = 20000
+
+
 def _headword_candidate_ids(forms: list[str]) -> set[int] | None:
-    """Candidate entry ids for a 1-2 character headword query, or None."""
+    """Candidate entry ids for a headword "contains" query, or None when the table cannot narrow it.
+
+    Every row whose headword contains a form must hold the form's characters (1-2 characters) or all of its
+    adjacent pairs (3 or more), so those ids are a superset of the matches. An empty set proves nothing
+    matches, which is how a pasted sentence skips the scan of millions of rows.
+    """
     if os.environ.get("YABAI_HEADWORD_LEGACY") == "1" or not _head_grams_version_ok():
         return None
-    grams: set[str] = set()
-    for form in forms:
-        if len(form) == 1 or len(form) == 2:
-            grams.add(form)
-        else:
-            return None
-    if not grams:
+    if not forms or not all(form and all(_is_gram_char(char) for char in form) for form in forms):
         return None
     connection = _connect(HEAD_GRAMS_DB_PATH)
     try:
-        holes = ",".join("?" * len(grams))
-        rows = connection.execute(
-            f"SELECT entry_id FROM head_grams WHERE gram IN ({holes})",
-            tuple(grams),
-        ).fetchall()
+        ids: set[int] = set()
+        for form in forms:
+            if len(form) <= 2:
+                rows = connection.execute(
+                    "SELECT entry_id FROM head_grams WHERE gram = ?", (form,)
+                ).fetchall()
+            else:
+                pairs = _spread_bigrams(form)
+                rows = connection.execute(
+                    " INTERSECT ".join("SELECT entry_id FROM head_grams WHERE gram = ?" for _ in pairs),
+                    pairs,
+                ).fetchall()
+                if len(rows) > _CANDIDATE_CAP:
+                    return None
+            ids.update(row[0] for row in rows)
     finally:
         connection.close()
-    return {row[0] for row in rows}
+    return ids
+
+
+def _english_han_possible(forms: list[str]) -> bool | None:
+    """False when no definition text can contain any form (every row's `english_normalized` would miss it).
+
+    Reads the pairs recorded at build time; None when that table is unavailable or a form is not pure Han/digits.
+    """
+    if os.environ.get("YABAI_HEADWORD_LEGACY") == "1" or not _head_grams_version_ok():
+        return None
+    if not forms or not all(form and all(_is_gram_char(char) for char in form) for form in forms):
+        return None
+    connection = _connect(HEAD_GRAMS_DB_PATH)
+    try:
+        for form in forms:
+            grams = [form] if len(form) == 1 else _spread_bigrams(form)
+            holes = ",".join("?" * len(grams))
+            try:
+                found = connection.execute(
+                    f"SELECT count(*) FROM english_grams WHERE gram IN ({holes})", grams
+                ).fetchone()[0]
+            except sqlite3.Error:
+                return None
+            if found == len(grams):
+                return True
+        return False
+    finally:
+        connection.close()
 
 
 def fast_path_status() -> dict:
@@ -6888,7 +6963,7 @@ def _anchor_defined_words(anchor: str, words: list[str]) -> set[str]:
             holes = ",".join("?" * len(chunk))
             try:
                 rows = connection.execute(
-                    source["sense_sql"].format(ph=holes), tuple(chunk)
+                    source["sense_sql"].format(ph=holes), tuple(chunk) * source.get("sense_repeat", 1)
                 ).fetchall()
                 found.update(row[0] for row in rows)
             except sqlite3.Error:
@@ -7198,27 +7273,36 @@ def _listed_by_unselected_only(entries: list[dict], indexes: list[int], selected
     A headword with no definition anywhere still has a source (the `source` column of the entries table: the first
     dictionary that listed it). When that dictionary is one the user did not select (a Baidu headword, a Chinese
     Wikipedia title), the row belongs under "Other Dictionaries" with the rows those dictionaries define, not among
-    the selected dictionaries' own words. One primary-key query per 900 rows.
+    the selected dictionaries' own words. Rows are matched by their simplified and traditional spelling, because
+    the headword searches do not return the table's row id. One indexed query per 900 headwords.
     """
-    ids = {indexes[n]: entries[indexes[n]].get("id") for n in range(len(indexes)) if isinstance(entries[indexes[n]].get("id"), int)}
-    if not ids:
+    if not indexes:
         return set()
-    by_id = {entry_id: index for index, entry_id in ids.items()}
-    other: set[int] = set()
+    by_form: dict[tuple[str, str], list[int]] = {}
+    for index in indexes:
+        entry = entries[index]
+        by_form.setdefault((entry.get("simplified") or "", entry.get("traditional") or ""), []).append(index)
+    listed_by_selected: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str]] = set()
     connection = connect()
     try:
-        wanted = list(by_id)
+        wanted = sorted({form[0] for form in by_form if form[0]})
         for start in range(0, len(wanted), 900):
             chunk = wanted[start : start + 900]
             holes = ",".join("?" * len(chunk))
-            for entry_id, source in connection.execute(f"SELECT id, source FROM entries WHERE id IN ({holes})", chunk):
-                if source not in selected:
-                    other.add(by_id[entry_id])
+            for simplified, traditional, source in connection.execute(
+                f"SELECT simplified, traditional, source FROM entries WHERE simplified IN ({holes})", chunk
+            ):
+                key = (simplified, traditional)
+                if key in by_form:
+                    seen.add(key)
+                    if source in selected:
+                        listed_by_selected.add(key)
     except sqlite3.Error:
         return set()
     finally:
         connection.close()
-    return other
+    return {index for key in seen - listed_by_selected for index in by_form[key]}
 
 
 def rank_by_category(
@@ -9030,11 +9114,23 @@ def _search_core(
     fetch_limit = limit * 3 if language_query else limit
     params = [*where_params, *order_params, fetch_limit]
 
-    connection = connect()
-    try:
-        rows = _fetchall(connection, sql, params, "definition_fts")
-    finally:
-        connection.close()  # always close, even if the query raised
+    # A Han phrase that no headword and no definition can contain finds nothing, so skip the scan of the whole table.
+    nothing_to_find = False
+    if is_chinese or is_numeric:
+        mixed_latin_query = any(char.isascii() and char.isalpha() for char in literal)
+        if "*" not in query and not mixed_latin_query:
+            nothing_to_find = (
+                _headword_candidate_ids(headword_forms) == set()
+                and _english_han_possible(headword_forms) is False
+            )
+    if nothing_to_find:
+        rows = []
+    else:
+        connection = connect()
+        try:
+            rows = _fetchall(connection, sql, params, "definition_fts")
+        finally:
+            connection.close()  # always close, even if the query raised
 
     entries = [dict(row) for row in rows]
     if (

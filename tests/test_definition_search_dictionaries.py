@@ -245,7 +245,11 @@ def test_api_taiwan_definition_search_lists_everything_under_other(
 # --- compact mode (custom dictionaries off) -------------------------------
 
 HARNESS = r"""
-const state = {customDicts: false, compact: true, lang: "TW", dicts: new Set()};
+// With custom dictionaries off the selection is the search language's defaults (TW: the two MOE dictionaries).
+const state = {customDicts: false, compact: true, lang: "TW", dicts: new Set(["moe", "moe_revised"])};
+// The Dictionaries panel's toggles, in panel order (what the page reads its tie-break order from).
+const langDefaults = {EN: ["cedict", "wiktionary"], TW: ["moe", "moe_revised"]}; // the page's per-language defaults
+const dictToggles = ["cedict", "wiktionary", "moe", "moe_revised"].map((anchor) => ({dataset: {anchor}}));
 let dictOrder = {english: ["cedict", "wiktionary"], taiwan: ["moe", "moe_revised"]};
 const anchorLang = new Map([
   ["cedict", "english"], ["wiktionary", "english"],
@@ -280,9 +284,10 @@ def run_js(body: str) -> dict:
     source = APP_JS.read_text(encoding="utf-8")
     start = source.index("const entryDictState = new Map();")
     end = source.index("// Which dictionaries to render for a result.")
-    marker = "function hasSelectedDefs(entry) {"
+    marker = "// A \"see X\" variant has no senses, only \"other forms\""
     begin = source.index(marker)
-    has_selected = source[begin : source.index("\n}\n", begin) + 3]
+    defs_at = source.index("function hasSelectedDefs(entry) {", begin)
+    has_selected = source[begin : source.index("\n}\n", defs_at) + 3]
     script = HARNESS % {
         "slice": source[start:end],
         "has_selected": has_selected,
