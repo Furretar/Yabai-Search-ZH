@@ -273,7 +273,7 @@ ZHWIKTIONARY_DB_PATH = DICTIONARIES_DIR / "zhwiktionary.sqlite"
 JPWIKTIONARY_DB_PATH = DICTIONARIES_DIR / "jpwiktionary.sqlite"
 
 # The clean Baidu Hanyu database, converted from the base database (data/dl-base-dictionaries/baidu.sqlite, built from
-# the scrape by ~/Desktop/ai/baidu-scraper/scripts/import_baidu.py) by scripts/download-dictionaries/import_baidu.py.
+# the scrape by ~/.links/projects/baidu-scraper/scripts/import_baidu.py) by scripts/download-dictionaries/import_baidu.py.
 # The site reads its view `words_with_definition` (every word that has a definition) and `senses_text` (the text of each sense).
 BAIDU_DB_PATH = DICTIONARIES_DIR / "baidu" / "baidu_clean.sqlite"
 

@@ -88,7 +88,7 @@ def main() -> int:
     log = Log("deploy")
     log.header("deploy: ship this checkout to the laptop serving copy")
     release = load_release_env()
-    laptop = Path(release.get("LAPTOP_DIR") or Path.home() / "Desktop" / "ai" / "yabai-laptop")
+    laptop = Path(release.get("LAPTOP_DIR") or Path.home() / ".links" / "yabaiLaptop")  # programs/links keeps it current
     dry = args.dry_run
 
     # ---- 1. preflight -------------------------------------------------------------------------

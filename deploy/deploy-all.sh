@@ -9,13 +9,13 @@
 #
 # This is the direct path: it rsyncs the working tree, so it does not need a
 # commit or push. Use deploy/release.sh when you want the git-based release.
-# The Windows PC follows ~/Desktop/ai/yabai-laptop through Syncthing.
+# The Windows PC follows ~/.links/yabaiLaptop through Syncthing.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-LAPTOP_DIR="${LAPTOP_DIR:-$HOME/Desktop/ai/yabai-laptop}"
+LAPTOP_DIR="${LAPTOP_DIR:-$HOME/.links/yabaiLaptop}"
 TABLET_SSH="${TABLET_SSH:-u0_a249@127.0.0.1}"
 TABLET_ADB="${TABLET_ADB:-192.168.188.105:5555}"
 TABLET_PORT="${TABLET_PORT:-8022}"
