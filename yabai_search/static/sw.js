@@ -4,18 +4,33 @@
 // reload paints instantly. The search results, API responses, and other HTML
 // pages always go to the network.
 
-const CACHE_NAME = "yabai-shell-v9";
+const CACHE_NAME = "yabai-shell-v10";
 
 // Fetch the home page, cache it under "/", and pre-cache the /static/*?v=*
 // assets it references. Then prune any versioned assets the new shell no
 // longer uses, so the cache stays small and consistent.
+// The search cache version a page carries (<meta name="data-version">), or "".
+function pageVersion(html) {
+    const match = /<meta name="data-version" content="([^"]*)"/.exec(html || "");
+    return match ? match[1] : "";
+}
+
 async function refreshShell() {
     const response = await fetch("/", { cache: "no-store" });
     if (!response.ok) return;
     const cache = await caches.open(CACHE_NAME);
+    const previous = await cache.match("/");
+    const oldVersion = previous ? pageVersion(await previous.text()) : "";
     await cache.put("/", response.clone());
 
     const html = await response.text();
+    // The page was just served from this cache, so it carries the old version and would ask for search results
+    // under the old ?dv= (which the browser may still have cached). Tell open pages the new one.
+    const newVersion = pageVersion(html);
+    if (oldVersion && newVersion && newVersion !== oldVersion) {
+        const pages = await self.clients.matchAll({ type: "window" });
+        for (const page of pages) page.postMessage({ type: "data-version", version: newVersion });
+    }
     const urls = new Set();
     const re = /(?:src|href)="(\/static\/[^"]+\?v=[^"]+)"/g;
     let match;

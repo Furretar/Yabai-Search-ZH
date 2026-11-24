@@ -5,7 +5,7 @@
 
 Reads  data/dl-base-dictionaries/baidu.sqlite   the base database: every Baidu answer exactly as scraped (table `raw`,
                                                 zlib-compressed JSON) and every character page (`zici_raw`). It is built
-                                                by ~/Desktop/ai/baidu-scraper/scripts/import_baidu.py, which gets the
+                                                by ~/.links/projects/baidu-scraper/scripts/import_baidu.py, which gets the
                                                 answers from the scrape; the scrape and this conversion are separate.
 Writes data/dictionary-databases/baidu/baidu_clean.sqlite   plain-text tables, no empty results, no compressed blobs
        data/dictionary-databases/baidu/baidu_clean.csv      one row per word, flattened for checking by eye
@@ -676,7 +676,7 @@ def main() -> int:
     parser.add_argument("--csv", type=Path, default=DEFAULT_CSV)
     args = parser.parse_args()
     if not args.src.exists():
-        raise SystemExit(f"{args.src} not found: build it with ~/Desktop/ai/baidu-scraper/scripts/import_baidu.py")
+        raise SystemExit(f"{args.src} not found: build it with ~/.links/projects/baidu-scraper/scripts/import_baidu.py")
     t0 = time.time()
     stats, empties = build(args.src, args.db, args.csv)
     print(json.dumps(stats, ensure_ascii=False), f"{time.time() - t0:.0f} s")

@@ -65,6 +65,7 @@ def make_project(base: Path) -> Path:
         ("会", "會", "kuài", "kuai4", "accounting"),
         ("下海", "下海", "xià hǎi", "xia4 hai3", "to go to sea (Taiwan pr. [xia4 hai2])"),
         ("你好", "你好", "nǐ hǎo", "ni3 hao3", "hello"),
+        ("企业", "企業", "qǐ yè", "qi3 ye4", "enterprise"),  # 企 is in TAIWAN_CHAR_READINGS (qǐ -> qì)
         ("袋", "袋", "dài", "dai4", "bag"),  # also gives the Wiktionary splitter "dài"
     ]
     for index, (simp, trad, marked, numeric, english) in enumerate(rows, 1):
@@ -153,8 +154,10 @@ def test_prefill() -> None:
         }
         # Whole-word MOE reading replaces CEDICT's (monophonic word).
         assert got[("cedict", "垃圾", "lā jī")] == ("lè sè", 1)
-        # Not in MOE as a word: derived character by character.
-        assert got[("cedict", "垃圾桶", "lā jī tǒng")] == ("lè sè tǒng", 1)
+        # Not in MOE as a word: derived character by character, from TAIWAN_CHAR_READINGS in overrides.py only
+        # (not from MOE's character readings): 垃 lā -> lè is listed, 圾 is not (MOE gives it two readings).
+        assert got[("cedict", "垃圾桶", "lā jī tǒng")] == ("lè jī tǒng", 1)
+        assert got[("cedict", "企業", "qǐ yè")] == ("qì yè", 1)
         # overrides.py beats the MOE reading.
         assert got[("cedict", "血", "xuè")] == ("xiě", 1)
         # Polyphonic word keeps each specific CEDICT reading.
@@ -168,7 +171,7 @@ def test_prefill() -> None:
         assert got[("moe", "血", "xuè")] == ("xiě", 1)
         assert got[("moe", "垃圾", "lè sè")] == ("lè sè", 0)
         # Other dictionaries are covered too (Wiktionary: Mandarin rows only).
-        assert got[("wiktionary", "垃圾袋", "lā jī dài")] == ("lè sè dài", 1)
+        assert got[("wiktionary", "垃圾袋", "lā jī dài")] == ("lè jī dài", 1)
         assert not any(src == "wiktionary" and main == "le sa de" for src, _w, main in got)
         # Search keys.
         row = out.execute(

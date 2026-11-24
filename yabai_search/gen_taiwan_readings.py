@@ -12,7 +12,9 @@ The rules, in the order `entry_taiwan_reading` applies them:
 2. the whole-word MOE reading (see `taiwan_reading`);
 3. a "Taiwan pr. [...]" note in the row's own definition text (a convention some dictionaries use; see
    `taiwan_note_reading`);
-4. the per-character derivation from MOE (see `derive_taiwan`).
+4. the per-character derivation (see `derive_taiwan`), from the fixed list TAIWAN_CHAR_READINGS in overrides.py.
+A single character's whole-word MOE reading that belongs to another character's sense (万 mò, where "ten
+thousand" is 萬 wàn) is corrected by `other_sense_fix`.
 
 Changing anything in this file changes what the lists contain, and the stored
 signature (db.taiwan_signature) hashes this file, so a stale list is reported.
@@ -22,8 +24,44 @@ from __future__ import annotations
 
 import re
 
-from yabai_search.overrides import TAIWAN_READINGS
+from yabai_search.overrides import TAIWAN_CHAR_READINGS, TAIWAN_READINGS
 from yabai_search.pinyin import numeric_to_marked, to_toneless
+
+_S2T = None
+
+
+def _standard_form(char: str) -> str:
+    """The traditional (Taiwan standard) form of one character: 万 -> 萬, 唇 -> 脣 (OpenCC s2t)."""
+    global _S2T
+    if _S2T is None:
+        from opencc import OpenCC  # noqa: PLC0415 (only needed when a reading is checked)
+
+        _S2T = OpenCC("s2t")
+    return _S2T.convert(char) if char else char
+
+
+def other_sense_fix(chars: list[str], syllable: str, taiwan: str, char_map: dict) -> str | None:
+    """Correct a character's Taiwan reading that belongs to another character's sense.
+
+    MOE lists a character under its own Taiwan sense, which can be a different word: 万 is mò (the surname
+    万俟; "ten thousand" is 萬 in Taiwan), 唇 is zhēn ("lips" is 脣). When MOE's reading `taiwan` sounds
+    different from the row's `syllable` and the character's standard form (any of `chars`, converted with
+    OpenCC) is another character whose MOE readings include the row's sound, the row means that other
+    character: its matching MOE reading is returned (萬 wàn), or `syllable` itself. Returns None when the
+    reading is fine as it is.
+    """
+    if to_toneless(taiwan) == to_toneless(syllable):
+        return None
+    target = to_toneless(syllable)
+    for char in chars:
+        standard = _standard_form(char)
+        if standard == char or len(standard) != 1:
+            continue
+        matches = [option for option in char_map.get(standard, []) if to_toneless(option) == target]
+        if matches:
+            return matches[0] if len(matches) == 1 else syllable
+    return None
+
 
 # Words that never take a Taiwan reading - the word-level MOE reading does not
 # fit the sense of the row's own reading. Add more here as needed.
@@ -75,12 +113,12 @@ def derive_taiwan(
     char_map: dict[str, list[str]],
     counts: dict[str, int],
 ) -> str | None:
-    """Build a Taiwan reading character by character from MOE.
+    """Build a Taiwan reading character by character, for words the MOE dictionary doesn't list whole.
 
-    Used for words the MOE dictionary doesn't list whole. Each character is
-    swapped for its MOE reading only when that reading is unambiguous (exactly
-    one matches the syllable). `counts` is {word: number of readings it has}.
-    Returns None when nothing changed.
+    A syllable is swapped only for a character in TAIWAN_CHAR_READINGS (overrides.py: one reading in
+    CC-CEDICT, one different reading in MOE), and only when the syllable is that CC-CEDICT reading (tone
+    aside), so 企 qǐ in 企業 becomes qì. `char_map` and `counts` are no longer read here; they stay in the
+    signature for the callers. Returns None when nothing changed.
     """
     chars = list(traditional)
     syllables = pinyin.split()
@@ -89,13 +127,9 @@ def derive_taiwan(
     changed = False
     result = []
     for char, syllable in zip(chars, syllables):
-        # Don't guess for a polyphonic character: its MOE reading may belong to a
-        # different sense (e.g. 腌 āng vs the 腌 ā in 腌臜).
-        replacement = None
-        if counts.get(char, 1) == 1:
-            replacement = char_taiwan(syllable, char_map.get(char, []))
-        if replacement:
-            result.append(replacement)
+        entry = TAIWAN_CHAR_READINGS.get(char)
+        if entry and to_toneless(syllable) == to_toneless(entry[0]):
+            result.append(entry[1])
             changed = True
         else:
             result.append(syllable)
@@ -149,7 +183,14 @@ def entry_taiwan_reading(
     if override:
         return override
     if options:
-        return taiwan_reading(traditional, pinyin, options, counts, char_map)
-    return taiwan_note_reading(note_text or "") or taiwan_reading(
-        traditional, pinyin, options, counts, char_map
-    )
+        reading = taiwan_reading(traditional, pinyin, options, counts, char_map)
+    else:
+        reading = taiwan_note_reading(note_text or "") or taiwan_reading(
+            traditional, pinyin, options, counts, char_map
+        )
+    if reading and len(traditional) == 1:
+        # A single character's whole-word MOE reading may be another character's sense (万 mò, 唇 zhēn).
+        fixed = other_sense_fix([traditional, simplified], pinyin, reading, char_map)
+        if fixed:
+            return None if fixed.lower() == pinyin.lower() else fixed
+    return reading

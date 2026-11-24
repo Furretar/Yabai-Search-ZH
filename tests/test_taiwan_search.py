@@ -48,9 +48,10 @@ def test_taiwan_search() -> None:
         # Without the toggle nothing changed.
         assert "垃圾" in heads(db.search("laji", 25, taiwan=False))
         assert "垃圾" not in heads(db.search("lese", 25, taiwan=False))
-        # Prefix and contains, both on the Taiwan reading.
-        assert "垃圾桶" in heads(db.search("lese", 25, taiwan=True))  # starts with
-        assert "垃圾桶" in heads(db.search("setong", 25, taiwan=True))  # contains
+        # Prefix and contains, both on the Taiwan reading (垃圾桶 is derived per character: lè jī tǒng).
+        assert "垃圾桶" in heads(db.search("leji", 25, taiwan=True))  # starts with
+        assert "垃圾桶" in heads(db.search("jitong", 25, taiwan=True))  # contains
+        assert "垃圾桶" not in heads(db.search("laji", 25, taiwan=True))
         # Override: 血 is xiě in Taiwan.
         assert "血" in heads(db.search("xie", 25, taiwan=True))
         assert "血" not in heads(db.search("xue", 25, taiwan=True))
@@ -66,21 +67,21 @@ def test_taiwan_search() -> None:
         assert "血" not in heads(db.search("xue4", 25, taiwan=True))
         # A wrong tone is still rejected on the Taiwan reading.
         assert "垃圾" not in heads(db.search("le1se4", 25, taiwan=True))
-        # Whole reading ranks before readings that merely start with it.
-        assert heads(db.search("le4se4", 25, taiwan=True))[:2] == ["垃圾", "垃圾桶"]
+        # The whole reading ranks first.
+        assert heads(db.search("le4se4", 25, taiwan=True))[:1] == ["垃圾"]
         # The fast first tier is a prefix match on the same Taiwan reading.
         assert "垃圾" in heads(db.search("le4se4", 25, taiwan=True, part="primary"))
 
         # --- source-only dictionaries ---------------------------------------
-        # 垃圾袋 exists only in Wiktionary; its Taiwan reading is lè sè dài.
-        found = db.search("lesedai", 25, taiwan=True)[0]
+        # 垃圾袋 exists only in Wiktionary; its derived Taiwan reading is lè jī dài.
+        found = db.search("lejidai", 25, taiwan=True)[0]
         assert [e["traditional"] for e in found] == ["垃圾袋"]
         assert found[0]["pinyin"] == "lā jī dài"  # the row keeps the source's reading
-        assert found[0]["pinyin_taiwan"] == "lè sè dài"
+        assert found[0]["pinyin_taiwan"] == "lè jī dài"
         assert db.search("lajidai", 25, taiwan=True)[0] == []
         assert [e["traditional"] for e in db.search("lajidai", 25, taiwan=False)[0]] == ["垃圾袋"]
 
-        # --- without the table the old behaviour remains ------------------
+        # --- without the table nothing is derived while serving -------------
         (project / "data" / "generated-indexes-optimizations" / "taiwan_readings.sqlite").rename(
             project / "data" / "generated-indexes-optimizations" / "taiwan_readings.off"
         )
@@ -91,10 +92,12 @@ def test_taiwan_search() -> None:
         setattr(db, "_source_only_entries", lambda *a, **k: [])
         setattr(db, "_source_matches", lambda *a, **k: [])
         assert db.taiwan_table_status() == "missing"
-        assert "垃圾" in heads(db.search("lese", 25, taiwan=True))  # via MOE map
-        # No table: the old path still runs without error. (It keeps its known
-        # gap - it picks candidates by the mainland reading - until the table is
-        # built, so only "does not crash" is asserted here.)
+        # No table: Taiwan readings come only from the pregenerated table, so the rows' own readings are searched
+        # and shown (the mainland one for 垃圾), and nothing is computed live.
+        assert "垃圾" not in heads(db.search("lese", 25, taiwan=True))
+        found = db.search("laji", 25, taiwan=True)[0]
+        assert "垃圾" in [e["traditional"] for e in found]
+        assert all(not e.get("pinyin_taiwan") for e in found)
         db.search("le4se4", 25, taiwan=True)
         db.search("la1ji1", 25, taiwan=True)
         for name in [m for m in sys.modules if m.startswith("yabai_search") or m == "opencc"]:

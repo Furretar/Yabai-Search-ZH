@@ -505,6 +505,11 @@ def main() -> int:
             download(args.url, source)
 
     build(source, args.db, args.limit)
+    import _latin_readings  # noqa: PLC0415 (a sibling module)
+
+    wiktionary = ROOT / "data" / "dictionary-databases" / "wiktionary.sqlite"
+    changed = _latin_readings.apply(args.db, wiktionary)
+    print(f"words with Latin letters given Wiktionary's pinyin reading: {changed}")
     return 0
 
 

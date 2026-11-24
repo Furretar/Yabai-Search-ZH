@@ -37,7 +37,7 @@ from opencc import OpenCC
 # on the import path by default.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from yabai_search.pinyin import split_pinyin, to_numeric, to_toneless  # noqa: E402
+from yabai_search.pinyin import is_pinyin_token, split_pinyin, to_numeric, to_toneless  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_URL = "https://kaikki.org/dictionary/Chinese/kaikki.org-dictionary-Chinese.jsonl.gz"
@@ -223,7 +223,47 @@ _PRON_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _PHRASE_PUNCT_RE = re.compile(r"[,，;；:：、]")
 
 
-def mandarin_pinyin(obj: dict) -> list[str]:
+# Standard pinyin needs an apostrophe before a syllable starting with a, o or e,
+# so every syllable has its own run of vowels; an uppercase run ("OK") is a
+# Latin word read as one unit. Used to spot readings that stop short.
+_VOWEL_RUN_RE = re.compile(r"[aeiouüvāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜê]+")
+# A whole token in capitals ("K", "OK"; "chàng-K"), not a proper noun's first letter ("Běijīng").
+_LATIN_WORD_RE = re.compile(r"(?:^|(?<=[\s'\-]))[A-Z]+(?=$|[\s'\-])")
+_HAN_RE = re.compile(r"[\u3400-\u9fff\U00020000-\U0003ffff]")
+
+
+def _reading_units(pron: str) -> int:
+    """Roughly how many characters a reading covers: one per syllable, one per Latin word."""
+    latin = len(_LATIN_WORD_RE.findall(pron))
+    return latin + len(_VOWEL_RUN_RE.findall(_LATIN_WORD_RE.sub(" ", pron).lower()))
+
+
+def _drop_truncated(prons: list[str], word: str) -> list[str]:
+    """Readings that cover every Chinese character of the word.
+
+    kaikki sometimes cuts a reading short: 卡拉OK包廂 lists "kǎlā-OK" (the reading
+    of 卡拉OK alone) as its first Standard Chinese pinyin. A reading with fewer
+    syllables than the word has Chinese characters cannot be the whole word.
+    Only readings with a Latin word are checked: a short reading without one is
+    usually real (erhua 花兒 "huār", contractions 他們 "tām", 嗯 "ń").
+    When no reading is long enough the list is kept as it is.
+    """
+    han = len(_HAN_RE.findall(word))
+    whole = [
+        pron for pron in prons
+        if not _LATIN_WORD_RE.search(pron) or _reading_units(pron) >= han
+    ]
+    return whole or prons
+
+
+def _spells_as_pinyin(pron: str, syllables: set[str] | None) -> bool:
+    """True when the reading splits into real pinyin syllables (Q = "kiū" does not: it becomes "k i ū")."""
+    if syllables is None:
+        return True
+    return all(is_pinyin_token(token) for token in split_pinyin(pron, syllables).split())
+
+
+def mandarin_pinyin(obj: dict, syllables: set[str] | None = None) -> list[str]:
     """The standard Mandarin Pinyin reading(s) of an entry ([] when none).
 
     kaikki lists readings in `sounds`, each a `zh_pron` with tags. Keep only the
@@ -248,8 +288,26 @@ def mandarin_pinyin(obj: dict) -> list[str]:
             standard.append(pron)
         elif tags <= {"mandarin", "pinyin"}:
             fallback.append(pron)
+    word = obj.get("word") or ""
     standard_unique = list(dict.fromkeys(standard))
     fallback_unique = list(dict.fromkeys(fallback))
+    if any(_LATIN_WORD_RE.search(pron) for pron in standard_unique):
+        # A Standard reading keeps a Latin word ("kǎlā-OK tīng"). When the word
+        # also has an all-pinyin reading, that one is shown first, in the order
+        # of the line Wiktionary shows first ("kǎlā'ōukèi tīng, kǎlā'ōukēi tīng");
+        # the Latin reading comes last, and a cut-short one is dropped.
+        candidates = list(dict.fromkeys(
+            _drop_truncated(fallback_unique + standard_unique, word)
+        ))
+        pinyin_only = [
+            pron for pron in candidates
+            if not _LATIN_WORD_RE.search(pron) and _spells_as_pinyin(pron, syllables)
+        ]
+        if pinyin_only:
+            # Then the Latin readings, then any that are neither (kept, never dropped: "kiūr" for Q).
+            latin = [pron for pron in candidates if _LATIN_WORD_RE.search(pron)]
+            rest = [pron for pron in candidates if pron not in pinyin_only and pron not in latin]
+            standard_unique = pinyin_only + latin + rest
     # Prefer a reading that spells out digits ("liùjiǔshì" over "69-shì").
     unique = standard_unique or fallback_unique
     for group in (standard_unique, fallback_unique):
@@ -257,7 +315,6 @@ def mandarin_pinyin(obj: dict) -> list[str]:
         if spelled:
             unique = spelled
             break
-    word = obj.get("word") or ""
     if len(unique) > 1 and _PHRASE_PUNCT_RE.search(word):
         return [" ".join(unique)]
     return unique
@@ -488,7 +545,7 @@ def build(source: Path, db_path: Path) -> None:
                 kept += 1
             # Mandarin readings, plus a non-Mandarin variety reading only when
             # the entry has no Mandarin Pinyin (the app shows it as a fallback).
-            mandarin = mandarin_pinyin(obj)
+            mandarin = mandarin_pinyin(obj, syllables)
             readings = [(p, "mandarin", "") for p in mandarin]
             if not mandarin:
                 readings += [
@@ -604,6 +661,10 @@ def main() -> int:
     if args.force:
         _wikipedia_titles.build(force=True)  # read newer Wikipedia dumps too
     build(source, args.db)
+    import _latin_readings  # noqa: PLC0415 (a sibling module, like _wikipedia_titles)
+
+    changed = _latin_readings.apply(CEDICT_DB, args.db)
+    print(f"CC-CEDICT words with Latin letters given Wiktionary's pinyin reading: {changed}")
     return 0
 
 

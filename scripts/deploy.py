@@ -18,7 +18,7 @@ Steps, in order:
   6. runs deploy/update.sh laptop inside the laptop clone: it pulls this checkout, restarts the app and
      goes back to the old version when the new one does not answer a health check;
   7. checks the laptop copy answers, and that a real search returns a sane first row.
-The PC and the tablets follow ~/Desktop/ai/yabai-laptop through Syncthing, so deploying the laptop
+The PC and the tablets follow ~/.links/projects/yabai-laptop through Syncthing, so deploying the laptop
 clone is enough. Per-machine files (deploy/env.local, data/accounts.sqlite3) are never copied.
 Every line is also written to archives/logs/deploy-<time>.log.
 """

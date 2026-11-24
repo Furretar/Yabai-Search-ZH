@@ -34,7 +34,9 @@ const hint = document.getElementById("hint");
 // Data fingerprint + server start time (from index.html). Sent as ?dv= so the
 // server may allow /api/search responses to be cached; without it they stay
 // uncached. Empty on pages that do not render this meta tag.
-const DATA_VERSION = document.querySelector('meta[name="data-version"]')?.content || "";
+// The search cache version (data + code). A page shown from the service worker's cached shell carries the old one;
+// the worker then sends the new one (see the "data-version" message below).
+let DATA_VERSION = document.querySelector('meta[name="data-version"]')?.content || "";
 const scriptToggle = document.getElementById("script-toggle");
 const toneToggle = document.getElementById("tone-toggle");
 const phoneticToggle = document.getElementById("phonetic-toggle");
@@ -65,6 +67,7 @@ const togglesWith = (attribute) =>
     new Set(dictToggles.filter((toggle) => toggle.dataset[attribute]).map((toggle) => toggle.dataset.anchor));
 const formsAnchors = togglesWith("suppliesForms"); // they supply the variant forms ("Other forms")
 const notesAnchors = togglesWith("suppliesNotes"); // they supply the pronunciation notes ("Taiwan pr.")
+const readingsAnchors = togglesWith("suppliesReadings"); // they supply a word's other readings ("Also pronounced")
 const sharedGroupAnchors = togglesWith("sharedGroups"); // their blocks for several spellings merge into one
 // Dictionaries shown as ONE row (the "merged" trait in db.py, on the lead's toggle as data-merged="a,b"): selecting
 // one selects them all, and a result merges their definitions into one block, the lead's header first.
@@ -626,6 +629,9 @@ function ignoreNextClipboardChange() {
 function searchClipboardValue(value) {
     if (!value || value.length > AUTO_CLIPBOARD_MAX_LENGTH) return;
     if (value === input.value.trim()) return;
+    // A typed "#anchor" jumps to the About page (performSearch). Copied text that starts with "#" (a heading
+    // such as "## Taiwanese differences", a hashtag) must not navigate away, so it is not searched.
+    if (value.startsWith("#")) return;
     performSearch(value);
 }
 
@@ -1325,19 +1331,61 @@ function trailingTones(chars, syllables) {
     return tones;
 }
 
+// Group a headword that mixes Latin words and Chinese characters ("gay达",
+// "gay里gay气") into display units: each Latin word is one unit and reads one
+// syllable ("gay" = gèi). A reading that spells the Latin word out, split into
+// fake syllables by the importer ("ga y li ga y qì"), is joined back into that
+// word ("gay li gay qì"), so it is not shown as pinyin. Returns null unless
+// every unit gets exactly one reading.
+function latinWordUnits(text, syllables) {
+    const units = text.match(/[A-Za-z]+|./gsu) || [];
+    const readings = [];
+    let at = 0;
+    for (const unit of units) {
+        if (PUNCT_CHAR_RE.test(unit)) continue; // punctuation is never read
+        if (at >= syllables.length) return null;
+        if (/^[A-Za-z]{2,}$/.test(unit)) {
+            let joined = "";
+            let end = at;
+            while (end < syllables.length && joined.length < unit.length) {
+                joined += syllableBase(syllables[end]);
+                end += 1;
+            }
+            if (end - at > 1 && joined === unit.toLowerCase()) {
+                readings.push(syllables.slice(at, end).join(""));
+                at = end;
+                continue;
+            }
+        }
+        readings.push(syllables[at]);
+        at += 1;
+    }
+    return at === syllables.length ? { units, readings } : null;
+}
+
 function furigana(text, pinyin, allowTones = true, raw = false) {
-    const chars = [...text];
+    let chars = [...text];
     const rawReading = String(pinyin || "").trim();
     // A Dungan reading is a whole phrase with tone numerals
     // ("jiguanzɨhuar (I-I-I-I)"); splitting it would scatter the numerals, so
     // it is shown as one reading line.
-    const syllables = raw
+    let syllables = raw
         ? rawReading
             ? [rawReading]
             : []
         : readingSyllablesForWord(pinyin, text).filter(
             (syllable) => syllable && !PUNCT_TOKEN_RE.test(syllable)
         );
+    // A headword with a Latin word in it has fewer readings than characters;
+    // align the readings to whole words instead (see latinWordUnits).
+    if (!raw && /[A-Za-z]{2}/.test(text) &&
+        chars.filter((ch) => !PUNCT_CHAR_RE.test(ch)).length !== syllables.length) {
+        const grouped = latinWordUnits(text, syllables);
+        if (grouped) {
+            chars = grouped.units;
+            syllables = grouped.readings;
+        }
+    }
     // The readings in the chosen phonetic system. Conversion is per token:
     // valid Mandarin syllables become bopomofo, while Latin tokens (w, d,
     // uppercase letters, a Latin word spelled out as pinyin) stay as written.
@@ -1966,7 +2014,9 @@ function definitionBody(source, taiwanRefs, copy) {
             if (item.note) {
                 const note = document.createElement("span");
                 note.className = "def-note";
-                note.textContent = text ? ` ${item.note}` : item.note;
+                note.textContent = item.note;
+                // The space goes outside the small label, so it is a full-size space.
+                if (text) line.append(" ");
                 line.append(note);
             }
             if (copy && text) {
@@ -2827,6 +2877,35 @@ function fillEntryRow(row, entry) {
             );
         }
     }
+    // Wiktionary's other Mandarin readings of this word ("Also pronounced"),
+    // shown right after the Wiktionary block. The server already left out the
+    // readings that have a CC-CEDICT row of their own; the reading on this row
+    // and the ones the CC-CEDICT notes above already give are skipped here.
+    const wiktionaryNotes = [];
+    {
+        // Same key as the server's _wiktionary_key: spacing and the neutral tone 5 ignored.
+        const shownKey = (text) => readingKey(text || "").toLowerCase().replace(/[ 5]/g, "");
+        const shown = new Set([shownKey(reading), shownKey(entry.pinyin)]);
+        if (anyEnabled(enabled, notesAnchors)) {
+            const prons = extractPronunciations(entry.english_normalized);
+            for (const note of prons.others) shown.add(shownKey(numericToMarked(note.reading)));
+            if (!state.taiwan) {
+                for (const note of prons.taiwan) shown.add(shownKey(numericToMarked(note)));
+            }
+        }
+        for (const other of entry.wiktionary_readings || []) {
+            const key = shownKey(other);
+            if (!key || shown.has(key)) continue;
+            shown.add(key);
+            wiktionaryNotes.push(detailRow("Also pronounced: ", furigana(primaryMasked, other)));
+        }
+    }
+    const appendWiktionaryNotes = (anchors) => {
+        if (wiktionaryNotes.length && anchors.some((anchor) => readingsAnchors.has(anchor))) {
+            defsBox.append(...wiktionaryNotes.splice(0));
+        }
+    };
+
     let notesPlaced = false;
     const mergedDrawn = new Set();
     for (const [anchor, blocks] of byAnchor) {
@@ -2837,11 +2916,13 @@ function fillEntryRow(row, entry) {
                     definitionsBlock(mergedBlocks.get(lead), entry.taiwan_refs, primary, reading, entry.forms || []),
                 );
                 mergedDrawn.add(lead);
+                appendWiktionaryNotes(membersOf(lead));
             }
             continue;
         }
         const source = blockFor(anchor, blocks);
         defsBox.append(definitionsBlock(source, entry.taiwan_refs, primary, reading, entry.forms || []));
+        appendWiktionaryNotes([anchor]);
         if (notesAnchors.has(anchor) && notes.length) {
             defsBox.append(...notes);
             notesPlaced = true;
@@ -3262,7 +3343,13 @@ function mergeEntries(entries) {
         }
         const merged = cloneEntry(base);
         for (const entry of group) {
-            if (entry !== base) mergeEntry(merged, entry);
+            if (entry === base) continue;
+            if (isVariantRowOf(entry, merged) && (entryReading(entry) || "") === (entryReading(merged) || "")) {
+                // A variant spelling (剛纔 "variant of 剛才") says what the row says: only its spelling is listed.
+                addTraditionalForm(merged, entry);
+            } else {
+                mergeEntry(merged, entry);
+            }
         }
         return merged;
     });
@@ -3334,6 +3421,52 @@ function mergeIdenticalRows(rows) {
             bySignature.set(signature, row);
             out.push(row);
         }
+    }
+    return foldVariantRows(out);
+}
+
+// Traditional mode also folds a spelling that a definition calls a variant of another row's spelling: 剛纔 ("just
+// now (variant of 剛才|刚才[gang1 cai2])") goes into the 剛才 row when both simplify alike (刚才) and have the same
+// reading. Only its spelling is kept, as a link under "Traditional forms"; its definitions are not repeated.
+// True when one of the row's definitions calls it a variant of the target's spelling ("variant of 剛才|...").
+function isVariantRowOf(row, target) {
+    const head = target.traditional || "";
+    if (!head || head === row.traditional) return false;
+    const marker = `variant of ${head}`;
+    return (row.definitions || []).some((block) =>
+        [...(block.defs || []), ...(block.groups || []).flatMap((group) => group.senses || [])].some((text) => {
+            const at = String(text).indexOf(marker);
+            // The spelling must end there ("剛才|", "剛才[", "剛才)"), not run on into a longer word.
+            return at >= 0 && !CJK_RE.test(String(text).charAt(at + marker.length));
+        })
+    );
+}
+
+// List the row's spelling under the target's "Traditional forms" (its definitions are not added).
+function addTraditionalForm(target, row) {
+    target.mergedForms = target.mergedForms || [];
+    if (row.traditional && !target.mergedForms.some((form) => (form.traditional ?? form) === row.traditional)) {
+        target.mergedForms.push({ traditional: row.traditional, pinyin: row.pinyin || "" });
+    }
+}
+
+function foldVariantRows(rows) {
+    const variantOf = isVariantRowOf;
+    const out = [...rows];
+    for (const row of rows) {
+        if (!out.includes(row)) continue;
+        const target = out.find(
+            (other) =>
+                other !== row &&
+                (other.simplified || "") === (row.simplified || "") &&
+                (entryReading(other) || "") === (entryReading(row) || "") &&
+                variantOf(row, other) &&
+                !variantOf(other, row)
+        );
+        if (!target) continue;
+        // Only the spelling is kept, under "Traditional forms": the variant says what the main row says.
+        addTraditionalForm(target, row);
+        out.splice(out.indexOf(row), 1);
     }
     return out;
 }
@@ -3763,6 +3896,19 @@ function rerunSearch() {
     if (currentQuery && currentQuery.trim() !== "*") {
         search(currentQuery, 0, false, false);
     }
+}
+
+// The service worker refreshed the cached page and found a newer search version (new data or code): use it, drop
+// the pages fetched under the old one, and search again, so results never come from the old version's cache.
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+        const message = event.data || {};
+        if (message.type !== "data-version" || !message.version || message.version === DATA_VERSION) return;
+        DATA_VERSION = message.version;
+        pageCache.clear();
+        pagePrefetches.clear();
+        if (currentQuery) search(currentQuery, 0, false, false);
+    });
 }
 
 // Re-draw the current results (and any fuzzy section) after a display toggle.

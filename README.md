@@ -159,6 +159,9 @@ CEDICT has separate entries for proper nouns and normal words. For example, the 
 
 CEDICT has entries that are cross-references, e.g. `血 [xiě] /see 血[xuè]/`. The UI lists them under **Other forms:** and merges all duplicates.
 
+Headwords with readings containing latin characters, such as `唱K`, will prioritize using Wiktionary readings that contain pinyin and tone information. For example, the CEDICT reading for `唱K`, `chàng K`, is replaced with Wiktionary's listed reading, `chàng kèi`.
+
+
 <h2 id="sources">Sources &amp; Licenses</h2>
 
 #### Taiwan (MOE) readings
@@ -269,9 +272,10 @@ The local host will change if another host is at least 20% faster for longer tha
 ### Todo
 - Add character search and stroke order in the details page, mainland and taiwan
 - check for security issues
+- where possible edit DB instead of applying changes in JS
 - add audio to details page
 - add example sentences
 - ai generate missing definitions for jp and en
-- remove lines like filepaths, check if i should push deploy directory to github 
+- remove lines like filepaths from code, check if i should push deploy directory to github 
 
 ---

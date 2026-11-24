@@ -198,7 +198,73 @@ def merge_entries(
         if anchors:
             merged["match_anchors"] = anchors
         for entry in group:
-            if entry is not base:
+            if entry is base:
+                continue
+            if _is_variant_of(entry, merged) and _entry_reading(entry, taiwan) == _entry_reading(merged, taiwan):
+                # A variant spelling (剛纔 "variant of 剛才") says what the row says: only its spelling is listed.
+                _add_traditional_form(merged, entry)
+            else:
                 _merge_entry(merged, entry, taiwan)
         rows.append(merged)
-    return rows
+    return fold_variant_rows(rows, taiwan) if script == "traditional" else rows
+
+
+def _is_variant_of(row: dict, target: dict) -> bool:
+    """True when one of the row's definitions calls it a variant of the target's spelling ("variant of 剛才|...")."""
+    head = target.get("traditional") or ""
+    if not head or head == row.get("traditional"):
+        return False
+    marker = f"variant of {head}"
+    for block in row.get("definitions") or []:
+        texts = list(block.get("defs") or [])
+        for group in block.get("groups") or []:
+            texts.extend(group.get("senses") or [])
+        for text in texts:
+            text = str(text)
+            at = text.find(marker)
+            # The spelling must end there ("剛才|", "剛才[", "剛才)"), not run on into a longer word.
+            after = text[at + len(marker) : at + len(marker) + 1]
+            if at >= 0 and not ("\u3400" <= after <= "\u9fff"):
+                return True
+    return False
+
+
+def _add_traditional_form(target: dict, row: dict) -> None:
+    """List the row's spelling under the target's "Traditional forms" (its definitions are not added)."""
+    traditional = row.get("traditional") or ""
+    forms = target.setdefault("mergedForms", [])
+    if traditional and not any(
+        (form.get("traditional") if isinstance(form, dict) else form) == traditional for form in forms
+    ):
+        forms.append({"traditional": traditional, "pinyin": row.get("pinyin") or ""})
+
+
+def fold_variant_rows(rows: list[dict], taiwan: bool = False) -> list[dict]:
+    """Traditional layout: fold a spelling that a definition calls a variant of another row's spelling.
+
+    剛纔 ("just now (variant of 剛才|刚才[gang1 cai2])") goes into the 剛才 row when both simplify alike (刚才) and
+    have the same reading. Only the spelling is kept, as a link under "Traditional forms": a variant says what the
+    main row says, so its definitions are not repeated. app.js foldVariantRows() does the same for pages it merges
+    itself.
+    """
+    out = list(rows)
+    for row in rows:
+        if not any(item is row for item in out):
+            continue
+        target = next(
+            (
+                other
+                for other in out
+                if other is not row
+                and (other.get("simplified") or "") == (row.get("simplified") or "")
+                and _entry_reading(other, taiwan) == _entry_reading(row, taiwan)
+                and _is_variant_of(row, other)
+                and not _is_variant_of(other, row)
+            ),
+            None,
+        )
+        if target is None:
+            continue
+        _add_traditional_form(target, row)
+        out = [item for item in out if item is not row]
+    return out
